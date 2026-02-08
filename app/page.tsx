@@ -3,9 +3,8 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 import { DocumentPanel } from '@/components/document/DocumentPanel';
-import type { DocumentState, ProcessDiagramState } from '@/lib/document/types';
+import type { DocumentState } from '@/lib/document/types';
 import { applyDocumentPatches, type DocumentPatch } from '@/lib/documentPatches';
-import { PromptsManager } from './api/promts/PromtsManager';
 import { Header } from '@/components/chat/Header';
 import { Sidebar } from '@/components/chat/Sidebar';
 import { ConversationArea } from '@/components/chat/ConversationArea';
@@ -15,7 +14,7 @@ import { Loader } from '@/components/ai-elements/loader';
 export default function ChatPage() {
   const [authChecked, setAuthChecked] = useState(false);
   const [conversationsLoaded, setConversationsLoaded] = useState(false);
-  const [promptsLoaded, setPromptsLoaded] = useState(false);
+  const [promptsLoaded] = useState(true);
   const bootCompletedRef = useRef(false);
 
   const [input, setInput] = useState('');
@@ -39,21 +38,8 @@ export default function ChatPage() {
     content: '',
     isStreaming: false,
   });
-  const [diagramState, setDiagramState] = useState<ProcessDiagramState | null>(null);
-  const [diagramSteps, setDiagramSteps] = useState<any[]>([]);
-  const [isDiagramLoading, setIsDiagramLoading] = useState(false);
-  const [loadedDiagramConversationId, setLoadedDiagramConversationId] = useState<string | null>(null);
-  const lastDiagramUserMessageIdRef = useRef<string | null>(null);
   const [isChatsPanelVisible, setIsChatsPanelVisible] = useState(true);
-  const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
-
-  const handlePromptSelect = useCallback((content: string, prompt: any) => {
-    setSelectedPromptId(prompt?.id ?? null);
-  }, []);
-
-  const handlePromptsReady = useCallback(() => {
-    setPromptsLoaded(true);
-  }, []);
+  const selectedPromptId: string | null = null;
 
   const handleRegenerate = (messageId: string) => {
     const index = messages.findIndex(m => m.id === messageId);
@@ -333,6 +319,14 @@ export default function ChatPage() {
           isStreaming: false,
         }));
       }
+
+      if (normalized.type === 'data-docx') {
+        console.log('📦 DOCX data received:', normalized.data);
+        updateEngineDocument((prev: DocumentState) => ({
+          ...prev,
+          docxData: normalized.data,
+        }));
+      }
     },
   });
 
@@ -362,105 +356,7 @@ export default function ChatPage() {
     return target;
   }, [viewConversationId, conversationId, status, viewedConversation, viewDocument, setMessages]);
 
-  const handleUserMessageQueued = useCallback((queuedMessage: any) => {
-    const requestConvId = viewConversationId ?? conversationId;
-    if (!requestConvId) return;
-    if (!queuedMessage?.id) return;
-    if (lastDiagramUserMessageIdRef.current === String(queuedMessage.id)) return;
-
-    lastDiagramUserMessageIdRef.current = String(queuedMessage.id);
-
-    const slice = [...(messages || []), queuedMessage]
-      .slice(-16)
-      .map((m: any) => ({
-        id: m?.id,
-        role: m?.role,
-        content: Array.isArray(m?.parts)
-          ? (m.parts.find((p: any) => p?.type === 'text' && typeof p.text === 'string')?.text || '')
-          : (typeof m?.text === 'string' ? m.text : ''),
-        parts: Array.isArray(m?.parts) ? m.parts : undefined,
-      }))
-      .filter((m: any) => m.role && typeof m.content === 'string');
-
-    // Fire-and-forget: do not block chat/doc streaming.
-    void (async () => {
-      try {
-        setIsDiagramLoading(true);
-        // Only pass prevState if it belongs to the current conversation
-        const prevState = (loadedDiagramConversationId === requestConvId) ? diagramState : null;
-        const resp = await fetch('/api/diagram', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages: slice, state: prevState }),
-        });
-        const j = await resp.json().catch(() => ({}));
-        if (j?.success && j?.state) {
-          if (viewConversationId === requestConvId) {
-            setDiagramState(j.state);
-            setLoadedDiagramConversationId(requestConvId);
-            if (Array.isArray(j.steps)) setDiagramSteps(j.steps);
-          } else {
-            localStorage.setItem(`diagramState:${requestConvId}`, JSON.stringify({ state: j.state, steps: j.steps || [] }));
-          }
-        }
-      } catch (e) {
-        console.warn('Failed to update diagram state (queued)', e);
-      } finally {
-        setIsDiagramLoading(false);
-      }
-    })();
-    // NOTE: diagramState intentionally excluded to prevent re-fetch loops
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, viewConversationId, messages, loadedDiagramConversationId]);
-
-  // Load diagram state per viewed conversation.
-  useEffect(() => {
-    if (!viewConversationId) {
-      setDiagramState(null);
-      setDiagramSteps([]);
-      setLoadedDiagramConversationId(null);
-      lastDiagramUserMessageIdRef.current = null;
-      return;
-    }
-    try {
-      const raw = localStorage.getItem(`diagramState:${viewConversationId}`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        // Handle both old format (just state) and new format ({ state, steps })
-        if (parsed?.state) {
-          setDiagramState(parsed.state);
-          setDiagramSteps(Array.isArray(parsed.steps) ? parsed.steps : []);
-        } else {
-          setDiagramState(parsed);
-          setDiagramSteps([]);
-        }
-        setLoadedDiagramConversationId(viewConversationId);
-      } else {
-        setDiagramState(null);
-        setDiagramSteps([]);
-        setLoadedDiagramConversationId(viewConversationId);
-      }
-    } catch {
-      setDiagramState(null);
-      setDiagramSteps([]);
-      setLoadedDiagramConversationId(null);
-    }
-    lastDiagramUserMessageIdRef.current = null;
-  }, [viewConversationId]);
-
-  // Persist diagram state for the viewed conversation.
-  useEffect(() => {
-    if (!viewConversationId) return;
-    try {
-      if (!diagramState) localStorage.removeItem(`diagramState:${viewConversationId}`);
-      else localStorage.setItem(`diagramState:${viewConversationId}`, JSON.stringify({ state: diagramState, steps: diagramSteps }));
-    } catch {
-      // ignore
-    }
-  }, [diagramState, diagramSteps, viewConversationId]);
-
-  // NOTE: Removed duplicate useEffect for diagram updates.
-  // handleUserMessageQueued callback already handles /api/diagram calls.
+  // Diagram feature removed.
 
   const attachedFiles = useMemo(() => {
     const collected: Array<{ id?: string; name?: string; url?: string; mediaType?: string }> = [];
@@ -1017,19 +913,13 @@ export default function ChatPage() {
                 selectedPromptId={selectedPromptId}
                 documentContent={document.content}
                 prepareSend={prepareSend}
-                onUserMessageQueued={handleUserMessageQueued}
-              />
-              <PromptsManager
-                className="w-full"
-                onPromptSelect={handlePromptSelect}
-                userId={authUser?.id ?? null}
-                onReady={handlePromptsReady}
+                onUserMessageQueued={undefined}
               />
             </div>
           </div>
         </div>
         {/* Правая часть — документ */}
-        <DocumentPanel document={viewDocument} onEdit={handleDocumentEdit} attachments={attachedFiles} diagramState={diagramState} diagramSteps={diagramSteps} isLoading={isDiagramLoading} />
+        <DocumentPanel document={viewDocument} onEdit={handleDocumentEdit} attachments={attachedFiles} />
       </div>
     </div>
   );
