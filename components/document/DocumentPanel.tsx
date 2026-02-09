@@ -271,6 +271,27 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
     }
   };
 
+  const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(binary);
+  };
+
+  const buildDocxData = async (title: string, content: string) => {
+    const { convertMarkdownToDocx } = await import('@mohtasham/md-to-docx');
+    const docBody = `# ${title}\n\n${content}`;
+    const docxBlob = await convertMarkdownToDocx(docBody);
+    const docxBuffer = await docxBlob.arrayBuffer();
+    return {
+      content: arrayBufferToBase64(docxBuffer),
+      filename: sanitizeFilename(title, 'document') + '.docx',
+    };
+  };
+
   const startEdit = () => {
     setEditing(true);
     setDraftTitle(localDoc.title);
@@ -283,7 +304,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
     setDraftContent(localDoc.content);
   };
 
-  const saveEdit = () => {
+  const saveEdit = async () => {
     const updated: DocumentState = {
       ...localDoc,
       title: draftTitle,
@@ -291,7 +312,15 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
     };
     setLocalDoc(updated);
     setEditing(false);
-    onEdit?.(updated);
+    try {
+      const nextDocx = await buildDocxData(updated.title, updated.content);
+      setDocxData(nextDocx);
+      onEdit?.({ ...updated, docxData: nextDocx });
+    } catch (error) {
+      console.warn('Failed to rebuild docx after edit', error);
+      setDocxData(null);
+      onEdit?.({ ...updated, docxData: undefined });
+    }
   };
 
   return (
@@ -403,7 +432,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
       </div>
 
       {Array.isArray(attachments) && attachments.length > 0 && (
-        <div className="border-t bg-background px-4 py-2">
+        <div className="border-t bg-background px-4 py-2 min-h-[104px]">
           <div className="flex items-center gap-2">
             <div className="text-xs font-medium text-muted-foreground">Загруженные документы</div>
           </div>

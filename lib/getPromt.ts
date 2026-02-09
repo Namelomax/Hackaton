@@ -1,6 +1,7 @@
 import Surreal, { u } from "surrealdb";
 import { RecordId } from "surrealdb";
 import crypto from 'crypto';
+import { DEFAULT_PROMPT } from '@/lib/db/repositories/default-promt';
 
 const db = new Surreal();
 const surrealState = (globalThis as any).__surrealState || ((globalThis as any).__surrealState = {
@@ -840,13 +841,12 @@ export async function getPrompt(): Promise<string> {
   if (!record) {
     const [newPrompt] = await db.create("prompts", {
       title: "Default Assistant",
-      content: "Ты полезный AI-ассистент. Используй инструменты для поиска информации и создания документов по запросу пользователя.",
+      content: DEFAULT_PROMPT,
       isDefault: true,
     });
     return convertToPrompt(newPrompt).content;
   }
-
-  return record.content;
+  return record.content || DEFAULT_PROMPT;
 }
 
 // Обновить дефолтный промпт

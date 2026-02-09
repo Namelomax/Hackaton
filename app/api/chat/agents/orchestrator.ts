@@ -102,16 +102,23 @@ function looksLikeDocumentGenerationRequest(text: string): boolean {
   const genVerb =
     t.includes('сформируй') ||
     t.includes('сформировать') ||
+    t.includes('сформируем') ||
     t.includes('составь') ||
     t.includes('составить') ||
+    t.includes('составим') ||
     t.includes('сгенерируй') ||
     t.includes('сгенерировать') ||
+    t.includes('сгенерируем') ||
     t.includes('подготовь') ||
     t.includes('подготовить') ||
+    t.includes('подготовим') ||
     t.includes('оформи') ||
     t.includes('оформить') ||
+    t.includes('оформим') ||
     t.includes('сделай') ||
     t.includes('сделать') ||
+    t.includes('сделаем') ||
+    t.includes('сделайте') ||
     t.includes('выведи') ||
     t.includes('покажи') ||
     t.includes('дай');
@@ -119,6 +126,8 @@ function looksLikeDocumentGenerationRequest(text: string): boolean {
   const docNoun =
     t.includes('регламент') ||
     t.includes('документ') ||
+    t.includes('протокол') ||
+    t.includes('обследован') ||
     t.includes('инструкц') ||
     t.includes('положение') ||
     t.includes('политик') ||

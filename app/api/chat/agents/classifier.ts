@@ -24,24 +24,33 @@ function looksLikeExplicitDocumentCommand(text: string): boolean {
   const docTargetHint =
     t.includes('в документ') ||
     t.includes('в регламент') ||
+    t.includes('в протокол') ||
     t.includes('пункт') ||
     t.includes('раздел') ||
     t.includes('регламент') ||
+    t.includes('протокол') ||
     t.includes('документ');
 
   const genVerb =
     t.includes('сформируй') ||
     t.includes('сформировать') ||
+    t.includes('сформируем') ||
     t.includes('составь') ||
     t.includes('составить') ||
+    t.includes('составим') ||
     t.includes('сгенерируй') ||
     t.includes('сгенерировать') ||
+    t.includes('сгенерируем') ||
     t.includes('подготовь') ||
     t.includes('подготовить') ||
+    t.includes('подготовим') ||
     t.includes('оформи') ||
     t.includes('оформить') ||
+    t.includes('оформим') ||
     t.includes('сделай') ||
     t.includes('сделать') ||
+    t.includes('сделаем') ||
+    t.includes('сделайте') ||
     t.includes('выведи') ||
     t.includes('покажи') ||
     t.includes('дай');
@@ -49,6 +58,8 @@ function looksLikeExplicitDocumentCommand(text: string): boolean {
   const docNoun =
     t.includes('регламент') ||
     t.includes('документ') ||
+    t.includes('протокол') ||
+    t.includes('обследован') ||
     t.includes('инструкц') ||
     t.includes('положение') ||
     t.includes('политик') ||
@@ -208,13 +219,23 @@ ${conversationContext.map((msg, i) => {
 - Если ассистент только что предложил сформировать документ и пользователь согласился - это "document"
 - Если информация еще собирается - это "chat", даже при коротких подтверждениях
 
+Если не уверен, все равно верни JSON, например:
+{"type":"chat","confidence":0,"reasoning":"uncertain"}
+
 Проанализируй ситуацию и верни JSON.`,
     });
 
-    console.log('🤖 Raw Intent Classification Output:', rawOutput);
+    const rawText = String(rawOutput ?? '').trim();
+    console.log('🤖 Raw Intent Classification Output:', rawText);
+
+    if (!rawText) {
+      console.warn('⚠️ Empty classifier response, falling back to heuristic');
+      if (looksLikeExplicitDocumentCommand(lastUserText)) return 'document';
+      return 'chat';
+    }
 
     // Clean up response for models that include thinking traces or markdown
-    let cleanJson = rawOutput
+    let cleanJson = rawText
       .replace(/<think>[\s\S]*?<\/think>/gi, '') // Remove deepseek thinking blocks
       .replace(/```json/gi, '')
       .replace(/```/g, '')
