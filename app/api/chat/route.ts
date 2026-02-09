@@ -7,7 +7,7 @@ import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, ge
 import { runMainAgent } from './agents/main-agent';
 import { AgentContext } from './agents/types';
 
-export const maxDuration = 900;
+export const maxDuration = 300;
 export const runtime = 'nodejs';
 
 const openrouter = createOpenRouter({
