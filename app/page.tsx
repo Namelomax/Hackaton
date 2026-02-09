@@ -330,6 +330,31 @@ export default function ChatPage() {
     },
   });
 
+  const createLocalConversation = useCallback(() => {
+    if (!authUser?.id) return null;
+    const localId = `local-${Date.now()}`;
+    const localConv = {
+      id: localId,
+      title: `Новый чат ${new Date().toLocaleTimeString()}`,
+      created: new Date().toISOString(),
+      messages: [],
+      local: true,
+    } as any;
+    setConversationsList((prev) => [localConv, ...prev]);
+    setViewConversationId(localId);
+    // While AI is busy in another conversation, don't touch engine state.
+    if (status === 'ready') {
+      setConversationId(localId);
+      setMessages([]);
+      // Reset engine doc on new chat
+      setDocument({ title: '', content: '', isStreaming: false });
+    }
+    // Always reset the visible right panel for the newly viewed chat.
+    setViewDocument({ title: '', content: '', isStreaming: false });
+    localStorage.setItem('activeConversationId', localId);
+    return localId;
+  }, [authUser?.id, status, setMessages]);
+
   const displayMessages = useMemo(() => {
     if (!viewConversationId || viewConversationId === conversationId) return messages;
     return toUIMessages(viewedConversation?.messages || []);
@@ -338,8 +363,12 @@ export default function ChatPage() {
   const displayStatus = viewConversationId === conversationId ? status : 'ready';
 
   const prepareSend = useCallback(async () => {
-    if (!viewConversationId) return conversationId;
-    if (viewConversationId === conversationId) return conversationId;
+    if (!viewConversationId) {
+      if (!authUser?.id) return conversationId ?? undefined;
+      const localId = createLocalConversation();
+      return localId ?? undefined;
+    }
+    if (viewConversationId === conversationId) return conversationId ?? undefined;
 
     // If another chat is still streaming, block sending to avoid mixing contexts.
     if (status !== 'ready') {
@@ -354,7 +383,7 @@ export default function ChatPage() {
     setMessages(hydrated);
     setDocument(viewDocument);
     return target;
-  }, [viewConversationId, conversationId, status, viewedConversation, viewDocument, setMessages]);
+  }, [viewConversationId, conversationId, status, viewedConversation, viewDocument, setMessages, authUser?.id, createLocalConversation]);
 
   // Diagram feature removed.
 
@@ -758,27 +787,7 @@ export default function ChatPage() {
   };
 //asd
   const handleNewLocalConversation = () => {
-    if (!authUser?.id) return;
-    const localId = `local-${Date.now()}`;
-    const localConv = {
-      id: localId,
-      title: `Новый чат ${new Date().toLocaleTimeString()}`,
-      created: new Date().toISOString(),
-      messages: [],
-      local: true,
-    } as any;
-    setConversationsList((prev) => [localConv, ...prev]);
-    setViewConversationId(localId);
-    // While AI is busy in another conversation, don't touch engine state.
-    if (status === 'ready') {
-      setConversationId(localId);
-      setMessages([]);
-      // Reset engine doc on new chat
-      setDocument({ title: '', content: '', isStreaming: false });
-    }
-    // Always reset the visible right panel for the newly viewed chat.
-    setViewDocument({ title: '', content: '', isStreaming: false });
-    localStorage.setItem('activeConversationId', localId);
+    createLocalConversation();
   };
 
   const handleSelectConversation = (conversation: any) => {

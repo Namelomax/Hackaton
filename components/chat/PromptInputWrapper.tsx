@@ -112,7 +112,7 @@ type PromptInputWrapperProps = {
   className?: string;
   selectedPromptId?: string | null;
   documentContent?: string;
-  prepareSend?: () => Promise<string | null> | string | null;
+  prepareSend?: () => Promise<string | null | undefined> | string | null | undefined;
   onUserMessageQueued?: (message: any) => void;
 };
 
@@ -135,8 +135,10 @@ export const PromptInputWrapper = ({
 }: PromptInputWrapperProps) => {
   const submitLockRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [authWarningOpen, setAuthWarningOpen] = useState(false);
   const cancelRequestedRef = useRef(false);
   const preSendAbortRef = useRef<AbortController | null>(null);
+  const authWarningTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleStop = useCallback(() => {
     cancelRequestedRef.current = true;
@@ -162,6 +164,16 @@ export const PromptInputWrapper = ({
     event.preventDefault();
 
     if (status !== 'ready') return;
+    if (!authUser?.id) {
+      setAuthWarningOpen(true);
+      if (authWarningTimeoutRef.current) {
+        clearTimeout(authWarningTimeoutRef.current);
+      }
+      authWarningTimeoutRef.current = setTimeout(() => {
+        setAuthWarningOpen(false);
+      }, 2500);
+      return;
+    }
     if (submitLockRef.current) return;
     submitLockRef.current = true;
     setIsSubmitting(true);
@@ -183,7 +195,7 @@ export const PromptInputWrapper = ({
       // Keep isTextExtractable import as a hint for future gating / UI, but don't await extraction here.
       void preparedFiles.map((f) => (f?.mediaType ? isTextExtractable(f.mediaType) : false));
 
-      const baseConversationId = prepareSend ? await prepareSend() : conversationId;
+      const baseConversationId = prepareSend ? (await prepareSend()) ?? null : conversationId;
       if (baseConversationId === null) return;
 
       const clientMessageId =
@@ -245,7 +257,14 @@ export const PromptInputWrapper = ({
   };
 
 return (
-  <div className={className}>
+  <div className={className ? `relative ${className}` : 'relative'}>
+    {authWarningOpen && (
+      <div className="pointer-events-none absolute -top-10 left-0 right-0 z-10 flex justify-center">
+        <div className="rounded-md border border-neutral-200 bg-white px-3 py-1 text-xs text-neutral-700 shadow-sm">
+          Чтобы отправить сообщение, сначала войдите в аккаунт.
+        </div>
+      </div>
+    )}
     <PromptInput
       onSubmit={handleSubmit}
       className="border rounded-lg shadow-sm p-3 flex flex-col gap-2"

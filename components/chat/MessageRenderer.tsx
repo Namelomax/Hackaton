@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { Message, MessageContent } from '@/components/ai-elements/message';
-import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning';
 import { Response } from '@/components/ai-elements/response';
 import { Actions, Action } from '@/components/ai-elements/actions';
 import { RefreshCcw, Copy, Check, Wrench, Paperclip, FileText, Image as ImageIcon, Pencil, X, Send } from 'lucide-react';
@@ -84,13 +83,33 @@ type Attachment = {
   mediaType?: string;
 };
 
+const getAttachmentExtension = (att: Attachment): string => {
+  const rawName = String(att.name || '').trim();
+  const ext = rawName.includes('.') ? rawName.split('.').pop()?.toLowerCase() : '';
+
+  if (ext) return ext;
+
+  const mt = String(att.mediaType || '').toLowerCase();
+  if (mt.includes('word')) return 'docx';
+  if (mt.includes('presentation') || mt.includes('powerpoint')) return 'pptx';
+  if (mt.includes('spreadsheet') || mt.includes('excel')) return 'xlsx';
+  if (mt.includes('csv')) return 'csv';
+  if (mt.includes('pdf')) return 'pdf';
+  if (mt.startsWith('image/')) return 'image';
+  if (mt.startsWith('text/')) return 'txt';
+
+  return 'file';
+};
+
 const renderAttachment = (att: Attachment, index: number) => {
   const isImage = att.mediaType?.startsWith('image/') && att.url;
   const fallbackName = att.name || 'attachment';
+  const label = getAttachmentExtension(att);
   return (
     <div
       key={att.id || index}
       className="flex items-center gap-3 rounded-lg border bg-muted/30 p-2"
+      title={fallbackName}
     >
       <div className="flex size-12 items-center justify-center overflow-hidden rounded-md border bg-background">
         {isImage ? (
@@ -108,11 +127,11 @@ const renderAttachment = (att: Attachment, index: number) => {
       </div>
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium truncate">{fallbackName}</div>
-        <div className="text-xs text-muted-foreground truncate">{att.mediaType || 'file'}</div>
+        <div className="text-xs text-muted-foreground truncate">Формат: .{label}</div>
       </div>
       {att.url && !att.url.startsWith('data:') && (
         <a
-          className="text-xs text-blue-600 hover:underline"
+          className="text-xs text-primary hover:underline"
           href={att.url}
           target="_blank"
           rel="noreferrer"
@@ -124,43 +143,6 @@ const renderAttachment = (att: Attachment, index: number) => {
   );
 };
 
-const getReasoningDurationSeconds = (part: any): number | undefined => {
-  const metadata = part?.metadata ?? {};
-  const directSeconds = [
-    metadata.durationSeconds,
-    metadata.duration,
-    metadata.thinkingDurationSeconds,
-    metadata.thinking_duration_seconds,
-    metadata.reasoningDurationSeconds,
-  ].find((value) => typeof value === 'number' && Number.isFinite(value) && value > 0);
-  if (typeof directSeconds === 'number') {
-    return Math.round(directSeconds);
-  }
-
-  const durationMs = [
-    metadata.durationMs,
-    metadata.thinkingDurationMs,
-    metadata.thinking_duration_ms,
-    metadata.reasoningDurationMs,
-    metadata.latencyMs,
-    metadata?.thinking?.durationMs,
-  ].find((value) => typeof value === 'number' && Number.isFinite(value) && value > 0);
-
-  if (typeof durationMs === 'number') {
-    return Math.max(1, Math.round(durationMs / 1000));
-  }
-
-  return undefined;
-};
-
-const persistReasoningDuration = (part: any, durationSeconds: number) => {
-  if (!part || !Number.isFinite(durationSeconds)) return;
-  const normalized = Math.max(1, Math.round(durationSeconds));
-  part.metadata = {
-    ...(part.metadata ?? {}),
-    durationSeconds: normalized,
-  };
-};
 
 export const MessageRenderer = ({
   message,
@@ -190,7 +172,6 @@ export const MessageRenderer = ({
   const textParts = message.parts.filter(
     (part: any): part is { type: 'text'; text: string } => part.type === 'text'
   );
-  const reasoningParts = message.parts.filter((part: any) => part.type === 'reasoning');
   const toolParts = message.parts.filter(
     (part: any) => part.type.startsWith('tool-') && !part.type.startsWith('tool-data')
   );
@@ -211,19 +192,6 @@ export const MessageRenderer = ({
             </div>
           </div>
         )}
-
-        {reasoningParts.map((part: any, index: number) => (
-          <Reasoning
-            key={index}
-            className="w-full"
-            isStreaming={status === 'streaming' && index === reasoningParts.length - 1 && isLastMessage}
-            duration={getReasoningDurationSeconds(part)}
-            onDurationMeasured={(seconds) => persistReasoningDuration(part, seconds)}
-          >
-            <ReasoningTrigger />
-            <ReasoningContent>{part.text}</ReasoningContent>
-          </Reasoning>
-        ))}
 
         {textParts.map((part: any, index: number) => {
           try {

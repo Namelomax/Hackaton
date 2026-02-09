@@ -152,11 +152,26 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
     }
   };
 
+  const persistProtocolExample = async () => {
+    const formatted = `# ${displayTitle}\n\n${viewContent}`.trim();
+    if (!formatted || formatted.length < 50) return;
+    try {
+      await fetch('/api/protocol-examples', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: formatted }),
+      });
+    } catch (err) {
+      console.warn('Failed to save protocol example', err);
+    }
+  };
+
   const handleDownloadBundle = async () => {
     if (isBundling) return;
 
     setIsBundling(true);
     try {
+      void persistProtocolExample();
       const JSZip = (await import('jszip')).default;
       const { convertMarkdownToDocx } = await import('@mohtasham/md-to-docx');
       const zip = new JSZip();
@@ -249,6 +264,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
     if (!docxData) return;
 
     try {
+      void persistProtocolExample();
       const response = await fetch('/api/download-docx', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -358,17 +374,19 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
                     <FileText className="size-4" />
                   </Button>
                 )}
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={handleDownloadBundle}
-                  type="button"
-                  title="Скачать ZIP (документ + вложения)"
-                  aria-label="Скачать ZIP (документ + вложения)"
-                  disabled={isBundling}
-                >
-                  <Download className="size-4" />
-                </Button>
+                {docxData && !localDoc.isStreaming && (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={handleDownloadBundle}
+                    type="button"
+                    title="Скачать ZIP (документ + вложения)"
+                    aria-label="Скачать ZIP (документ + вложения)"
+                    disabled={isBundling}
+                  >
+                    <Download className="size-4" />
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="icon"

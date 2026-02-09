@@ -260,9 +260,17 @@ export async function POST(req: Request) {
     messages = [];
   }
 
+  const sender = userId ? `user:${userId}` : 'anon';
+  const clientIp =
+    req.headers.get('x-forwarded-for') ||
+    req.headers.get('x-real-ip') ||
+    'unknown';
+
   console.log('📨 Request info:', {
     messagesCount: messages.length,
     userId: userId || 'anon',
+    sender,
+    clientIp,
     conversationId: conversationId || 'none',
     hasDocumentContent: !!documentContent,
   });

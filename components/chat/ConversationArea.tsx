@@ -51,16 +51,15 @@ export const ConversationArea = ({
     const list = Array.isArray(messages) ? messages : [];
     const seen = new Set<string>();
     const result: any[] = [];
-    for (const msg of list) {
-      const id = msg?.id ? String(msg.id) : '';
-      if (!id) {
-        result.push(msg);
-        continue;
-      }
-      if (seen.has(id)) continue;
+    list.forEach((msg, index) => {
+      const rawId = msg?.id ? String(msg.id) : '';
+      const fallbackId = `temp-${index}-${msg?.role || 'user'}`;
+      const id = rawId || fallbackId;
+      if (seen.has(id)) return;
       seen.add(id);
-      result.push(msg);
+      result.push(rawId ? msg : { ...msg, id });
     }
+    );
     return result;
   }, [messages]);
 
@@ -69,9 +68,9 @@ export const ConversationArea = ({
   return (
     <Conversation key={chatKey}>
       <ConversationContent>
-        {normalizedMessages.map((message) => (
+        {normalizedMessages.map((message, index) => (
           <MessageRenderer
-            key={message.id}
+            key={message.id || `msg-${index}`}
             message={message}
             isLastMessage={message.id === lastMessageId}
             status={status}

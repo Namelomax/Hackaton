@@ -1,7 +1,7 @@
 import { streamText, createUIMessageStream, JsonToSseTransformStream, generateObject } from 'ai';
 import { z } from 'zod';
 import { AgentContext } from './types';
-import { updateConversation, saveConversation } from '@/lib/getPromt';
+import { updateConversation, saveConversation, getRecentProtocolExamples } from '@/lib/getPromt';
 import { ProtocolSchema, TranscriptAnalysisSchema, type Protocol, type TranscriptAnalysis } from '@/lib/schemas/protocol-schema';
 import { generateProtocolDocx } from '@/lib/docx-generator';
 
@@ -91,8 +91,13 @@ async function generateFinalDocument(
   existingDocument?: string,
   temperature: number = 0.1,
 ): Promise<string> {
-  const writeData = (payload: { type: string; data: any }) => {
-    dataStream.write({ type: payload.type, data: payload.data });
+  const writeData = (payload: { type: string; data: any; id?: string; transient?: boolean }) => {
+    dataStream.write({
+      type: payload.type,
+      data: payload.data,
+      ...(payload.id ? { id: payload.id } : {}),
+      ...(payload.transient ? { transient: payload.transient } : {}),
+    });
   };
 
 
@@ -154,6 +159,13 @@ ${conversationContext}
     console.error('Analysis stream error:', error);
   }
 
+  // Шаг 2: Генерация протокола обследования
+  dataStream.write({
+    type: 'text-delta',
+    id: progressId,
+    delta: '📝 Шаг 2/2: Формирование протокола обследования\n',
+  });
+
   try {
     const { object: analysisResult } = await generateObject({
       model,
@@ -163,18 +175,17 @@ ${conversationContext}
     });
     analysis = analysisResult;
     if (!analysisStreamed) {
-      // Выводим результаты анализа, если стриминг не сработал
       if (analysis.hasContradictions && analysis.contradictions.length > 0) {
         dataStream.write({
           type: 'text-delta',
           id: progressId,
-          delta: '⚠️ **Обнаружены противоречия:**\n',
+          delta: '⚠️ Обнаружены противоречия:\n',
         });
         for (const contradiction of analysis.contradictions) {
           dataStream.write({
             type: 'text-delta',
             id: progressId,
-            delta: `  • ${contradiction}\n`,
+            delta: `• ${contradiction}\n`,
           });
         }
         dataStream.write({ type: 'text-delta', id: progressId, delta: '\n' });
@@ -184,13 +195,13 @@ ${conversationContext}
         dataStream.write({
           type: 'text-delta',
           id: progressId,
-          delta: '🤔 **Обнаружены недосказанности:**\n',
+          delta: '🤔 Обнаружены недосказанности:\n',
         });
         for (const ambiguity of analysis.ambiguities) {
           dataStream.write({
             type: 'text-delta',
             id: progressId,
-            delta: `  • ${ambiguity}\n`,
+            delta: `• ${ambiguity}\n`,
           });
         }
         dataStream.write({ type: 'text-delta', id: progressId, delta: '\n' });
@@ -200,13 +211,13 @@ ${conversationContext}
         dataStream.write({
           type: 'text-delta',
           id: progressId,
-          delta: '❗ **Недостающая критическая информация:**\n',
+          delta: '❗ Недостающая критическая информация:\n',
         });
         for (const missing of analysis.missingCriticalInfo) {
           dataStream.write({
             type: 'text-delta',
             id: progressId,
-            delta: `  • ${missing}\n`,
+            delta: `• ${missing}\n`,
           });
         }
         dataStream.write({ type: 'text-delta', id: progressId, delta: '\n' });
@@ -229,33 +240,15 @@ ${conversationContext}
     }
   }
 
-  // Шаг 2: Генерация протокола обследования
-  dataStream.write({
-    type: 'text-delta',
-    id: progressId,
-    delta: '📝 Шаг 2/2: Формирование протокола обследования\n',
-  });
-
-  const protocolReasoningPrompt = `Дай краткое обоснование структуры протокола по этой расшифровке.\n\nФОРМАТ:\nКраткое обоснование:\n- <1-2 факта из расшифровки, которые влияют на структуру>\n- <что будет отражено в вопросах/решениях/открытых вопросах>\n- <какие разделы требуют "Информация не предоставлена", если есть>\n\nОГРАНИЧЕНИЯ:\n- Не добавляй новых фактов.\n- Без Markdown-кода.\n- 3-4 буллета максимум.\n\nРАСШИФРОВКА ВСТРЕЧИ:\n"""\n${conversationContext}\n"""`;
-
-  try {
-    const protocolReasoningStream = await streamText({
-      model,
-      temperature: 0.2,
-      messages: [{ role: 'user', content: protocolReasoningPrompt }],
-    });
-
-    for await (const part of protocolReasoningStream.fullStream) {
-      if (part.type !== 'text-delta') continue;
-      const delta = String(part.text ?? '');
-      if (!delta) continue;
-      dataStream.write({ type: 'text-delta', id: progressId, delta });
-    }
-
-    dataStream.write({ type: 'text-delta', id: progressId, delta: '\n' });
-  } catch (error) {
-    console.error('Protocol reasoning stream error:', error);
-  }
+  const examples = await getRecentProtocolExamples(3).catch(() => []);
+  const examplesBlock = examples
+    .map((ex, idx) => {
+      const trimmed = String(ex.content || '').trim();
+      const safe = trimmed.length > 1500 ? `${trimmed.slice(0, 1500)}\n…` : trimmed;
+      return `Пример ${idx + 1}:\n${safe}`;
+    })
+    .filter(Boolean)
+    .join('\n\n');
 
   const protocolPrompt = `Ты специалист по составлению протоколов обследования.
 
@@ -289,6 +282,11 @@ ${analysis ? `
 - Недостающая информация: ${analysis.missingCriticalInfo.join('; ') || 'отсутствует'}
 ` : ''}
 
+${examplesBlock ? `
+ПРИМЕРЫ УСПЕШНЫХ ПРОТОКОЛОВ (только для стиля и структуры, факты не копируй):
+${examplesBlock}
+` : ''}
+
 РАСШИФРОВКА ВСТРЕЧИ:
 """
 ${conversationContext}
@@ -296,24 +294,47 @@ ${conversationContext}
 
 Сформируй структурированный протокол обследования в соответствии со схемой.`;
 
-  let protocol: Protocol;
+  const protocolMarkdownPrompt = `${protocolPrompt}
+
+ФОРМАТ ВЫВОДА (строго):
+- Верни только текст протокола, без приветствий и пояснений.
+- Первая строка: "ПРОТОКОЛ ОБСЛЕДОВАНИЯ №N".
+- Далее 10 пунктов, каждый начинается с номера и точки.
+- Формат пунктов:
+  1. Дата встречи: ДД.ММ.ГГГГ
+  2. Повестка: <тема>\n• <пункты>
+  3. Участники:\nСо стороны Заказчика <орг>:\nФИО\tДолжность\n<строки>\n\nСо стороны Исполнителя <орг>:\nФИО\tДолжность/роль\n<строки>
+  4. Термины и определения:\n• <термин> – <определение>
+  5. Сокращения и обозначения:\n• <сокращение> – <расшифровка>
+  6. Содержание встречи:\nВ ходе встречи обсуждались следующие вопросы:\n<абзацы/пункты>
+  7. Вопросы:\n1. <вопрос>\n2. <вопрос>\n\nОтветы:\n1. <ответ>\n2. <ответ>
+  8. Решения:\n1. <решение>\nОтветственный: <...>
+  9. Открытые вопросы:\n1. <вопрос>\n2. <вопрос>
+  10. Согласовано:\n\nСо стороны Исполнителя:\tСо стороны Заказчика:\n<орг>\t\t<орг>\n\n<ФИО> /______________\t<ФИО> /______________
+- Строго соблюдай наличие пункта 6 и его формулировку.
+- Не используй fenced code blocks.
+`;
+
+  let protocol: Protocol | null = null;
   let markdownContent = '';
   try {
-    const { object: protocolResult } = await generateObject({
+    writeData({ type: 'data-clear', data: null });
+    writeData({ type: 'data-title', data: 'ПРОТОКОЛ ОБСЛЕДОВАНИЯ…' });
+
+    const markdownStream = await streamText({
       model,
       temperature,
-      schema: ProtocolSchema,
-      prompt: protocolPrompt,
+      messages: [{ role: 'user', content: protocolMarkdownPrompt }],
     });
-    protocol = protocolResult;
 
-    markdownContent = protocolToMarkdown(protocol);
-
-    writeData({ type: 'data-clear', data: null });
-    writeData({ type: 'data-title', data: `ПРОТОКОЛ ОБСЛЕДОВАНИЯ ${protocol.protocolNumber}` });
-
-    for (const line of markdownContent.split(/\n/)) {
-      writeData({ type: 'data-documentDelta', data: `${line}\n` });
+    for await (const part of markdownStream.fullStream) {
+      if (part.type !== 'text-delta') continue;
+      let delta = String(part.text ?? '');
+      if (!delta) continue;
+      delta = delta.replace(/```markdown\s*/gi, '').replace(/```/g, '');
+      if (!delta) continue;
+      markdownContent += delta;
+      writeData({ type: 'data-documentDelta', data: delta });
     }
 
     writeData({ type: 'data-finish', data: null });
@@ -323,6 +344,27 @@ ${conversationContext}
       id: progressId,
       delta: '✅ Протокол обследования сформирован!\n\n',
     });
+  } catch (error) {
+    console.error('Protocol streaming error:', error);
+    dataStream.write({
+      type: 'text-delta',
+      id: progressId,
+      delta: '❌ Ошибка при формировании протокола. Проверьте полноту данных в расшифровке.\n',
+    });
+    dataStream.write({ type: 'text-end', id: progressId });
+    throw error;
+  }
+
+  try {
+    const { object: protocolResult } = await generateObject({
+      model,
+      temperature,
+      schema: ProtocolSchema,
+      prompt: protocolPrompt,
+    });
+    protocol = protocolResult;
+
+    writeData({ type: 'data-title', data: `ПРОТОКОЛ ОБСЛЕДОВАНИЯ ${protocol.protocolNumber}` });
 
     dataStream.write({
       type: 'text-delta',
@@ -349,14 +391,7 @@ ${conversationContext}
       });
     }
   } catch (error) {
-    console.error('Protocol generation error:', error);
-    dataStream.write({
-      type: 'text-delta',
-      id: progressId,
-      delta: '❌ Ошибка при формировании протокола. Проверьте полноту данных в расшифровке.\n',
-    });
-    dataStream.write({ type: 'text-end', id: progressId });
-    throw error;
+    console.error('Protocol struct generation error:', error);
   }
 
   dataStream.write({ type: 'text-end', id: progressId });
@@ -365,7 +400,10 @@ ${conversationContext}
 }
 
 function protocolToMarkdown(protocol: Protocol): string {
-  let md = `ПРОТОКОЛ ОБСЛЕДОВАНИЯ ${protocol.protocolNumber}\n\n`;
+  const normalizedNumber = String(protocol.protocolNumber || '').trim().startsWith('№')
+    ? String(protocol.protocolNumber).trim()
+    : `№${String(protocol.protocolNumber || '').trim()}`;
+  let md = `ПРОТОКОЛ ОБСЛЕДОВАНИЯ ${normalizedNumber}\n\n`;
 
   md += `1.\tДата встречи: ${protocol.meetingDate}\n`;
 
@@ -380,16 +418,18 @@ function protocolToMarkdown(protocol: Protocol): string {
 
   md += `3.\tУчастники:\n`;
   md += `Со стороны Заказчика ${protocol.participants.customer.organizationName}:\n`;
-  md += 'ФИО\tДолжность\n';
+  md += '| ФИО | Должность |\n';
+  md += '| --- | --- |\n';
   protocol.participants.customer.people.forEach((p) => {
-    md += `${p.fullName}\t${p.position}\n`;
+    md += `| ${p.fullName} | ${p.position} |\n`;
   });
 
   md += '\n';
   md += `Со стороны Исполнителя ${protocol.participants.executor.organizationName}:\n`;
-  md += 'ФИО\tДолжность/роль\n';
+  md += '| ФИО | Должность/роль |\n';
+  md += '| --- | --- |\n';
   protocol.participants.executor.people.forEach((p) => {
-    md += `${p.fullName}\t${p.position}\n`;
+    md += `| ${p.fullName} | ${p.position} |\n`;
   });
 
   md += '\n';
@@ -426,9 +466,10 @@ function protocolToMarkdown(protocol: Protocol): string {
     }
   });
   if (protocol.meetingContent.migrationFeatures && protocol.meetingContent.migrationFeatures.length > 0) {
-    md += 'Вкладка\tОсобенности\n';
+    md += '| Вкладка | Особенности |\n';
+    md += '| --- | --- |\n';
     protocol.meetingContent.migrationFeatures.forEach((feat) => {
-      md += `${feat.tab}\t${feat.features}\n`;
+      md += `| ${feat.tab} | ${feat.features} |\n`;
     });
   }
 
@@ -461,9 +502,10 @@ function protocolToMarkdown(protocol: Protocol): string {
   md += '\n';
 
   md += '10.\tСогласовано:\n\n';
-  md += 'Со стороны Исполнителя:\tСо стороны Заказчика:\n';
-  md += `${protocol.approval.executorSignature.organization}\t\t${protocol.approval.customerSignature.organization}\n\n`;
-  md += `${protocol.approval.executorSignature.representative} /______________\t${protocol.approval.customerSignature.representative} /______________\n`;
+  md += '| Со стороны Исполнителя | Со стороны Заказчика |\n';
+  md += '| --- | --- |\n';
+  md += `| ${protocol.approval.executorSignature.organization} | ${protocol.approval.customerSignature.organization} |\n`;
+  md += `| ${protocol.approval.executorSignature.representative} /______________ | ${protocol.approval.customerSignature.representative} /______________ |\n`;
 
   return md;
 }

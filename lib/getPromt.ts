@@ -90,6 +90,10 @@ async function connectDB() {
       DEFINE FIELD created ON prompts TYPE datetime DEFAULT time::now() READONLY;
       DEFINE FIELD updated ON prompts TYPE datetime VALUE time::now();
 
+      DEFINE TABLE protocol_examples SCHEMAFULL;
+      DEFINE FIELD content ON protocol_examples TYPE string;
+      DEFINE FIELD created ON protocol_examples TYPE datetime DEFAULT time::now() READONLY;
+
 DEFINE TABLE conversations SCHEMAFULL;
 
 -- ссылка на пользователей
@@ -204,6 +208,12 @@ export type Conversation = {
   title?: string;
   messages_raw?: string;
   document_content?: string;
+};
+
+export type ProtocolExample = {
+  id: string;
+  content: string;
+  created: string;
 };
 
 function sanitizeMessagePart(part: any): any {
@@ -828,6 +838,32 @@ export async function setUserSelectedPrompt(userId: string, promptId: string): P
   const promptRecord = promptRecordId(prompt.id);
 
   await db.merge(userRecord, { selectedPrompt: promptRecord });
+}
+
+export async function saveProtocolExample(content: string): Promise<ProtocolExample> {
+  await connectDB();
+  const trimmed = String(content || '').trim();
+  const [rec] = await db.create('protocol_examples', { content: trimmed });
+  return {
+    id: rec.id.toString(),
+    content: String((rec as any).content ?? trimmed),
+    created: String((rec as any).created ?? new Date().toISOString()),
+  };
+}
+
+export async function getRecentProtocolExamples(limit: number = 3): Promise<ProtocolExample[]> {
+  await connectDB();
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(10, Math.floor(limit))) : 3;
+  const result = (await db.query(
+    `SELECT * FROM protocol_examples ORDER BY created DESC LIMIT $limit;`,
+    { limit: safeLimit }
+  )) as [any[]];
+  const records = result?.[0] ?? [];
+  return records.map((r: any) => ({
+    id: r.id.toString(),
+    content: String(r.content ?? ''),
+    created: String(r.created ?? ''),
+  }));
 }
 
 
