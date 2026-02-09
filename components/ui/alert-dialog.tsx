@@ -14,7 +14,7 @@ export function AlertDialog({ open, onOpenChange, children }: AlertDialogProps) 
     <AnimatePresence>
       {open && (
         <motion.div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -25,7 +25,7 @@ export function AlertDialog({ open, onOpenChange, children }: AlertDialogProps) 
             animate={{ scale: 1, opacity: 1, y: 0 }}
             exit={{ scale: 0.95, opacity: 0, y: 20 }}
             transition={{ duration: 0.25 }}
-            className="bg-neutral-900 text-white rounded-2xl shadow-lg p-6 w-full max-w-md mx-2"
+            className="bg-white text-black rounded-2xl shadow-lg p-6 w-full max-w-md mx-2"
             onClick={(e) => e.stopPropagation()}
           >
             {children}
@@ -41,15 +41,15 @@ export const AlertDialogContent = ({ children }: { children: React.ReactNode }) 
 );
 
 export const AlertDialogHeader = ({ children }: { children: React.ReactNode }) => (
-  <div className="mb-4 border-b border-neutral-700 pb-2">{children}</div>
+  <div className="mb-4 border-b border-neutral-200 pb-2">{children}</div>
 );
 
 export const AlertDialogTitle = ({ children }: { children: React.ReactNode }) => (
-  <h2 className="text-lg font-semibold text-white">{children}</h2>
+  <h2 className="text-lg font-semibold text-black">{children}</h2>
 );
 
 export const AlertDialogDescription = ({ children }: { children: React.ReactNode }) => (
-  <p className="text-sm text-neutral-400 mt-1">{children}</p>
+  <p className="text-sm text-neutral-600 mt-1">{children}</p>
 );
 
 export const AlertDialogFooter = ({ children }: { children: React.ReactNode }) => (
@@ -62,7 +62,7 @@ export const AlertDialogCancel = ({
 }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
   <button
     {...props}
-    className="px-3 py-1.5 rounded-md bg-neutral-700 hover:bg-neutral-600 transition"
+    className="px-3 py-1.5 rounded-md bg-neutral-100 hover:bg-neutral-200 transition"
   >
     {children}
   </button>

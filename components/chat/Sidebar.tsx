@@ -110,7 +110,7 @@ export const Sidebar = ({
                     <Pencil className="w-3 h-3 opacity-70" />
                   </button>
                   <button
-                    className="shrink-0 p-0.5 rounded hover:bg-muted/40 text-red-500"
+                    className="shrink-0 p-0.5 rounded hover:bg-[#e0b455]/20 text-[#e0b455]"
                     onClick={(event) => {
                       event.stopPropagation();
                       onDelete(conversation);

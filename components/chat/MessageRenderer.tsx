@@ -270,7 +270,7 @@ export const MessageRenderer = ({
             <textarea
               value={editText}
               onChange={(e) => setEditText(e.target.value)}
-              className="w-full min-h-[100px] p-3 border rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full min-h-[100px] p-3 border rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-primary"
               autoFocus
             />
             <div className="flex gap-2">
@@ -281,7 +281,7 @@ export const MessageRenderer = ({
                     setIsEditing(false);
                   }
                 }}
-                className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm"
+                className="flex items-center gap-1 px-3 py-1.5 bg-primary text-black rounded-md hover:bg-primary/90 text-sm"
               >
                 <Send className="size-3" />
                 Отправить

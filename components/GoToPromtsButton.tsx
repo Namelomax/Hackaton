@@ -7,7 +7,7 @@ export default function GoToPromtsButton() {
   return (
     <button
       onClick={() => router.push("/promts")}
-      className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition"
+      className="bg-primary text-black px-4 py-2 rounded hover:bg-primary/90 transition"
     >
       Перейти к странице промтов
     </button>

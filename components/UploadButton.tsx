@@ -33,7 +33,7 @@ export function UploadButton({ onUpload }: { onUpload: (fileId: string, name: st
   }
 
   return (
-    <label className="cursor-pointer px-3 py-2 rounded-md bg-blue-500 text-white hover:bg-blue-600">
+    <label className="cursor-pointer px-3 py-2 rounded-md bg-primary text-black hover:bg-primary/90">
       {loading ? "Загрузка..." : "📎 Прикрепить файл"}
       <input type="file" className="hidden" onChange={handleFileSelect} />
     </label>
