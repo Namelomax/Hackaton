@@ -489,6 +489,8 @@ export const PromptInput = ({
   const handleChange: ChangeEventHandler<HTMLInputElement> = (event) => {
     if (event.currentTarget.files) {
       add(event.currentTarget.files);
+      // Очищаем значение input'а, чтобы позволить выбрать один и тот же файл или другой файл после
+      event.currentTarget.value = '';
     }
   };
 
@@ -523,6 +525,10 @@ export const PromptInput = ({
     ).then((files: FileUIPart[]) => {
       onSubmit({ text, files }, event);
       clear();
+      // Очищаем значение input'а для возможности выбрать файлы снова
+      if (inputRef.current) {
+        inputRef.current.value = '';
+      }
     });
   };
 

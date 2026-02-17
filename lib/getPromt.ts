@@ -94,6 +94,12 @@ async function connectDB() {
       DEFINE FIELD content ON protocol_examples TYPE string;
       DEFINE FIELD created ON protocol_examples TYPE datetime DEFAULT time::now() READONLY;
 
+      DEFINE TABLE protocol_instructions SCHEMAFULL;
+      DEFINE FIELD conversation ON protocol_instructions TYPE record<conversations>;
+      DEFINE FIELD content ON protocol_instructions TYPE string;
+      DEFINE FIELD openQuestions ON protocol_instructions TYPE array<string> DEFAULT [];
+      DEFINE FIELD updated ON protocol_instructions TYPE datetime VALUE time::now();
+
 DEFINE TABLE conversations SCHEMAFULL;
 
 -- ссылка на пользователей
@@ -214,6 +220,14 @@ export type ProtocolExample = {
   id: string;
   content: string;
   created: string;
+};
+
+export type ProtocolInstruction = {
+  id: string;
+  conversationId: string;
+  content: string;
+  openQuestions: string[];
+  updated: string;
 };
 
 function sanitizeMessagePart(part: any): any {
@@ -866,6 +880,52 @@ export async function getRecentProtocolExamples(limit: number = 3): Promise<Prot
   }));
 }
 
+export async function upsertProtocolInstruction(
+  conversationId: string,
+  content: string,
+  openQuestions: string[] = []
+): Promise<ProtocolInstruction | null> {
+  await connectDB();
+  const clean = conversationId.replace(/^conversations:/, '');
+  const recordId = new RecordId('protocol_instructions', clean);
+  const convRecord = new RecordId('conversations', clean);
+
+  const payload = {
+    conversation: convRecord,
+    content: String(content || '').trim(),
+    openQuestions: Array.isArray(openQuestions) ? openQuestions : [],
+  };
+
+  await db.merge(recordId, payload).catch(() => undefined);
+  const rec = await db.select(recordId).catch(() => undefined) as any;
+  const row = Array.isArray(rec) ? rec[0] : rec;
+  if (!row) return null;
+
+  return {
+    id: row.id.toString(),
+    conversationId: String((row as any).conversation ?? ''),
+    content: String((row as any).content ?? ''),
+    openQuestions: Array.isArray((row as any).openQuestions) ? (row as any).openQuestions : [],
+    updated: String((row as any).updated ?? ''),
+  };
+}
+
+export async function getProtocolInstruction(conversationId: string): Promise<ProtocolInstruction | null> {
+  await connectDB();
+  const clean = conversationId.replace(/^conversations:/, '');
+  const recordId = new RecordId('protocol_instructions', clean);
+  const rec = await db.select(recordId).catch(() => undefined) as any;
+  const row = Array.isArray(rec) ? rec[0] : rec;
+  if (!row) return null;
+  return {
+    id: row.id.toString(),
+    conversationId: String((row as any).conversation ?? ''),
+    content: String((row as any).content ?? ''),
+    openQuestions: Array.isArray((row as any).openQuestions) ? (row as any).openQuestions : [],
+    updated: String((row as any).updated ?? ''),
+  };
+}
+
 
 // Получить дефолтный промпт
 export async function getPrompt(): Promise<string> {
@@ -882,7 +942,12 @@ export async function getPrompt(): Promise<string> {
     });
     return convertToPrompt(newPrompt).content;
   }
-  return record.content || DEFAULT_PROMPT;
+  const content = String(record.content ?? "");
+  if (record.isDefault === true && record.title === "Default Assistant" && !content.includes("Файл без текста:")) {
+    await db.merge(record.id.toString(), { content: DEFAULT_PROMPT });
+    return DEFAULT_PROMPT;
+  }
+  return content || DEFAULT_PROMPT;
 }
 
 // Обновить дефолтный промпт

@@ -18,7 +18,7 @@ import remarkBreaks from 'remark-breaks';
 import { Response } from '@/components/ai-elements/response';
 import { Button } from '@/components/ui/button';
 import type { Attachment, DocumentState } from '@/lib/document/types';
-import { extractTitleFromMarkdown, formatDocumentContent, sanitizeFilename } from '@/lib/document/formatting';
+import { buildDocxMarkdown, extractTitleFromMarkdown, formatDocumentContent, sanitizeFilename } from '@/lib/document/formatting';
 
 type DocumentPanelProps = {
   document: DocumentState;
@@ -177,7 +177,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
       const zip = new JSZip();
 
       const docFilename = sanitizeFilename(displayTitle, 'document') + '.docx';
-      const docBody = `# ${displayTitle}\n\n${viewContent}`;
+      const docBody = buildDocxMarkdown(displayTitle, viewContent);
       const docxBlob = await convertMarkdownToDocx(docBody);
       const docxBuffer = await docxBlob.arrayBuffer();
       zip.file(docFilename, docxBuffer);
@@ -299,7 +299,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
 
   const buildDocxData = async (title: string, content: string) => {
     const { convertMarkdownToDocx } = await import('@mohtasham/md-to-docx');
-    const docBody = `# ${title}\n\n${content}`;
+    const docBody = buildDocxMarkdown(title, content);
     const docxBlob = await convertMarkdownToDocx(docBody);
     const docxBuffer = await docxBlob.arrayBuffer();
     return {

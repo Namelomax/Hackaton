@@ -5,6 +5,29 @@ export function formatDocumentContent(raw: string) {
   return normalized.replace(/^(\s+)/gm, (m) => m.replace(/ /g, '\u00A0'));
 }
 
+export function normalizeMarkdownForDocx(raw: string) {
+  if (!raw) return '';
+  let text = raw.replace(/\r\n?/g, '\n');
+
+  // Normalize bullet points into markdown list items.
+  text = text.replace(/^[ \t]*•\s*/gm, '- ');
+  text = text.replace(/([^\n])\s*•\s*/g, '$1\n- ');
+
+  // Ensure markdown table rows start on new lines when pasted inline.
+  text = text.replace(/([^\n])\s*(\|[^\n]*\|)/g, '$1\n$2');
+
+  return text;
+}
+
+export function buildDocxMarkdown(title: string, content: string) {
+  const body = String(content || '').trim();
+  const firstLine = body.split('\n')[0]?.trim() || '';
+  const hasHeading = /^#\s+/.test(firstLine);
+  const hasTitleLine = /^ПРОТОКОЛ ОБСЛЕДОВАНИЯ\b/i.test(firstLine);
+  const withTitle = hasHeading || hasTitleLine ? body : `# ${title}\n\n${body}`;
+  return normalizeMarkdownForDocx(withTitle);
+}
+
 export function extractTitleFromMarkdown(markdown?: string | null): string | null {
   const text = String(markdown || '').replace(/\r\n?/g, '\n');
   if (!text.trim()) return null;

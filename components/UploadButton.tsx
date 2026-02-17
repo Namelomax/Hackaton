@@ -29,6 +29,8 @@ export function UploadButton({ onUpload }: { onUpload: (fileId: string, name: st
       alert("Ошибка при загрузке файла");
     } finally {
       setLoading(false);
+      // Очищаем значение input'а для возможности выбрать один и тот же файл снова
+      e.target.value = '';
     }
   }
 

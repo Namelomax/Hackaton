@@ -1,10 +1,5 @@
 import { z } from 'zod';
 
-/**
- * Zod схема для протокола обследования
- * Структура строго соответствует формату документа
- */
-
 // Участник (для таблиц)
 export const ParticipantSchema = z.object({
   fullName: z.string().describe('ФИО'),
@@ -124,3 +119,11 @@ export const TranscriptAnalysisSchema = z.object({
 });
 
 export type TranscriptAnalysis = z.infer<typeof TranscriptAnalysisSchema>;
+
+// Схема инструкции по формированию протокола
+export const ProtocolInstructionSchema = z.object({
+  instruction: z.string().describe('Подробная инструкция по созданию протокола'),
+  openQuestions: z.array(z.string()).describe('Список вопросов для уточнения'),
+});
+
+export type ProtocolInstruction = z.infer<typeof ProtocolInstructionSchema>;

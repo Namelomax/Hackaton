@@ -15,14 +15,11 @@ const openrouter = createOpenRouter({
   baseURL: 'https://openrouter.ai/api/v1',
   compatibility: 'strict',
   headers: {
-    ...(process.env.OPENROUTER_REFERER ? { 'HTTP-Referer': process.env.OPENROUTER_REFERER } : {}),
     'X-Title': 'AISDK',
   },
 });
 
-// Включаем reasoning у модели по умолчанию: OpenRouter прокидывает этот флаг дальше в модель
-// (для mimo-v2-flash reasoning заявлен в capabilities). budget_tokens можно отрегулировать при необходимости.
-const model = openrouter.chat('tngtech/deepseek-r1t2-chimera:free');
+const model = openrouter.chat('arcee-ai/trinity-large-preview:free');
 
 let cachedPrompt: string | null = null;
 

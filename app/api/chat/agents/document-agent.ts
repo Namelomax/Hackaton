@@ -1,8 +1,7 @@
-import { streamText, createUIMessageStream, JsonToSseTransformStream, generateObject } from 'ai';
-import { z } from 'zod';
+import { createUIMessageStream, JsonToSseTransformStream, streamObject } from 'ai';
 import { AgentContext } from './types';
-import { updateConversation, saveConversation, getRecentProtocolExamples } from '@/lib/getPromt';
-import { ProtocolSchema, TranscriptAnalysisSchema, type Protocol, type TranscriptAnalysis } from '@/lib/schemas/protocol-schema';
+import { updateConversation, saveConversation } from '@/lib/getPromt';
+import { ProtocolSchema, type Protocol } from '@/lib/schemas/protocol-schema';
 import { generateProtocolDocx } from '@/lib/docx-generator';
 
 function extractMessageText(msg: any): string {
@@ -22,6 +21,86 @@ function extractMessageText(msg: any): string {
     }
   }
   return '';
+}
+
+function coerceProtocol(partial: Partial<Protocol>): Protocol {
+  const toString = (value: any) => (value == null ? '' : String(value));
+  const toArray = <T>(value: any): T[] => (Array.isArray(value) ? value : []);
+  const toPeople = (value: any) =>
+    toArray(value).map((p: any) => ({
+      fullName: toString(p?.fullName || p?.name),
+      position: toString(p?.position || p?.role),
+    }));
+
+  return {
+    protocolNumber: toString(partial.protocolNumber),
+    meetingDate: toString(partial.meetingDate),
+    agenda: {
+      title: toString(partial.agenda?.title),
+      items: toArray<string>(partial.agenda?.items).map(toString),
+    },
+    participants: {
+      customer: {
+        organizationName: toString(partial.participants?.customer?.organizationName),
+        people: toPeople(partial.participants?.customer?.people),
+      },
+      executor: {
+        organizationName: toString(partial.participants?.executor?.organizationName),
+        people: toPeople(partial.participants?.executor?.people),
+      },
+    },
+    termsAndDefinitions: toArray(partial.termsAndDefinitions).map((item: any) => ({
+      term: toString(item?.term),
+      definition: toString(item?.definition),
+    })),
+    abbreviations: toArray(partial.abbreviations).map((item: any) => ({
+      abbreviation: toString(item?.abbreviation),
+      fullForm: toString(item?.fullForm),
+    })),
+    meetingContent: {
+      introduction: toString(partial.meetingContent?.introduction || ''),
+      topics: toArray(partial.meetingContent?.topics).map((topic: any) => ({
+        title: toString(topic?.title),
+        content: toString(topic?.content),
+        subtopics: toArray(topic?.subtopics).map((sub: any) => ({
+          title: toString(sub?.title || ''),
+          content: toString(sub?.content),
+        })),
+      })),
+      migrationFeatures: toArray(partial.meetingContent?.migrationFeatures).map((feat: any) => ({
+        tab: toString(feat?.tab),
+        features: toString(feat?.features),
+      })),
+    },
+    questionsAndAnswers: toArray(partial.questionsAndAnswers).map((qa: any) => ({
+      question: toString(qa?.question),
+      answer: toString(qa?.answer),
+    })),
+    decisions: toArray(partial.decisions).map((decision: any) => ({
+      decision: toString(decision?.decision),
+      responsible: toString(decision?.responsible),
+    })),
+    openQuestions: toArray<string>(partial.openQuestions).map(toString),
+    approval: {
+      executorSignature: {
+        organization: toString(partial.approval?.executorSignature?.organization),
+        representative: toString(partial.approval?.executorSignature?.representative),
+      },
+      customerSignature: {
+        organization: toString(partial.approval?.customerSignature?.organization),
+        representative: toString(partial.approval?.customerSignature?.representative),
+      },
+    },
+  };
+}
+
+function stripTimecodeMarkers(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(/\{\{ТС:\s*\d{1,2}:\d{2}(?::\d{2})?\}\}/gi, '')
+    .replace(/\[TC:\s*\d{1,2}:\d{2}(?::\d{2})?\]/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 export async function runDocumentAgent(context: AgentContext) {
@@ -51,7 +130,8 @@ export async function runDocumentAgent(context: AgentContext) {
           userPrompt,
           writer,
           model,
-          documentContent
+          documentContent,
+          conversationId
         );
       } catch (error) {
         console.error('Document generation error:', error);
@@ -89,6 +169,7 @@ async function generateFinalDocument(
   dataStream: any,
   model: any,
   existingDocument?: string,
+  conversationId?: string | null,
   temperature: number = 0.1,
 ): Promise<string> {
   const writeData = (payload: { type: string; data: any; id?: string; transient?: boolean }) => {
@@ -105,163 +186,38 @@ async function generateFinalDocument(
   const conversationContext = messages
     .map((msg) => {
       const text = extractMessageText(msg);
-      return text ? `${msg.role}: ${text}` : '';
+      const cleaned = stripTimecodeMarkers(text);
+      return cleaned ? `${msg.role}: ${cleaned}` : '';
     })
     .filter(Boolean)
     .join('\n');
 
   const progressId = `protocol-${crypto.randomUUID()}`;
   dataStream.write({ type: 'text-start', id: progressId });
-  
-  // Шаг 1: Анализ расшифровки на противоречия и недосказанности
+
   dataStream.write({
     type: 'text-delta',
     id: progressId,
-    delta: '🔍 Шаг 1/2: Анализ расшифровки на противоречия и недосказанности\n',
+    delta: '📝 Формирование протокола обследования\n',
   });
-
-  const analysisPrompt = `Ты аналитик, проверяющий расшифровку встречи с заказчиком.
-
-ТВОЯ ЗАДАЧА:
-1. Проверить расшифровку на ПРОТИВОРЕЧИЯ (взаимоисключающие утверждения, несоответствия)
-2. Найти НЕДОСКАЗАННОСТИ (неясные формулировки, недостающие детали, неполные ответы)
-3. Определить КРИТИЧЕСКИ ВАЖНУЮ недостающую информацию для протокола обследования
-
-РАСШИФРОВКА ВСТРЕЧИ:
-"""
-${conversationContext}
-"""
-
-Проанализируй текст и верни структурированный анализ.`;
-
-  let analysis: TranscriptAnalysis | undefined;
-  let analysisStreamed = false;
-  const analysisStreamPrompt = `Сделай краткий, но конкретный анализ расшифровки.\n\nФОРМАТ ВЫВОДА (строго):\n⚠️ Обнаружены противоречия: <список через • на одной строке или несколько строк>\n\n🤔 Обнаружены недосказанности: <список через •>\n\n❗ Недостающая критическая информация: <список через •>\n\n✅ Анализ завершен. Уровень уверенности: высокий|средний|низкий\n\nОГРАНИЧЕНИЯ:\n- Не добавляй лишних разделов.\n- Не используй Markdown-блоки кода.\n- Если пунктов нет, укажи "нет" после двоеточия.\n\nРАСШИФРОВКА ВСТРЕЧИ:\n"""\n${conversationContext}\n"""`;
-  try {
-    const analysisStream = await streamText({
-      model,
-      temperature: 0.2,
-      messages: [{ role: 'user', content: analysisStreamPrompt }],
-    });
-
-    for await (const part of analysisStream.fullStream) {
-      if (part.type !== 'text-delta') continue;
-      const delta = String(part.text ?? '');
-      if (!delta) continue;
-      dataStream.write({ type: 'text-delta', id: progressId, delta });
-      analysisStreamed = true;
-    }
-
-    if (analysisStreamed) {
-      dataStream.write({ type: 'text-delta', id: progressId, delta: '\n' });
-    }
-  } catch (error) {
-    console.error('Analysis stream error:', error);
-  }
-
-  // Шаг 2: Генерация протокола обследования
-  dataStream.write({
-    type: 'text-delta',
-    id: progressId,
-    delta: '📝 Шаг 2/2: Формирование протокола обследования\n',
-  });
-
-  try {
-    const { object: analysisResult } = await generateObject({
-      model,
-      temperature: 0.2,
-      schema: TranscriptAnalysisSchema,
-      prompt: analysisPrompt,
-    });
-    analysis = analysisResult;
-    if (!analysisStreamed) {
-      if (analysis.hasContradictions && analysis.contradictions.length > 0) {
-        dataStream.write({
-          type: 'text-delta',
-          id: progressId,
-          delta: '⚠️ Обнаружены противоречия:\n',
-        });
-        for (const contradiction of analysis.contradictions) {
-          dataStream.write({
-            type: 'text-delta',
-            id: progressId,
-            delta: `• ${contradiction}\n`,
-          });
-        }
-        dataStream.write({ type: 'text-delta', id: progressId, delta: '\n' });
-      }
-
-      if (analysis.hasAmbiguities && analysis.ambiguities.length > 0) {
-        dataStream.write({
-          type: 'text-delta',
-          id: progressId,
-          delta: '🤔 Обнаружены недосказанности:\n',
-        });
-        for (const ambiguity of analysis.ambiguities) {
-          dataStream.write({
-            type: 'text-delta',
-            id: progressId,
-            delta: `• ${ambiguity}\n`,
-          });
-        }
-        dataStream.write({ type: 'text-delta', id: progressId, delta: '\n' });
-      }
-
-      if (analysis.missingCriticalInfo.length > 0) {
-        dataStream.write({
-          type: 'text-delta',
-          id: progressId,
-          delta: '❗ Недостающая критическая информация:\n',
-        });
-        for (const missing of analysis.missingCriticalInfo) {
-          dataStream.write({
-            type: 'text-delta',
-            id: progressId,
-            delta: `• ${missing}\n`,
-          });
-        }
-        dataStream.write({ type: 'text-delta', id: progressId, delta: '\n' });
-      }
-
-      dataStream.write({
-        type: 'text-delta',
-        id: progressId,
-        delta: `✅ Анализ завершен. Уровень уверенности: ${analysis.confidence === 'high' ? 'высокий' : analysis.confidence === 'medium' ? 'средний' : 'низкий'}\n\n`,
-      });
-    }
-  } catch (error) {
-    console.error('Analysis error:', error);
-    if (!analysisStreamed) {
-      dataStream.write({
-        type: 'text-delta',
-        id: progressId,
-        delta: '⚠️ Не удалось провести полный анализ, продолжаю генерацию протокола...\n\n',
-      });
-    }
-  }
-
-  const examples = await getRecentProtocolExamples(3).catch(() => []);
-  const examplesBlock = examples
-    .map((ex, idx) => {
-      const trimmed = String(ex.content || '').trim();
-      const safe = trimmed.length > 1500 ? `${trimmed.slice(0, 1500)}\n…` : trimmed;
-      return `Пример ${idx + 1}:\n${safe}`;
-    })
-    .filter(Boolean)
-    .join('\n\n');
 
   const protocolPrompt = `Ты специалист по составлению протоколов обследования.
 
 ТВОЯ ЗАДАЧА:
-Создать протокол обследования на основе расшифровки встречи с заказчиком.
+Создать структурированный протокол обследования на основе диалога между агентом и клиентом.
 
 СТРОГИЕ ТРЕБОВАНИЯ:
 1. Протокол ДОЛЖЕН содержать ВСЕ 10 разделов
-2. НЕ ИМПРОВИЗИРУЙ - используй ТОЛЬКО факты из расшифровки
+2. НЕ ИМПРОВИЗИРУЙ - используй ТОЛЬКО факты из диалога
 3. Если информация отсутствует, укажи это явно (например, "Информация не предоставлена")
 4. Даты должны быть в формате ДД.ММ.ГГГГ
 5. Все участники должны быть указаны с полными ФИО и должностями
 6. Таблицы должны быть заполнены корректно
+7. Содержание встречи заполняй подробно и структурированно
+8. Вопросы и ответы должны быть четко разделены
+9. Решения ДОЛЖНЫ иметь указание на ответственного
+10. НЕ включай в протокол гипотетические/примерные формулировки ("например", "может быть", "допустим", "возможно"). Такие фразы не считаются фактом.
+11. Раздел "Особенности миграции" заполняй только если это прямо подтвержденный факт, а не пример или гипотеза.
 
 СТРУКТУРА ПРОТОКОЛА:
 1. Номер протокола и дата встречи
@@ -275,77 +231,72 @@ ${conversationContext}
 9. Открытые вопросы
 10. Согласовано (подписи)
 
-${analysis ? `
-РЕЗУЛЬТАТЫ АНАЛИЗА:
-- Противоречия: ${analysis.contradictions.join('; ') || 'не обнаружены'}
-- Недосказанности: ${analysis.ambiguities.join('; ') || 'не обнаружены'}
-- Недостающая информация: ${analysis.missingCriticalInfo.join('; ') || 'отсутствует'}
-` : ''}
-
-${examplesBlock ? `
-ПРИМЕРЫ УСПЕШНЫХ ПРОТОКОЛОВ (только для стиля и структуры, факты не копируй):
-${examplesBlock}
-` : ''}
-
-РАСШИФРОВКА ВСТРЕЧИ:
+ПОЛНЫЙ ДИАЛОГ:
 """
 ${conversationContext}
 """
 
-Сформируй структурированный протокол обследования в соответствии со схемой.`;
-
-  const protocolMarkdownPrompt = `${protocolPrompt}
-
-ФОРМАТ ВЫВОДА (строго):
-- Верни только текст протокола, без приветствий и пояснений.
-- Первая строка: "ПРОТОКОЛ ОБСЛЕДОВАНИЯ №N".
-- Далее 10 пунктов, каждый начинается с номера и точки.
-- Формат пунктов:
-  1. Дата встречи: ДД.ММ.ГГГГ
-  2. Повестка: <тема>\n• <пункты>
-  3. Участники:\nСо стороны Заказчика <орг>:\nФИО\tДолжность\n<строки>\n\nСо стороны Исполнителя <орг>:\nФИО\tДолжность/роль\n<строки>
-  4. Термины и определения:\n• <термин> – <определение>
-  5. Сокращения и обозначения:\n• <сокращение> – <расшифровка>
-  6. Содержание встречи:\nВ ходе встречи обсуждались следующие вопросы:\n<абзацы/пункты>
-  7. Вопросы:\n1. <вопрос>\n2. <вопрос>\n\nОтветы:\n1. <ответ>\n2. <ответ>
-  8. Решения:\n1. <решение>\nОтветственный: <...>
-  9. Открытые вопросы:\n1. <вопрос>\n2. <вопрос>
-  10. Согласовано:\n\nСо стороны Исполнителя:\tСо стороны Заказчика:\n<орг>\t\t<орг>\n\n<ФИО> /______________\t<ФИО> /______________
-- Строго соблюдай наличие пункта 6 и его формулировку.
-- Не используй fenced code blocks.
-`;
+Сформируй корректный протокол обследования в соответствии со схемой.`;
 
   let protocol: Protocol | null = null;
   let markdownContent = '';
-  try {
-    writeData({ type: 'data-clear', data: null });
-    writeData({ type: 'data-title', data: 'ПРОТОКОЛ ОБСЛЕДОВАНИЯ…' });
 
-    const markdownStream = await streamText({
+  try {
+    const { partialObjectStream } = streamObject({
       model,
       temperature,
-      messages: [{ role: 'user', content: protocolMarkdownPrompt }],
+      schema: ProtocolSchema,
+      prompt: protocolPrompt,
     });
 
-    for await (const part of markdownStream.fullStream) {
-      if (part.type !== 'text-delta') continue;
-      let delta = String(part.text ?? '');
-      if (!delta) continue;
-      delta = delta.replace(/```markdown\s*/gi, '').replace(/```/g, '');
-      if (!delta) continue;
-      markdownContent += delta;
-      writeData({ type: 'data-documentDelta', data: delta });
+    let lastMarkdown = '';
+    let lastTitle = '';
+
+    for await (const partial of partialObjectStream) {
+      const safeProtocol = coerceProtocol(partial as Partial<Protocol>);
+      protocol = safeProtocol;
+
+      let nextMarkdown = '';
+      try {
+        nextMarkdown = protocolToMarkdown(safeProtocol);
+      } catch {
+        continue;
+      }
+
+      if (!nextMarkdown || nextMarkdown === lastMarkdown) continue;
+
+      if (safeProtocol.protocolNumber) {
+        const nextTitle = `ПРОТОКОЛ ОБСЛЕДОВАНИЯ ${safeProtocol.protocolNumber}`.trim();
+        if (nextTitle && nextTitle !== lastTitle) {
+          writeData({ type: 'data-title', data: nextTitle, transient: true });
+          lastTitle = nextTitle;
+        }
+      }
+
+      writeData({ type: 'data-clear', data: null, transient: true });
+      writeData({ type: 'data-documentDelta', data: nextMarkdown, transient: true });
+
+      lastMarkdown = nextMarkdown;
+      markdownContent = nextMarkdown;
     }
 
-    writeData({ type: 'data-finish', data: null });
+    writeData({ type: 'data-finish', data: null, transient: true });
 
-    dataStream.write({
-      type: 'text-delta',
-      id: progressId,
-      delta: '✅ Протокол обследования сформирован!\n\n',
+    if (!protocol) {
+      throw new Error('Failed to generate protocol');
+    }
+
+    const docxBuffer = await generateProtocolDocx(protocol);
+    const base64Docx = docxBuffer.toString('base64');
+    writeData({
+      type: 'data-docx',
+      data: {
+        content: base64Docx,
+        filename: `Протокол_обследования_${protocol.protocolNumber.replace(/[^0-9]/g, '')}_${protocol.meetingDate.replace(/\./g, '-')}.docx`,
+      },
     });
   } catch (error) {
-    console.error('Protocol streaming error:', error);
+    console.error('Protocol generation error:', error);
     dataStream.write({
       type: 'text-delta',
       id: progressId,
@@ -355,47 +306,7 @@ ${conversationContext}
     throw error;
   }
 
-  try {
-    const { object: protocolResult } = await generateObject({
-      model,
-      temperature,
-      schema: ProtocolSchema,
-      prompt: protocolPrompt,
-    });
-    protocol = protocolResult;
-
-    writeData({ type: 'data-title', data: `ПРОТОКОЛ ОБСЛЕДОВАНИЯ ${protocol.protocolNumber}` });
-
-    dataStream.write({
-      type: 'text-delta',
-      id: progressId,
-      delta: '📄 Протокол готов для скачивания в формате .docx\n',
-    });
-
-    try {
-      const docxBuffer = await generateProtocolDocx(protocol);
-      const base64Docx = docxBuffer.toString('base64');
-      writeData({
-        type: 'data-docx',
-        data: {
-          content: base64Docx,
-          filename: `Протокол_обследования_${protocol.protocolNumber.replace(/[^0-9]/g, '')}_${protocol.meetingDate.replace(/\./g, '-')}.docx`,
-        },
-      });
-    } catch (docxError) {
-      console.error('DOCX generation error:', docxError);
-      dataStream.write({
-        type: 'text-delta',
-        id: progressId,
-        delta: '⚠️ Не удалось сгенерировать .docx файл\n',
-      });
-    }
-  } catch (error) {
-    console.error('Protocol struct generation error:', error);
-  }
-
   dataStream.write({ type: 'text-end', id: progressId });
-
   return markdownContent;
 }
 
