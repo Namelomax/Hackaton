@@ -72,8 +72,7 @@ ${documentMarkdown}
     const response = await generateText({
       model,
       prompt: reviewPrompt,
-      temperature: 0.3, // Низкая температура для более надежного результата
-      maxCompletionTokens: 2000,
+      temperature: 0.1, // Низкая температура для более надежного результата
     });
 
     // Парсим JSON ответ
