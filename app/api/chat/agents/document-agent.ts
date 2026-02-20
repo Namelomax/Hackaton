@@ -386,26 +386,26 @@ function protocolToMarkdown(protocol: Protocol): string {
 
   md += '\n';
 
-  md += `7.\tВопросы:\n`;
+  md += `7.\tВопросы:\n\n`;
   protocol.questionsAndAnswers.forEach((qa, i) => {
     md += `${i + 1}.\t${qa.question}\n`;
   });
-  md += '\nОтветы:\n';
+  md += '\n\nОтветы:\n\n';
   protocol.questionsAndAnswers.forEach((qa, i) => {
     md += `${i + 1}.\t${qa.answer}\n`;
   });
 
-  md += '\n';
+  md += '\n\n';
 
-  md += `8.\tРешения:\n`;
+  md += `8.\tРешения:\n\n`;
   protocol.decisions.forEach((decision, i) => {
     md += `${i + 1}.\t${decision.decision}\n`;
     md += `Ответственный: ${decision.responsible}\n`;
   });
 
-  md += '\n';
+  md += '\n\n';
 
-  md += `9.\tОткрытые вопросы:\n`;
+  md += `9.\tОткрытые вопросы:\n\n`;
   protocol.openQuestions.forEach((q, i) => {
     md += `${i + 1}.\t${q}\n`;
   });

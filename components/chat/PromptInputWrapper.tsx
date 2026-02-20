@@ -114,6 +114,7 @@ type PromptInputWrapperProps = {
   documentContent?: string;
   prepareSend?: () => Promise<string | null | undefined> | string | null | undefined;
   onUserMessageQueued?: (message: any) => void;
+  onOpenAuthDialog?: () => void;
 };
 
 export const PromptInputWrapper = ({
@@ -132,6 +133,7 @@ export const PromptInputWrapper = ({
   documentContent,
   prepareSend,
   onUserMessageQueued,
+  onOpenAuthDialog,
 }: PromptInputWrapperProps) => {
   const submitLockRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -152,7 +154,6 @@ export const PromptInputWrapper = ({
       stop();
     } catch {}
 
-    // Release local submit lock immediately so user isn't stuck waiting.
     submitLockRef.current = false;
     setIsSubmitting(false);
   }, [stop]);
@@ -172,6 +173,7 @@ export const PromptInputWrapper = ({
       authWarningTimeoutRef.current = setTimeout(() => {
         setAuthWarningOpen(false);
       }, 2500);
+      onOpenAuthDialog?.();
       return;
     }
     if (submitLockRef.current) return;
@@ -192,7 +194,6 @@ export const PromptInputWrapper = ({
       if (!hasPayload) return;
 
       // Avoid blocking UI on client-side extraction; server performs extraction/injection.
-      // Keep isTextExtractable import as a hint for future gating / UI, but don't await extraction here.
       void preparedFiles.map((f) => (f?.mediaType ? isTextExtractable(f.mediaType) : false));
 
       const baseConversationId = prepareSend ? (await prepareSend()) ?? null : conversationId;

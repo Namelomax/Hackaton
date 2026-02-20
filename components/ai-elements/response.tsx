@@ -14,6 +14,9 @@ export const Response = memo(
         "[&_a]:font-semibold [&_a]:underline-offset-4 [&_a:hover]:underline",
         "[&_a]:text-primary",
         "group-[.is-user]:[&_a]:text-primary-foreground",
+        // Сбрасываем счетчик для каждого <ol> элемента, чтобы нумерация начиналась сначала
+        "[&_ol]:list-decimal [&_ol]:ml-4",
+        "[&_ol_ol]:list-decimal",
         className
       )}
       {...props}

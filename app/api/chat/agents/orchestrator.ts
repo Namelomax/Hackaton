@@ -25,13 +25,6 @@ function extractMessageText(msg: any): string {
   return '';
 }
 
-function stripEmbeddedAttachments(text: string): string {
-  if (!text) return '';
-  return String(text)
-    .replace(/\n---\nВложенный файл:[\s\S]*?\n---/g, '')
-    .replace(/<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi, '')
-    .trim();
-}
 
 function uiMessageText(msg: any): string {
   if (!msg) return '';

@@ -494,15 +494,53 @@ export const PromptInput = ({
     }
   };
 
-  const convertBlobUrlToDataUrl = async (url: string): Promise<string> => {
+  /**
+   * Uploads a local blob: URL directly to Vercel Blob storage and returns the
+   * resulting public HTTPS URL.  This keeps the file data out of the chat API
+   * request body, avoiding the 4.5 MB Vercel function payload limit.
+   *
+   * Falls back to a base64 data URL if Vercel Blob is not configured (e.g.
+   * during local development without BLOB_READ_WRITE_TOKEN).
+   */
+  const uploadBlobUrl = async (url: string, filename: string): Promise<string> => {
     const response = await fetch(url);
-    const blob = await response.blob();
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
+    const fileBlob = await response.blob();
+    
+    // Проверяем размер файла
+    const fileSizeMB = fileBlob.size / (1024 * 1024);
+    
+    // Для файлов < 3 MB используем data URL (работает везде, включая локальную разработку)
+    // Для файлов >= 3 MB пробуем Vercel Blob (требует BLOB_READ_WRITE_TOKEN в .env)
+    if (fileSizeMB < 3) {
+      console.log(`[PromptInput] Small file (${fileSizeMB.toFixed(2)} MB), using data URL`);
+      return new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(fileBlob);
+      });
+    }
+    
+    // Для больших файлов пытаемся использовать Vercel Blob
+    try {
+      console.log(`[PromptInput] Large file (${fileSizeMB.toFixed(2)} MB), uploading to Vercel Blob...`);
+      const { upload } = await import('@vercel/blob/client');
+      const result = await upload(filename, fileBlob, {
+        access: 'public',
+        handleUploadUrl: '/api/upload/blob-token',
+      });
+      console.log(`[PromptInput] Upload successful: ${result.url}`);
+      return result.url;
+    } catch (uploadErr) {
+      console.warn('[PromptInput] Vercel Blob upload failed, falling back to data URL:', uploadErr);
+      // Fallback: convert to base64 data URL so the app still works locally.
+      return new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(fileBlob);
+      });
+    }
   };
 
   const handleSubmit: FormEventHandler<HTMLFormElement> = (event) => {
@@ -511,13 +549,14 @@ export const PromptInput = ({
     const formData = new FormData(event.currentTarget);
     const text = (formData.get("message") as string) || "";
 
-    // Convert blob URLs to data URLs asynchronously
+    // Upload blob: URLs to Vercel Blob (or fall back to data URL) so the chat
+    // request body never contains raw file bytes.
     Promise.all(
       items.map(async ({ id, ...item }) => {
         if (item.url && item.url.startsWith("blob:")) {
           return {
             ...item,
-            url: await convertBlobUrlToDataUrl(item.url),
+            url: await uploadBlobUrl(item.url, item.filename ?? 'attachment'),
           };
         }
         return item;

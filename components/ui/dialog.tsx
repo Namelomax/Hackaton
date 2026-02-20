@@ -10,6 +10,16 @@ interface DialogProps {
 }
 
 export function Dialog({ open, onOpenChange, children }: DialogProps) {
+  // Close on Escape key
+  React.useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onOpenChange(false);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [open, onOpenChange]);
+
   return (
     <AnimatePresence>
       {open && (
@@ -18,7 +28,8 @@ export function Dialog({ open, onOpenChange, children }: DialogProps) {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          onClick={() => onOpenChange(false)}
+          // Close on mousedown on backdrop (before mouseup), but not when drag started inside.
+          onMouseDown={() => onOpenChange(false)}
         >
           <motion.div
             initial={{ scale: 0.95, opacity: 0, y: 20 }}
@@ -26,7 +37,8 @@ export function Dialog({ open, onOpenChange, children }: DialogProps) {
             exit={{ scale: 0.95, opacity: 0, y: 20 }}
             transition={{ duration: 0.25 }}
             className="bg-white text-black rounded-2xl shadow-lg p-6 w-full max-w-md mx-2"
-            onClick={(e) => e.stopPropagation()}
+            // Stop propagation on mousedown so backdrop never sees it.
+            onMouseDown={(e) => e.stopPropagation()}
           >
             {children}
           </motion.div>

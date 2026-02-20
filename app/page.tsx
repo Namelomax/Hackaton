@@ -22,6 +22,12 @@ export default function ChatPage() {
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authHintFromPrompt, setAuthHintFromPrompt] = useState(false);
+  const handleAuthOpenChange = (open: boolean) => {
+    setAuthOpen(open);
+    if (!open) setAuthHintFromPrompt(false);
+  };
   const toggleAuthMode = () => setAuthMode((prev) => (prev === 'login' ? 'register' : 'login'));
   // initialMessages теперь используется только как начальное пустое значение;
   // дальнейшая загрузка идет напрямую через setMessages из useChat
@@ -299,16 +305,6 @@ export default function ChatPage() {
         updateEngineDocument((prev: DocumentState) => ({
           ...prev,
           content: prev.content + normalized.data,
-        }));
-      }
-
-      if (normalized.type === 'data-documentPatch') {
-        const patch = normalized.data as DocumentPatch;
-        updateEngineDocument((prev: DocumentState) => ({
-          ...prev,
-          // Apply patch without clearing the document
-          content: applyDocumentPatches(prev.content || '', [patch]),
-          isStreaming: true,
         }));
       }
 
@@ -868,12 +864,15 @@ export default function ChatPage() {
         authUsername={authUsername}
         authPassword={authPassword}
         authMode={authMode}
+        authOpen={authOpen}
+        setAuthOpen={handleAuthOpenChange}
         onAuth={handleAuth}
         onLogout={handleLogout}
         setAuthUsername={setAuthUsername}
         setAuthPassword={setAuthPassword}
         setAuthMode={setAuthMode}
         toggleAuthMode={toggleAuthMode}
+        showAuthHint={authHintFromPrompt}
       />
 
       {/* Основная область */}
@@ -924,13 +923,23 @@ export default function ChatPage() {
                 documentContent={document.content}
                 prepareSend={prepareSend}
                 onUserMessageQueued={undefined}
+                onOpenAuthDialog={() => {
+                  setAuthMode('login');
+                  setAuthHintFromPrompt(true);
+                  setAuthOpen(true);
+                }}
               />
             </div>
           </div>
         </div>
         {/* Правая часть — документ */}
         <div className="flex-1 min-w-0">
-          <DocumentPanel document={viewDocument} onEdit={handleDocumentEdit} attachments={attachedFiles} />
+          <DocumentPanel 
+            document={viewDocument} 
+            onEdit={handleDocumentEdit} 
+            attachments={attachedFiles}
+            onSendReview={(text) => setInput(text)}
+          />
         </div>
       </div>
     </div>
