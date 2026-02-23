@@ -23,6 +23,92 @@ npm run dev
 
 Открыть http://localhost:3000
 
+## Совместная работа с GitHub (VS Code)
+
+### 1. Установка проекта на ПК
+
+```bash
+git clone https://github.com/Namelomax/Hackaton.git
+cd Hackaton
+npm install
+cp .env.example .env.local # если файла нет — создать .env.local вручную
+npm run dev
+```
+
+Если `cp .env.example .env.local` не сработал, просто создайте `.env.local` и добавьте нужные переменные окружения.
+
+### 2. Базовый цикл работы в ветках
+
+```bash
+git checkout main
+git pull origin main
+git checkout -b feature/my-change
+```
+
+После этого делайте изменения в VS Code, проверяйте их и коммитьте в своей ветке.
+
+### 3. Как сравнивать, что изменения работают
+
+1. Локально проверить приложение: `npm run dev` и пройти сценарии вручную в браузере.
+2. Проверить стиль/ошибки: `npm run lint`.
+3. Проверить тесты: `npm test`.
+4. Посмотреть, что изменилось по файлам:
+
+```bash
+git status
+git diff
+```
+
+5. Если нужно сравнить ветку с `main`:
+
+```bash
+git fetch origin
+git diff origin/main...HEAD
+```
+
+### 4. Как отправлять изменения в GitHub
+
+```bash
+git add .
+git commit -m "feat: короткое описание"
+git push -u origin feature/my-change
+```
+
+Дальше на GitHub:
+1. Открыть Pull Request из вашей ветки в `main`.
+2. Добавить описание: что изменено, как проверить, какие есть ограничения.
+3. Попросить ревью у второго разработчика.
+4. После апрува — merge.
+
+### 5. Как подтягивать изменения коллеги
+
+Если вы работаете в своей ветке и хотите подтянуть свежий `main`:
+
+```bash
+git fetch origin
+git rebase origin/main
+# или git merge origin/main
+```
+
+Если появились конфликты:
+1. VS Code подсветит конфликтующие места.
+2. Выберите нужный вариант (`Accept Current`, `Accept Incoming`, `Accept Both`) или отредактируйте вручную.
+3. Завершите процесс:
+
+```bash
+git add .
+git rebase --continue # если был rebase
+# или git commit, если был merge
+```
+
+### 6. Минимальные правила для работы вдвоём
+
+- Не коммитьте напрямую в `main`.
+- Один PR = одна задача.
+- Пишите осмысленные сообщения коммитов (`feat:`, `fix:`, `refactor:`).
+- Перед push запускайте `npm run lint` и (желательно) `npm test`.
+- Все секреты храните только в `.env.local`, не в репозитории.
+
 ### 2026-01-06 — Download update
 - Улучшения скачивания: документ в `.md` и выгрузка всех использованных вложений одним архивом (ZIP).
 - В панели вложений: компактный вид “иконки” + hover действия.
@@ -48,35 +134,3 @@ npm run dev
 - Исправления поведения + сохранения документа.
 
 ### 2025-12-12 — Files Visual and Pdf support
-- Поддержка PDF и улучшения визуализации файлов.
-- hidden text fix.
-- openrouter added.
-
-### 2025-11-29 — Page decomposition / PromptsManager side fix
-- Декомпозиция страницы.
-- Исправления в PromptsManager.
-
-### 2025-11-27 — Sessions added
-- Добавлены сессии/сохранение состояния (по сообщению коммита).
-
-### 2025-11-15 — xls and docs support
-- Поддержка Office-файлов (XLS/DOCS) (по сообщению коммита).
-
-### 2025-11-11 — Attachments Update
-- Обновления логики вложений.
-
-### 2025-10-31 — Gemini Update
-- Обновления интеграции Gemini.
-
-### 2025-10-18 — Streaming / BD Integration
-- Потоковая генерация.
-- Интеграция БД.
-
-### 2025-10-16 — Documents
-- Базовый функционал “документа”.
-
-### 2025-10-04 — Tools / reasoning
-- Поддержка tools и reasoning.
-
-### 2025-09-26 — Initial scaffold
-- Первичная инициализация проекта.
