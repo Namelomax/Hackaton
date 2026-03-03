@@ -10,6 +10,7 @@ export interface AgentContext {
   conversationId?: string | null;
   documentContent?: string; // State Injection
   model: any; // The language model instance
+  retryCount?: number;  
 }
 
 export interface AgentResponse {
