@@ -164,7 +164,7 @@ export async function runDocumentAgent(context: AgentContext) {
 }
 
 async function generateFinalDocument(
-  messages: any[], 
+  messages: any[],
   userPrompt: string | null,
   dataStream: any,
   model: any,
@@ -192,6 +192,11 @@ async function generateFinalDocument(
     .filter(Boolean)
     .join('\n');
 
+  // Подготовка контекста существующего документа (если есть ручные правки)
+  const existingDocumentContext = existingDocument && existingDocument.trim()
+    ? `\n\nСУЩЕСТВУЮЩАЯ ВЕРСИЯ ДОКУМЕНТА (пользователь редактировал вручную):\n"""\n${existingDocument}\n"""\n\n`
+    : '';
+
   const progressId = `protocol-${crypto.randomUUID()}`;
   dataStream.write({ type: 'text-start', id: progressId });
 
@@ -218,6 +223,8 @@ async function generateFinalDocument(
 9. Решения ДОЛЖНЫ иметь указание на ответственного
 10. НЕ включай в протокол гипотетические/примерные формулировки ("например", "может быть", "допустим", "возможно"). Такие фразы не считаются фактом.
 11. Раздел "Особенности миграции" заполняй только если это прямо подтвержденный факт, а не пример или гипотеза.
+12. **ВАЖНО:** Если пользователь редактировал документ вручную, сохрани его правки и используй их как основу для финальной версии.
+13. **ВАЖНО:** Сравни существующую версию документа с диалогом и объедини информацию из обоих источников.
 
 СТРУКТУРА ПРОТОКОЛА:
 1. Номер протокола и дата встречи
@@ -235,8 +242,8 @@ async function generateFinalDocument(
 """
 ${conversationContext}
 """
-
-Сформируй корректный протокол обследования в соответствии со схемой.`;
+${existingDocumentContext}
+Сформируй корректный протокол обследования в соответствии со схемой. Учитывай существующую версию документа, если она предоставлена.`;
 
   let protocol: Protocol | null = null;
   let markdownContent = '';
@@ -316,107 +323,112 @@ function protocolToMarkdown(protocol: Protocol): string {
     : `№${String(protocol.protocolNumber || '').trim()}`;
   let md = `ПРОТОКОЛ ОБСЛЕДОВАНИЯ ${normalizedNumber}\n\n`;
 
-  md += `1.\tДата встречи: ${protocol.meetingDate}\n`;
+  md += `1.\tДата встречи: ${protocol.meetingDate}\n\n`;
 
   md += `2.\tПовестка: ${protocol.agenda.title}\n`;
   if (protocol.agenda.items.length > 0) {
     protocol.agenda.items.forEach((item) => {
-      md += `•\t${item}\n`;
+      md += `- ${item}\n`;
     });
   }
+  md += '\n\n';
 
-  md += '\n';
-
-  md += `3.\tУчастники:\n`;
-  md += `Со стороны Заказчика ${protocol.participants.customer.organizationName}:\n`;
+  md += `3.\tУчастники:\n\n`;
+  md += `**Со стороны Заказчика ${protocol.participants.customer.organizationName}:**\n\n`;
   md += '| ФИО | Должность |\n';
   md += '| --- | --- |\n';
   protocol.participants.customer.people.forEach((p) => {
     md += `| ${p.fullName} | ${p.position} |\n`;
   });
 
-  md += '\n';
-  md += `Со стороны Исполнителя ${protocol.participants.executor.organizationName}:\n`;
+  md += '\n\n';
+  md += `**Со стороны Исполнителя ${protocol.participants.executor.organizationName}:**\n\n`;
   md += '| ФИО | Должность/роль |\n';
   md += '| --- | --- |\n';
   protocol.participants.executor.people.forEach((p) => {
     md += `| ${p.fullName} | ${p.position} |\n`;
   });
 
-  md += '\n';
+  md += '\n\n';
 
-  md += `4.\tТермины и определения:\n`;
+  md += `4.\tТермины и определения:\n\n`;
   protocol.termsAndDefinitions.forEach((term) => {
-    md += `•\t${term.term} – ${term.definition}\n`;
+    md += `- ${term.term} – ${term.definition}\n`;
   });
 
-  md += '\n';
+  md += '\n\n';
 
-  md += `5.\tСокращения и обозначения:\n`;
+  md += `5.\tСокращения и обозначения:\n\n`;
   protocol.abbreviations.forEach((abbr) => {
-    md += `•\t${abbr.abbreviation} – ${abbr.fullForm}\n`;
+    md += `- ${abbr.abbreviation} – ${abbr.fullForm}\n`;
   });
 
-  md += '\n';
+  md += '\n\n';
 
-  md += `6.\tСодержание встречи:\n`;
-  md += 'В ходе встречи обсуждались следующие вопросы:\n';
+  md += `6.\tСодержание встречи:\n\n`;
+  md += 'В ходе встречи обсуждались следующие вопросы:\n\n';
   if (protocol.meetingContent.introduction) {
-    md += `${protocol.meetingContent.introduction}\n`;
+    md += `${protocol.meetingContent.introduction}\n\n`;
   }
   protocol.meetingContent.topics.forEach((topic) => {
-    md += `${topic.title}\n`;
-    md += `${topic.content}\n`;
+    md += `- ${topic.title}\n`;
+    md += `  ${topic.content}\n`;
     if (topic.subtopics && topic.subtopics.length > 0) {
       topic.subtopics.forEach((sub) => {
         if (sub.title) {
-          md += `${sub.title}\n`;
+          md += `  - ${sub.title}\n`;
         }
-        md += `${sub.content}\n`;
+        md += `    ${sub.content}\n`;
       });
     }
   });
+  md += '\n\n';
   if (protocol.meetingContent.migrationFeatures && protocol.meetingContent.migrationFeatures.length > 0) {
     md += '| Вкладка | Особенности |\n';
     md += '| --- | --- |\n';
     protocol.meetingContent.migrationFeatures.forEach((feat) => {
       md += `| ${feat.tab} | ${feat.features} |\n`;
     });
+    md += '\n';
   }
 
-  md += '\n';
+  md += '\n\n';
 
   md += `7.\tВопросы:\n\n`;
   protocol.questionsAndAnswers.forEach((qa, i) => {
-    md += `${i + 1}.\t${qa.question}\n`;
-  });
-  md += '\n\nОтветы:\n\n';
-  protocol.questionsAndAnswers.forEach((qa, i) => {
-    md += `${i + 1}.\t${qa.answer}\n`;
+    md += `- ${i + 1}. ${qa.question}\n`;
   });
 
-  md += '\n\n';
+  // 3 пустые строки для разрыва между списками
+  md += '\n\n\n';
+  md += `**Ответы**:\n\n`;
+  protocol.questionsAndAnswers.forEach((qa, i) => {
+    md += `- ${i + 1}. ${qa.answer}\n`;
+  });
+
+  md += '\n\n\n';
 
   md += `8.\tРешения:\n\n`;
   protocol.decisions.forEach((decision, i) => {
-    md += `${i + 1}.\t${decision.decision}\n`;
-    md += `Ответственный: ${decision.responsible}\n`;
+    md += `- ${i + 1}. ${decision.decision}\n`;
+    md += `  Ответственный: ${decision.responsible}\n`;
   });
 
-  md += '\n\n';
+  md += '\n\n\n';
 
   md += `9.\tОткрытые вопросы:\n\n`;
   protocol.openQuestions.forEach((q, i) => {
-    md += `${i + 1}.\t${q}\n`;
+    md += `- ${i + 1}. ${q}\n`;
   });
 
-  md += '\n';
+  md += '\n\n\n';
 
   md += '10.\tСогласовано:\n\n';
   md += '| Со стороны Исполнителя | Со стороны Заказчика |\n';
   md += '| --- | --- |\n';
   md += `| ${protocol.approval.executorSignature.organization} | ${protocol.approval.customerSignature.organization} |\n`;
   md += `| ${protocol.approval.executorSignature.representative} /______________ | ${protocol.approval.customerSignature.representative} /______________ |\n`;
+  md += '\n';
 
   return md;
 }

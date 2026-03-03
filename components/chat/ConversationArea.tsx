@@ -16,6 +16,8 @@ const AutoScrollOnUpdates = ({ deps }: { deps: unknown }) => {
   const { isAtBottom, scrollToBottom } = useStickToBottomContext();
 
   useEffect(() => {
+    // Прокручивать вниз ТОЛЬКО если пользователь уже находится внизу
+    // Это позволяет видеть контент в центре экрана во время генерации
     if (!isAtBottom) return;
 
     const raf = requestAnimationFrame(() => {

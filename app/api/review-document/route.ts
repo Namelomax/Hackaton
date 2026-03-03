@@ -2,6 +2,7 @@ import { runDocumentReview } from '@/app/api/chat/agents/review-agent';
 
 export const maxDuration = 90;
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic'; // Отключаем кэширование
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));

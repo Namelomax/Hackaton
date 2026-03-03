@@ -38,20 +38,29 @@ export const DocumentReviewPanel = ({ review, onClose, onSendReview }: DocumentR
 
   const errorCount = review.issues.filter((i) => i.level === 'error').length;
   const warningCount = review.issues.filter((i) => i.level === 'warning').length;
+  const infoCount = review.issues.filter((i) => i.level === 'info').length;
 
   const handleSendReview = () => {
-    // Gather all issues with their suggestions
+    // Формируем структурированный запрос на исправление замечаний
     const issuesText = review.issues
       .map((issue, idx) => {
-        let text = `${idx + 1}. **${issue.section}**: ${issue.issue}`;
+        let text = `[${idx + 1}] **${issue.section}** (${issue.level === 'error' ? 'ОШИБКА' : issue.level === 'warning' ? 'ПРЕДУПРЕЖДЕНИЕ' : 'ЗАМЕЧАНИЕ'}):\n`;
+        text += `Проблема: ${issue.issue}\n`;
         if (issue.suggestion) {
-          text += `\n   Предложение: ${issue.suggestion}`;
+          text += `Как исправить: ${issue.suggestion}`;
         }
         return text;
       })
       .join('\n\n');
 
-    const fullText = `Выявлены замечания по документу, которые нужно рассмотреть и исправить:\n\n${issuesText}`;
+    const fullText = `Пожалуйста, исправь следующие замечания по документу:
+
+${issuesText}
+
+ИНСТРУКЦИЯ ПО ИСПРАВЛЕНИЮ:
+1. Исправь ВСЕ замечания по порядку
+2. Сохрани структуру документа (все 10 разделов)
+3. Не удаляй существующую информацию, только исправляй ошибки`;
 
     // Send to chat input
     if (onSendReview) {
@@ -76,9 +85,12 @@ export const DocumentReviewPanel = ({ review, onClose, onSendReview }: DocumentR
             <div>
               <h2 className="font-semibold text-lg">Проверка документа</h2>
               <p className="text-sm text-muted-foreground">
-                Качество: {review.overallQuality}/100
-                {errorCount > 0 && <span className="ml-2 text-red-600">{errorCount} ошибок</span>}
+                {errorCount > 0 && <span className="text-red-600">{errorCount} ошибок</span>}
                 {warningCount > 0 && <span className="ml-2 text-yellow-600">{warningCount} предупреждений</span>}
+                {infoCount > 0 && <span className="ml-2 text-blue-600">{infoCount} замечаний</span>}
+                {errorCount === 0 && warningCount === 0 && infoCount === 0 && (
+                  <span className="text-green-600">Ошибок не найдено</span>
+                )}
               </p>
             </div>
           </div>

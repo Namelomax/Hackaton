@@ -13,9 +13,6 @@ export function normalizeMarkdownForDocx(raw: string) {
   text = text.replace(/^[ \t]*•\s*/gm, '- ');
   text = text.replace(/([^\n])\s*•\s*/g, '$1\n- ');
 
-  // Ensure markdown table rows start on new lines when pasted inline.
-  text = text.replace(/([^\n])\s*(\|[^\n]*\|)/g, '$1\n$2');
-
   return text;
 }
 
