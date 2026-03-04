@@ -63,24 +63,32 @@ function uiMessageText(msg: any): string {
  */
 function fallbackHeuristic(lastMessage: string, context: any[]): IntentType {
   const lastMsg = lastMessage.toLowerCase();
-  
+
   // Явные признаки запроса документа
-  if (lastMsg.includes('протокол') || 
-      lastMsg.includes('документ') || 
+  if (lastMsg.includes('протокол') ||
+      lastMsg.includes('документ') ||
       lastMsg.includes('сформируй') ||
       lastMsg.includes('покажи') ||
-      lastMsg.includes('готов') ||
       lastMsg.includes('выведи')) {
     return 'document';
   }
-  
+
   // Проверка контекста - если ассистент спрашивал про готовность
   const lastAssistantMsg = [...context].reverse().find(m => m.role === 'assistant')?.content || '';
-  if (lastAssistantMsg.includes('сформировать протокол') && 
+  if (lastAssistantMsg.includes('сформировать протокол') &&
       (lastMsg.includes('да') || lastMsg.includes('верно') || lastMsg.includes('готово'))) {
     return 'document';
   }
-  
+
+  // Команды перехода к следующему этапу — это продолжение чата (сбора информации)
+  if (lastMsg.includes('переходи') ||
+      lastMsg.includes('продолжай') ||
+      lastMsg.includes('дальше') ||
+      lastMsg.includes('следующий') ||
+      lastMsg.includes('следующем')) {
+    return 'chat';
+  }
+
   return 'chat';
 }
 
