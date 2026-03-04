@@ -15,18 +15,19 @@ export const DocumentReadySchema = z.object({
     Шаг 2: Проверить, какие разделы подтверждены пользователем
     Шаг 3: Оценить, были ли запросы на формирование документа
     Шаг 4: Определить готовность к генерации
+    Шаг 5: Проверить, что ВСЕ 10 разделов заполнены
   `),
 
   output: z.object({
-    filledSections: z.array(z.string()),
-    pendingSections: z.array(z.string()),
-    userRequestedDocument: z.boolean(),
-    readyForGeneration: z.boolean(),
+    filledSections: z.array(z.string()).describe('Список заполненных разделов (максимум 10)'),
+    pendingSections: z.array(z.string()).describe('Список незаполненных разделов'),
+    userRequestedDocument: z.boolean().describe('Запрашивал ли пользователь документ явно'),
+    readyForGeneration: z.boolean().describe('Готов ли документ к генерации (ТОЛЬКО если все 10 разделов заполнены)'),
     suggestedAction: z.enum([
       'continue_filling',
       'ask_confirmation',
       'generate_document',
-    ]),
+    ]).describe('continue_filling — если есть незаполненные разделы'),
     messageToUser: z.string().optional(),
   }),
 });

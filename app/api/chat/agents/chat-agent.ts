@@ -94,14 +94,26 @@ export async function handleChatMessage(context: AgentContext): Promise<string> 
   
   // 7. Проверяем готовность к формированию документа (проблема 9)
   const documentReady = await sgr.checkDocumentReady(context.messages);
-  
+
+  console.log('📋 Document readiness:', {
+    filledSections: documentReady.filledSections.length,
+    pendingSections: documentReady.pendingSections.length,
+    readyForGeneration: documentReady.readyForGeneration,
+    suggestedAction: documentReady.suggestedAction
+  });
+
   let finalResponse = qualityCheck.correctedResponse;
-  
+
   // 8. Если документ готов, предлагаем сформировать
-  if (documentReady.readyForGeneration && 
-      documentReady.suggestedAction === 'ask_confirmation') {
-    finalResponse += '\n\n' + (documentReady.messageToUser || 
+  // ВАЖНО: Проверяем, что все 10 разделов заполнены
+  if (documentReady.readyForGeneration &&
+      documentReady.suggestedAction === 'ask_confirmation' &&
+      documentReady.filledSections.length >= 10) {
+    finalResponse += '\n\n' + (documentReady.messageToUser ||
       'Все данные собраны. Сформировать протокол?');
+  } else if (documentReady.pendingSections.length > 0) {
+    // Если есть незаполненные разделы — добавляем напоминание
+    console.log('⏳ Ещё есть незаполненные разделы:', documentReady.pendingSections);
   }
   
   return finalResponse;
