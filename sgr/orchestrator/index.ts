@@ -29,7 +29,11 @@ export class SGROrchestrator {
 
   constructor() {
     this.model = openrouter.chat('openai/gpt-4o-mini');
-    this.logDir = path.join(process.cwd(), 'sgr/logs');
+    // Используем tmp директорию для production-среды (Vercel, etc.)
+    const isProduction = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production';
+    this.logDir = isProduction
+      ? path.join(process.env.RUNTIME_TMP_DIR || '/tmp', 'sgr')
+      : path.join(process.cwd(), 'sgr/logs');
     this.ensureLogDir();
   }
 
@@ -37,7 +41,11 @@ export class SGROrchestrator {
     try {
       await fs.mkdir(this.logDir, { recursive: true });
     } catch (error) {
-      console.error('Failed to create log dir:', error);
+      // Игнорируем ошибки в production-среде - логи не критичны
+      const isProduction = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production';
+      if (!isProduction) {
+        console.error('Failed to create log dir:', error);
+      }
     }
   }
 

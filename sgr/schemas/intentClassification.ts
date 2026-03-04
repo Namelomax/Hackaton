@@ -8,7 +8,7 @@ export const IntentClassificationSchema = z.object({
   inputAnalysis: z.object({
     lastMessage: z.string(),
     conversationContext: z.array(z.string()),
-    stage: z.enum(['initial', 'gathering', 'confirming', 'finalizing']).optional(),
+    stage: z.enum(['initial', 'gathering', 'confirming', 'finalizing']),
   }),
 
   reasoning_steps: z.array(z.string()).describe(`
