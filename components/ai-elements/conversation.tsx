@@ -12,8 +12,7 @@ export type ConversationProps = ComponentProps<typeof StickToBottom>;
 export const Conversation = ({ className, ...props }: ConversationProps) => (
   <StickToBottom
     className={cn("relative flex-1 overflow-y-auto no-scrollbar", className)}
-    initial={true}  // true = быть внизу при загрузке, но не прокручивать при изменениях
-    resize={false}  // false = не прокручивать при изменении размера контента
+    initial="smooth"  // smooth = быть внизу при загрузке
     role="log"
     {...props}
   />
