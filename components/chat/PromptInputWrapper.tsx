@@ -1,6 +1,6 @@
 'use client';
 
-import { Dispatch, SetStateAction, FormEvent, useCallback, useRef, useState } from 'react';
+import { Dispatch, SetStateAction, FormEvent, useCallback, useRef, useState, useEffect } from 'react';
 import { FileUIPart } from 'ai';
 import {
   PromptInput,
@@ -114,6 +114,7 @@ type PromptInputWrapperProps = {
   documentContent?: string;
   prepareSend?: () => Promise<string | null | undefined> | string | null | undefined;
   onUserMessageQueued?: (message: any) => void;
+  onOpenAuthDialog?: () => void;
 };
 
 export const PromptInputWrapper = ({
@@ -132,6 +133,7 @@ export const PromptInputWrapper = ({
   documentContent,
   prepareSend,
   onUserMessageQueued,
+  onOpenAuthDialog,
 }: PromptInputWrapperProps) => {
   const submitLockRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -139,6 +141,7 @@ export const PromptInputWrapper = ({
   const cancelRequestedRef = useRef(false);
   const preSendAbortRef = useRef<AbortController | null>(null);
   const authWarningTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastErrorTimeRef = useRef<number>(0);
 
   const handleStop = useCallback(() => {
     cancelRequestedRef.current = true;
@@ -152,10 +155,20 @@ export const PromptInputWrapper = ({
       stop();
     } catch {}
 
-    // Release local submit lock immediately so user isn't stuck waiting.
+    // Сбрасываем блокировку немедленно - позволяем пользователю продолжить работу
     submitLockRef.current = false;
     setIsSubmitting(false);
+    lastErrorTimeRef.current = Date.now();
   }, [stop]);
+
+  // Эффект для сброса блокировки при изменении статуса на 'ready' после ошибки
+  useEffect(() => {
+    if (status === 'ready' && isSubmitting) {
+      // Статус вернулся в 'ready', но блокировка осталась - сбрасываем
+      submitLockRef.current = false;
+      setIsSubmitting(false);
+    }
+  }, [status, isSubmitting]);
 
   const handleSubmit = async (
     message: PromptInputMessage,
@@ -163,7 +176,10 @@ export const PromptInputWrapper = ({
   ) => {
     event.preventDefault();
 
+    // Проверяем статус - разрешаем отправку только в 'ready'
+    // После ошибки useChat должен вернуть статус в 'ready'
     if (status !== 'ready') return;
+    
     if (!authUser?.id) {
       setAuthWarningOpen(true);
       if (authWarningTimeoutRef.current) {
@@ -172,6 +188,7 @@ export const PromptInputWrapper = ({
       authWarningTimeoutRef.current = setTimeout(() => {
         setAuthWarningOpen(false);
       }, 2500);
+      onOpenAuthDialog?.();
       return;
     }
     if (submitLockRef.current) return;
@@ -192,7 +209,6 @@ export const PromptInputWrapper = ({
       if (!hasPayload) return;
 
       // Avoid blocking UI on client-side extraction; server performs extraction/injection.
-      // Keep isTextExtractable import as a hint for future gating / UI, but don't await extraction here.
       void preparedFiles.map((f) => (f?.mediaType ? isTextExtractable(f.mediaType) : false));
 
       const baseConversationId = prepareSend ? (await prepareSend()) ?? null : conversationId;
@@ -253,6 +269,8 @@ export const PromptInputWrapper = ({
       preSendAbortRef.current = null;
       setIsSubmitting(false);
       submitLockRef.current = false;
+      // Сбрасываем время ошибки при успешной отправке
+      lastErrorTimeRef.current = 0;
     }
   };
 

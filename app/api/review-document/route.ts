@@ -15,6 +15,7 @@ export async function POST(req: Request) {
     );
   }
 
+<<<<<<< HEAD
   if (content.trim().length === 0) {
     return Response.json(
       { error: 'Content is empty' },
@@ -22,6 +23,8 @@ export async function POST(req: Request) {
     );
   }
 
+=======
+>>>>>>> main
   try {
     const review = await runDocumentReview(content);
     return Response.json(review);
@@ -32,4 +35,8 @@ export async function POST(req: Request) {
       { status: 500 }
     );
   }
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> main

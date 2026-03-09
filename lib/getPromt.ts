@@ -508,6 +508,13 @@ export async function updateConversation(conversationId: string, messages: any, 
   const recordObj = new RecordId('conversations', clean);
   const recordIdString = `conversations:${clean}`;
 
+  console.log('[updateConversation] Starting update:', {
+    conversationId: recordIdString,
+    hasMessages: Array.isArray(messages),
+    hasDocumentContent: documentContent !== undefined,
+    documentContentLength: documentContent?.length,
+  });
+
   // Sanitize messages before update
   // console.log('updateConversation: incoming messages type=', typeof messages, 'isArray=', Array.isArray(messages), 'length=', Array.isArray(messages) ? messages.length : 'N/A');
   const sanitized = Array.isArray(messages) ? messages.map(sanitizeMessage) : [];
@@ -589,6 +596,12 @@ export async function updateConversation(conversationId: string, messages: any, 
       // ignore parse errors
     }
   }
+
+  console.log('[updateConversation] Returning:', {
+    id: convData.id?.toString?.(),
+    hasDocumentContent: !!convData.document_content,
+    documentContentLength: convData.document_content?.length,
+  });
 
   return {
     id: convData.id?.toString?.() ?? recordIdString,

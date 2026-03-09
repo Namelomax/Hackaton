@@ -193,7 +193,8 @@ export const MessageRenderer = ({
           </div>
         )}
 
-        {textParts.map((part: any, index: number) => {
+        {/* Рендеринг текста только если не редактируем */}
+        {!isEditing && textParts.map((part: any, index: number) => {
           try {
             const parsed = JSON.parse(part.text);
 

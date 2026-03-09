@@ -1,6 +1,6 @@
 'use client';
 
-import { Dispatch, FormEvent, SetStateAction, useEffect, useState } from 'react';
+import { Dispatch, FormEvent, SetStateAction, useEffect } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 type AuthUser = { id: string; username: string } | null;
@@ -10,6 +10,8 @@ type HeaderProps = {
   authUsername: string;
   authPassword: string;
   authMode: 'login' | 'register';
+  authOpen: boolean;
+  setAuthOpen: (open: boolean) => void;
   onAuth: () => void;
   onLogout: () => void;
   setAuthUsername: Dispatch<SetStateAction<string>>;
@@ -17,6 +19,7 @@ type HeaderProps = {
   setAuthMode: Dispatch<SetStateAction<'login' | 'register'>>;
   toggleAuthMode: () => void;
   brandLabel?: string;
+  showAuthHint?: boolean;
 };
 
 export const Header = ({
@@ -24,6 +27,8 @@ export const Header = ({
   authUsername,
   authPassword,
   authMode,
+  authOpen,
+  setAuthOpen,
   onAuth,
   onLogout,
   setAuthUsername,
@@ -31,14 +36,13 @@ export const Header = ({
   setAuthMode,
   toggleAuthMode,
   brandLabel = 'Протоколёр',
+  showAuthHint = false,
 }: HeaderProps) => {
-  const [authOpen, setAuthOpen] = useState(false);
-
   useEffect(() => {
     if (authUser) {
       setAuthOpen(false);
     }
-  }, [authUser]);
+  }, [authUser, setAuthOpen]);
 
   const openAuthModal = (mode: 'login' | 'register') => {
     setAuthMode(mode);
@@ -94,6 +98,11 @@ export const Header = ({
 
       <Dialog open={authOpen} onOpenChange={setAuthOpen}>
         <DialogContent>
+          {showAuthHint && (
+            <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              Чтобы отправить сообщение, сначала войдите в аккаунт.
+            </div>
+          )}
           <DialogHeader>
             <DialogTitle>
               {authMode === 'login' ? 'Вход в аккаунт' : 'Регистрация'}

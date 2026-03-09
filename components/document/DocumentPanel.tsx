@@ -8,15 +8,20 @@ import {
   FileSpreadsheetIcon,
   FileText,
   ImageIcon,
+  Info,
+  Loader,
   Paperclip,
   PencilIcon,
   PresentationIcon,
   X,
+  Shield,
 } from 'lucide-react';
 import remarkBreaks from 'remark-breaks';
 
 import { Response } from '@/components/ai-elements/response';
 import { Button } from '@/components/ui/button';
+import { DocumentReviewPanel } from '@/components/document/DocumentReviewPanel';
+import type { DocumentReview } from '@/app/api/chat/agents/review-agent';
 import type { Attachment, DocumentState } from '@/lib/document/types';
 import { buildDocxMarkdown, extractTitleFromMarkdown, formatDocumentContent, sanitizeFilename } from '@/lib/document/formatting';
 
@@ -25,6 +30,7 @@ type DocumentPanelProps = {
   onCopy?: (payload: { title: string; content: string }) => void;
   onEdit?: (payload: DocumentState) => void;
   attachments?: Attachment[];
+  onSendReview?: (text: string) => void;
 };
 
 function getFileExt(name: string) {
@@ -90,7 +96,7 @@ function isImageAttachment(att: Attachment) {
   );
 }
 
-export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: DocumentPanelProps) => {
+export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendReview }: DocumentPanelProps) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [isBundling, setIsBundling] = useState(false);
@@ -98,6 +104,9 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
   const [draftContent, setDraftContent] = useState(document.content);
   const [localDoc, setLocalDoc] = useState<DocumentState>(document);
   const [docxData, setDocxData] = useState<{ content: string; filename: string } | null>(null);
+  const [reviewResult, setReviewResult] = useState<DocumentReview | null>(null);
+  const [isReviewing, setIsReviewing] = useState(false);
+  const [isReviewPanelOpen, setIsReviewPanelOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -109,6 +118,11 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
       // Проверяем наличие .docx данных в документе
       if (document.docxData) {
         setDocxData(document.docxData);
+      } else if (document.content.trim() && !docxData && !document.isStreaming) {
+        // Автоматически генерируем docxData если контент есть, но docxData нет
+        buildDocxData(document.title || 'Документ', document.content)
+          .then(data => setDocxData(data))
+          .catch(err => console.warn('Failed to auto-generate docx', err));
       }
     }
   }, [document, editing]);
@@ -149,6 +163,35 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
       console.error('Ошибка при копировании:', err);
+    }
+  };
+
+  const handleReview = async () => {
+    if (!localDoc.content.trim()) {
+      alert('Невозможно проверить пустой документ');
+      return;
+    }
+
+    setIsReviewing(true);
+    try {
+      const response = await fetch('/api/review-document', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: localDoc.content }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Ошибка при проверке документа');
+      }
+
+      const result: DocumentReview = await response.json();
+      setReviewResult(result);
+      setIsReviewPanelOpen(true);
+    } catch (error) {
+      console.error('Review error:', error);
+      alert('Ошибка при проверке документа: ' + String(error));
+    } finally {
+      setIsReviewing(false);
     }
   };
 
@@ -362,31 +405,55 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
                 >
                   <PencilIcon className="size-4" />
                 </Button>
-                {docxData && (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handleReview}
+                  type="button"
+                  title={isReviewing ? "Проверка документа..." : "Проверить документ"}
+                  aria-label={isReviewing ? "Проверка документа..." : "Проверить документ"}
+                  disabled={isReviewing || localDoc.isStreaming}
+                >
+                  {isReviewing ? (
+                    <Loader className="size-4 animate-spin" />
+                  ) : (
+                    <Shield className="size-4" />
+                  )}
+                </Button>
+                {reviewResult && (
                   <Button
                     variant="outline"
                     size="icon"
-                    onClick={handleDownloadDocx}
+                    onClick={() => setIsReviewPanelOpen(true)}
                     type="button"
-                    title="Скачать протокол (.docx)"
-                    aria-label="Скачать протокол (.docx)"
+                    title="Показать замечания"
+                    aria-label="Показать замечания"
                   >
-                    <FileText className="size-4" />
+                    <Info className="size-4" />
                   </Button>
                 )}
-                {docxData && !localDoc.isStreaming && (
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    onClick={handleDownloadBundle}
-                    type="button"
-                    title="Скачать ZIP (документ + вложения)"
-                    aria-label="Скачать ZIP (документ + вложения)"
-                    disabled={isBundling}
-                  >
-                    <Download className="size-4" />
-                  </Button>
-                )}
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handleDownloadDocx}
+                  type="button"
+                  title="Скачать протокол (.docx)"
+                  aria-label="Скачать протокол (.docx)"
+                  disabled={!docxData || localDoc.isStreaming || !localDoc.content.trim()}
+                >
+                  <FileText className="size-4" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handleDownloadBundle}
+                  type="button"
+                  title="Скачать ZIP (документ + вложения)"
+                  aria-label="Скачать ZIP (документ + вложения)"
+                  disabled={!docxData || localDoc.isStreaming || !localDoc.content.trim() || isBundling}
+                >
+                  <Download className="size-4" />
+                </Button>
                 <Button
                   variant="outline"
                   size="icon"
@@ -518,6 +585,13 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments }: Documen
             </div>
           </div>
         </div>
+      )}
+      {reviewResult && isReviewPanelOpen && (
+        <DocumentReviewPanel
+          review={reviewResult}
+          onClose={() => setIsReviewPanelOpen(false)}
+          onSendReview={onSendReview}
+        />
       )}
     </div>
   );

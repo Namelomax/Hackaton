@@ -22,6 +22,12 @@ export default function ChatPage() {
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authHintFromPrompt, setAuthHintFromPrompt] = useState(false);
+  const handleAuthOpenChange = (open: boolean) => {
+    setAuthOpen(open);
+    if (!open) setAuthHintFromPrompt(false);
+  };
   const toggleAuthMode = () => setAuthMode((prev) => (prev === 'login' ? 'register' : 'login'));
   // initialMessages теперь используется только как начальное пустое значение;
   // дальнейшая загрузка идет напрямую через setMessages из useChat
@@ -175,6 +181,7 @@ export default function ChatPage() {
   }, [authUser?.id, conversationId]);
 
   const lastErrorSignatureRef = useRef<string>('');
+  const errorRecoveryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function collectErrorText(err: any): string {
     if (!err) return '';
@@ -247,11 +254,19 @@ export default function ChatPage() {
     messages: initialMessages,
     onError: (error) => {
       console.error('Chat error:', error);
-      if (isAbortLikeError(error)) return;
-
+      
       const friendly = toUserFriendlyErrorMessage(error);
       const signature = friendly.trim();
-      if (signature && lastErrorSignatureRef.current === signature) return;
+      
+      // Показываем ошибку даже для abort-like, но всегда восстанавливаем работоспособность
+      if (signature && lastErrorSignatureRef.current === signature) {
+        // Всё равно обеспечиваем восстановление
+        if (errorRecoveryTimeoutRef.current) clearTimeout(errorRecoveryTimeoutRef.current);
+        errorRecoveryTimeoutRef.current = setTimeout(() => {
+          errorRecoveryTimeoutRef.current = null;
+        }, 500);
+        return;
+      }
       lastErrorSignatureRef.current = signature;
 
       const errorMessage = {
@@ -262,11 +277,20 @@ export default function ChatPage() {
       };
 
       try {
-        // useChat setMessages can accept a functional updater; cast to avoid type mismatch.
         (setMessages as any)((prev: any[]) => [...(Array.isArray(prev) ? prev : []), errorMessage]);
       } catch {
         (setMessages as any)([...(Array.isArray(messages) ? messages : []), errorMessage]);
       }
+      
+      // Восстановление после ошибки: сбрасываем состояние через 500мс
+      // Это позволяет пользователю продолжить работу даже после ошибки
+      if (errorRecoveryTimeoutRef.current) clearTimeout(errorRecoveryTimeoutRef.current);
+      errorRecoveryTimeoutRef.current = setTimeout(() => {
+        errorRecoveryTimeoutRef.current = null;
+        try {
+          stop();
+        } catch {}
+      }, 500);
     },
     onData: (dataPart) => {
       // console.log('📥 Received data:', dataPart);
@@ -299,16 +323,6 @@ export default function ChatPage() {
         updateEngineDocument((prev: DocumentState) => ({
           ...prev,
           content: prev.content + normalized.data,
-        }));
-      }
-
-      if (normalized.type === 'data-documentPatch') {
-        const patch = normalized.data as DocumentPatch;
-        updateEngineDocument((prev: DocumentState) => ({
-          ...prev,
-          // Apply patch without clearing the document
-          content: applyDocumentPatches(prev.content || '', [patch]),
-          isStreaming: true,
         }));
       }
 
@@ -755,18 +769,29 @@ export default function ChatPage() {
   };
 
   const handleDocumentEdit = async (updated: DocumentState) => {
+    console.log('[handleDocumentEdit] Starting edit save:', {
+      viewConversationId,
+      conversationId,
+      title: updated.title,
+      contentLength: updated.content.length,
+    });
+
+    // Всегда обновляем оба состояния документа, чтобы ИИ использовал актуальную версию
     setViewDocument(updated);
-    if (viewConversationId === conversationId) {
-      setDocument(updated);
-    }
+    setDocument(updated);
 
     // Update local conversations list state
     if (viewConversationId) {
-      setConversationsList((prev) =>
-        prev.map((c) =>
+      setConversationsList((prev) => {
+        const newList = prev.map((c) =>
           c.id === viewConversationId ? { ...c, document_content: updated.content } : c
-        )
-      );
+        );
+        console.log('[handleDocumentEdit] Updated conversationsList:', {
+          found: newList.some(c => c.id === viewConversationId),
+          newContent: newList.find(c => c.id === viewConversationId)?.document_content?.slice(0, 100),
+        });
+        return newList;
+      });
     }
 
     // Persist to backend if conversation is saved
@@ -775,14 +800,25 @@ export default function ChatPage() {
         const messagesForPut = viewConversationId === conversationId
           ? messages
           : toUIMessages(viewedConversation?.messages || []);
-        await fetch('/api/conversations', {
+        
+        console.log('[handleDocumentEdit] Saving to backend:', {
+          conversationId: viewConversationId,
+          hasMessages: !!messagesForPut,
+          contentLength: updated.content.length,
+        });
+        
+        const resp = await fetch('/api/conversations', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ conversationId: viewConversationId, messages: messagesForPut, documentContent: updated.content }),
         });
+        const result = await resp.json();
+        console.log('[handleDocumentEdit] Backend save result:', result);
       } catch (e) {
-        console.warn('Failed to persist document edit', e);
+        console.error('[handleDocumentEdit] Failed to persist document edit', e);
       }
+    } else {
+      console.log('[handleDocumentEdit] Skipping backend save (local conversation or no viewConversationId)');
     }
   };
 //asd
@@ -793,9 +829,20 @@ export default function ChatPage() {
   const handleSelectConversation = (conversation: any) => {
     if (!conversation?.id) return;
 
+    console.log('[handleSelectConversation] Switching to conversation:', {
+      id: conversation.id,
+      title: conversation.title,
+      hasDocumentContent: !!conversation.document_content,
+      documentContentPreview: conversation.document_content?.slice(0, 100),
+    });
+
     // Save current conversation state before switching (prevent message loss)
     if (conversationId && !String(conversationId).startsWith('local-') && authUser?.id && messages.length > 0) {
       // Fire and forget - save current messages to avoid losing user's last message
+      console.log('[handleSelectConversation] Saving current conversation before switch:', {
+        conversationId,
+        documentContent: document.content?.slice(0, 100),
+      });
       fetch('/api/conversations', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -807,22 +854,39 @@ export default function ChatPage() {
     setViewConversationId(conversation.id);
     localStorage.setItem('activeConversationId', conversation.id);
 
+    // Обновляем conversation из conversationsList, чтобы получить актуальный document_content
+    const conversationFromList = conversationsList.find((c) => c.id === conversation.id);
+    const documentContentToUse = conversationFromList?.document_content || conversation.document_content;
+    
+    console.log('[handleSelectConversation] Using documentContent:', {
+      fromList: !!conversationFromList?.document_content,
+      fromConv: !!conversation.document_content,
+      contentLength: documentContentToUse?.length,
+    });
+
     // Update the visible document panel for the selected chat.
-    if (conversation.document_content) {
-      const derived = extractTitleFromMarkdown(conversation.document_content);
-      setViewDocument({
+    if (documentContentToUse) {
+      const derived = extractTitleFromMarkdown(documentContentToUse);
+      const newDoc = {
         title: (conversation.title && String(conversation.title).trim().toLowerCase() !== 'чат')
           ? conversation.title
           : (derived || 'Документ'),
-        content: conversation.document_content,
+        content: documentContentToUse,
         isStreaming: false,
+      } as DocumentState;
+      console.log('[handleSelectConversation] Setting viewDocument:', {
+        title: newDoc.title,
+        contentLength: newDoc.content.length,
       });
+      setViewDocument(newDoc);
     } else {
+      console.log('[handleSelectConversation] No document_content, setting empty doc');
       setViewDocument({ title: '', content: '', isStreaming: false });
     }
 
     // If AI is busy in another chat, do NOT change engine conversation or messages.
     if (status !== 'ready' && conversationId && conversation.id !== conversationId) {
+      console.log('[handleSelectConversation] AI is busy, not switching engine conversation');
       return;
     }
 
@@ -833,15 +897,19 @@ export default function ChatPage() {
     setMessages(hydrated);
 
     // Keep engine document in sync when engine chat changes.
-    if (conversation.document_content) {
-      const derived = extractTitleFromMarkdown(conversation.document_content);
+    if (documentContentToUse) {
+      const derived = extractTitleFromMarkdown(documentContentToUse);
       const nextDoc = {
         title: (conversation.title && String(conversation.title).trim().toLowerCase() !== 'чат')
           ? conversation.title
           : (derived || 'Документ'),
-        content: conversation.document_content,
+        content: documentContentToUse,
         isStreaming: false,
       } as DocumentState;
+      console.log('[handleSelectConversation] Setting engine document:', {
+        title: nextDoc.title,
+        contentLength: nextDoc.content.length,
+      });
       setDocument(nextDoc);
       setViewDocument(nextDoc);
     } else {
@@ -868,12 +936,15 @@ export default function ChatPage() {
         authUsername={authUsername}
         authPassword={authPassword}
         authMode={authMode}
+        authOpen={authOpen}
+        setAuthOpen={handleAuthOpenChange}
         onAuth={handleAuth}
         onLogout={handleLogout}
         setAuthUsername={setAuthUsername}
         setAuthPassword={setAuthPassword}
         setAuthMode={setAuthMode}
         toggleAuthMode={toggleAuthMode}
+        showAuthHint={authHintFromPrompt}
       />
 
       {/* Основная область */}
@@ -924,13 +995,23 @@ export default function ChatPage() {
                 documentContent={document.content}
                 prepareSend={prepareSend}
                 onUserMessageQueued={undefined}
+                onOpenAuthDialog={() => {
+                  setAuthMode('login');
+                  setAuthHintFromPrompt(true);
+                  setAuthOpen(true);
+                }}
               />
             </div>
           </div>
         </div>
         {/* Правая часть — документ */}
         <div className="flex-1 min-w-0">
-          <DocumentPanel document={viewDocument} onEdit={handleDocumentEdit} attachments={attachedFiles} />
+          <DocumentPanel 
+            document={viewDocument} 
+            onEdit={handleDocumentEdit} 
+            attachments={attachedFiles}
+            onSendReview={(text) => setInput(text)}
+          />
         </div>
       </div>
     </div>

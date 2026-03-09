@@ -137,15 +137,7 @@ export async function generateProtocolDocx(protocol: Protocol): Promise<Buffer> 
               }),
             ]),
           ]),
-          ...(protocol.meetingContent.migrationFeatures
-            ? [
-                new Paragraph({
-                  children: [new TextRun({ text: 'Особенности миграции по вкладкам МТР.', bold: true })],
-                  spacing: { before: 200, after: 100 },
-                }),
-                createMigrationFeaturesTable(protocol.meetingContent.migrationFeatures),
-              ]
-            : []),
+
 
           // 7. Вопросы
           new Paragraph({

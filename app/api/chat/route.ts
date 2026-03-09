@@ -65,15 +65,36 @@ async function resolveSystemPrompt(userId?: string | null, selectedPromptId?: st
 const HIDDEN_RE = /<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi;
 const HIDDEN_CAPTURE_RE = /<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi;
 
-function dataUrlToBuffer(dataUrl?: string | null): Buffer | null {
-  if (!dataUrl) return null;
-  const match = String(dataUrl).match(/^data:[^;]+;base64,(.+)$/i);
-  if (!match) return null;
-  try {
-    return Buffer.from(match[1], 'base64');
-  } catch {
-    return null;
+async function urlToBuffer(urlOrData?: string | null): Promise<Buffer | null> {
+  if (!urlOrData) return null;
+
+  // ── Base64 data URL ──────────────────────────────────────────────────────
+  if (urlOrData.startsWith('data:')) {
+    const match = String(urlOrData).match(/^data:[^;]+;base64,(.+)$/i);
+    if (!match) return null;
+    try {
+      return Buffer.from(match[1], 'base64');
+    } catch {
+      return null;
+    }
   }
+
+  // ── HTTPS / HTTP URL (e.g. Vercel Blob) ─────────────────────────────────
+  if (urlOrData.startsWith('https://') || urlOrData.startsWith('http://')) {
+    try {
+      const resp = await fetch(urlOrData);
+      if (!resp.ok) {
+        console.warn('[urlToBuffer] Fetch failed:', resp.status, urlOrData);
+        return null;
+      }
+      return Buffer.from(await resp.arrayBuffer());
+    } catch (err) {
+      console.warn('[urlToBuffer] Fetch error:', err);
+      return null;
+    }
+  }
+
+  return null;
 }
 
 function guessFileExt(att: any): string {
@@ -122,7 +143,7 @@ function bestEffortBinaryText(buf: Buffer): string | null {
 
 async function extractPdfTextFromAttachment(att: any): Promise<string | null> {
   if (!att || att.mediaType !== 'application/pdf') return null;
-  const buf = dataUrlToBuffer(att.url || att.data);
+  const buf = await urlToBuffer(att.url || att.data);
   if (!buf) return null;
   try {
     const { default: pdfParse } = await import('pdf-parse');
@@ -150,7 +171,7 @@ async function extractLegacyDoc(buf: Buffer): Promise<string | null> {
 async function extractDocText(att: any): Promise<string | null> {
   const mt = att?.mediaType || att?.mimeType || '';
   const isDocx = mt === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-  const buf = dataUrlToBuffer(att?.url || att?.data);
+  const buf = await urlToBuffer(att?.url || att?.data);
   if (!buf) return null;
 
   if (isDocx) {
@@ -173,7 +194,7 @@ async function extractDocText(att: any): Promise<string | null> {
 async function extractXlsxTextFromAttachment(att: any): Promise<string | null> {
   // Поддерживаем XLSX и старые XLS (application/vnd.ms-excel)
   if (!att) return null;
-  const buf = dataUrlToBuffer(att.url || att.data);
+  const buf = await urlToBuffer(att.url || att.data);
   if (!buf) return null;
   try {
     const XLSX = await import('xlsx');
@@ -200,7 +221,7 @@ async function extractPptxTextFromAttachment(att: any): Promise<string | null> {
   const mt = att.mediaType || att.mimeType;
   const isPptx = mt === 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
   const isPpt = mt === 'application/vnd.ms-powerpoint';
-  const buf = dataUrlToBuffer(att.url || att.data);
+  const buf = await urlToBuffer(att.url || att.data);
   if (!buf) return null;
 
   if (isPptx) {
