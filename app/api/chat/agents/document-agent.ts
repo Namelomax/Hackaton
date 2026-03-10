@@ -3,6 +3,7 @@ import { AgentContext } from './types';
 import { updateConversation, saveConversation } from '@/lib/getPromt';
 import { ProtocolSchema, type Protocol } from '@/lib/schemas/protocol-schema';
 import { generateProtocolDocx } from '@/lib/docx-generator';
+import { SGR_DOCUMENT_AGENT_PROMPT } from '@/lib/prompts/sgr-prompts';
 
 function extractMessageText(msg: any): string {
   if (!msg) return '';
@@ -125,8 +126,9 @@ export async function runDocumentAgent(context: AgentContext) {
     originalMessages: safeOriginalUIMessages,
     execute: async ({ writer }) => {
       try {
+        // Use uiMessages for conversation context as they contain the original dialogue history
         generatedDocumentContent = await generateFinalDocument(
-          messages,
+          uiMessages || [], // Use uiMessages instead of messages, with fallback
           userPrompt,
           writer,
           model,
@@ -164,7 +166,7 @@ export async function runDocumentAgent(context: AgentContext) {
 }
 
 async function generateFinalDocument(
-  messages: any[],
+  uiMessages: any[], // Changed from messages to uiMessages
   userPrompt: string | null,
   dataStream: any,
   model: any,
@@ -181,11 +183,22 @@ async function generateFinalDocument(
     });
   };
 
-
-  // Извлекаем всю историю диалога (расшифровку встречи)
-  const conversationContext = messages
+  // Извлекаем всю историю диалога (расшифровку встречи) из uiMessages
+  const conversationContext = uiMessages
     .map((msg) => {
-      const text = extractMessageText(msg);
+      // Extract text from uiMessages format (parts array)
+      let text = '';
+      if (Array.isArray(msg?.parts)) {
+        text = msg.parts
+          .map((p: any) => (p?.type === 'text' && typeof p.text === 'string' ? p.text : ''))
+          .filter(Boolean)
+          .join(' ');
+      }
+      // Fallback to content if parts didn't yield text
+      if (!text && typeof msg?.content === 'string') {
+        text = msg.content;
+      }
+      
       const cleaned = stripTimecodeMarkers(text);
       return cleaned ? `${msg.role}: ${cleaned}` : '';
     })
@@ -206,44 +219,10 @@ async function generateFinalDocument(
     delta: '📝 Формирование протокола обследования\n',
   });
 
-  const protocolPrompt = `Ты специалист по составлению протоколов обследования.
-
-ТВОЯ ЗАДАЧА:
-Создать структурированный протокол обследования на основе диалога между агентом и клиентом.
-
-СТРОГИЕ ТРЕБОВАНИЯ:
-1. Протокол ДОЛЖЕН содержать ВСЕ 10 разделов
-2. НЕ ИМПРОВИЗИРУЙ - используй ТОЛЬКО факты из диалога
-3. Если информация отсутствует, укажи это явно (например, "Информация не предоставлена")
-4. Даты должны быть в формате ДД.ММ.ГГГГ
-5. Все участники должны быть указаны с полными ФИО и должностями
-6. Таблицы должны быть заполнены корректно
-7. Содержание встречи заполняй подробно и структурированно
-8. Вопросы и ответы должны быть четко разделены
-9. Решения ДОЛЖНЫ иметь указание на ответственного
-10. НЕ включай в протокол гипотетические/примерные формулировки ("например", "может быть", "допустим", "возможно"). Такие фразы не считаются фактом.
-11. Раздел "Особенности миграции" заполняй только если это прямо подтвержденный факт, а не пример или гипотеза.
-12. **ВАЖНО:** Если пользователь редактировал документ вручную, сохрани его правки и используй их как основу для финальной версии.
-13. **ВАЖНО:** Сравни существующую версию документа с диалогом и объедини информацию из обоих источников.
-
-СТРУКТУРА ПРОТОКОЛА:
-1. Номер протокола и дата встречи
-2. Повестка (тема + пункты)
-3. Участники (таблицы со стороны Заказчика и Исполнителя)
-4. Термины и определения
-5. Сокращения и обозначения
-6. Содержание встречи (обсуждаемые вопросы, темы)
-7. Вопросы и ответы
-8. Решения с ответственными
-9. Открытые вопросы
-10. Согласовано (подписи)
-
-ПОЛНЫЙ ДИАЛОГ:
-"""
-${conversationContext}
-"""
-${existingDocumentContext}
-Сформируй корректный протокол обследования в соответствии со схемой. Учитывай существующую версию документа, если она предоставлена.`;
+  // Use SGR-enhanced document generation prompt
+  const protocolPrompt = SGR_DOCUMENT_AGENT_PROMPT
+    .replace('{{CONVERSATION_CONTEXT}}', conversationContext)
+    .replace('{{EXISTING_DOCUMENT_CONTEXT}}', existingDocumentContext);
 
   let protocol: Protocol | null = null;
   let markdownContent = '';

@@ -140,3 +140,117 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Markdown Table Styles */
+.prose table,
+.markdown-body table,
+.streamdown table,
+[class*="prose"] table,
+[class*="markdown"] table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.5em 0;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+}
+
+.prose thead,
+.markdown-body thead,
+.streamdown thead,
+[class*="prose"] thead,
+[class*="markdown"] thead {
+  background-color: var(--muted);
+  border-bottom: 2px solid var(--border);
+}
+
+.prose th,
+.markdown-body th,
+.streamdown th,
+[class*="prose"] th,
+[class*="markdown"] th {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  font-weight: 600;
+  color: var(--foreground);
+  border-right: 1px solid var(--border);
+}
+
+.prose th:last-child,
+.markdown-body th:last-child,
+.streamdown th:last-child,
+[class*="prose"] th:last-child,
+[class*="markdown"] th:last-child {
+  border-right: none;
+}
+
+.prose td,
+.markdown-body td,
+.streamdown td,
+[class*="prose"] td,
+[class*="markdown"] td {
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  color: var(--foreground);
+}
+
+.prose td:last-child,
+.markdown-body td:last-child,
+.streamdown td:last-child,
+[class*="prose"] td:last-child,
+[class*="markdown"] td:last-child {
+  border-right: none;
+}
+
+.prose tbody tr:nth-child(odd),
+.markdown-body tbody tr:nth-child(odd),
+.streamdown tbody tr:nth-child(odd),
+[class*="prose"] tbody tr:nth-child(odd),
+[class*="markdown"] tbody tr:nth-child(odd) {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+.dark .prose tbody tr:nth-child(odd),
+.dark .markdown-body tbody tr:nth-child(odd),
+.dark .streamdown tbody tr:nth-child(odd),
+.dark [class*="prose"] tbody tr:nth-child(odd),
+.dark [class*="markdown"] tbody tr:nth-child(odd) {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+.prose tbody tr:hover,
+.markdown-body tbody tr:hover,
+.streamdown tbody tr:hover,
+[class*="prose"] tbody tr:hover,
+[class*="markdown"] tbody tr:hover {
+  background-color: var(--accent);
+  background-color: rgba(0, 0, 0, 0.04);
+}
+
+.dark .prose tbody tr:hover,
+.dark .markdown-body tbody tr:hover,
+.dark .streamdown tbody tr:hover,
+.dark [class*="prose"] tbody tr:hover,
+.dark [class*="markdown"] tbody tr:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+/* Responsive table wrapper */
+.prose table-wrapper,
+.markdown-body table-wrapper,
+.streamdown table-wrapper,
+.table-container {
+  overflow-x: auto;
+  margin: 1.5em 0;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+}
+
+.prose table-wrapper table,
+.markdown-body table-wrapper table,
+.streamdown table-wrapper table,
+.table-container table {
+  margin: 0;
+  min-width: 100%;
+}
