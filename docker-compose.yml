@@ -79,10 +79,9 @@ services:
 
 volumes:
   surreal-data:
-  # Явное имя тома: переиспользование моделей (напр. chatbot_ollama_data) без второго pull.
-  # По умолчанию — как раньше: ${COMPOSE_PROJECT_NAME}_ollama_data (имя папки проекта + суффикс).
+  # Отдельный том проекта: chatbot2_ollama_data и т.д. Чтобы подключить старый том с моделями,
+  # используйте второй файл: docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml up -d
   ollama_data:
-    name: ${OLLAMA_VOLUME_NAME:-${COMPOSE_PROJECT_NAME}_ollama_data}
   rag-uploads:
   rag-output:
   rag-storage:

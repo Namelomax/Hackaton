@@ -13,7 +13,18 @@ docker compose exec ollama ollama pull qwen3.6:27b
 
 Без **`nomic-embed-text`** (или другой модели из `LOCAL_OPENAI_EMBEDDING_MODEL`) RAG падает на `/embeddings` с `APIConnectionError` / ретраями.
 
-Переиспользование моделей из старого проекта: тома вида `chatbot_ollama_data` и `chatbot2_ollama_data` — это **разные каталоги**. Чтобы не качать модели второй раз, в `.env` задайте **`OLLAMA_VOLUME_NAME=chatbot_ollama_data`** (имя из `docker volume ls`) и выполните `docker compose up -d`. Не держите запущенными **два** контейнера `ollama`, смонтированных в **один** том — возможна порча данных.
+Переиспользование моделей из старого проекта: тома `chatbot_ollama_data` и `chatbot2_ollama_data` — **разные каталоги**. Переменная `OLLAMA_VOLUME_NAME` в имени тома в Compose на части установок **не подставляется** — контейнер остаётся на пустом томе.
+
+Надёжный способ: второй файл compose с **внешним** томом (отредактируйте имя тома в файле под вывод `docker volume ls`):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml up -d --force-recreate ollama
+docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml exec ollama ollama list
+```
+
+Уберите из `.env` строку **`OLLAMA_BASE_URL=http://host.docker.internal:...`** для режима с контейнером `ollama`; нужно **`OLLAMA_BASE_URL=http://ollama:11434/v1`** (и то же для `OLLAMA_OPENAI_BASE_URL` у rag-api), иначе `web` ходит не в тот Ollama.
+
+Не держите запущенными **два** контейнера `ollama` на **одном** томе.
 
 GPU (NVIDIA): в `docker-compose.yml` у сервиса `ollama` можно добавить блок `deploy.resources.reservations.devices` или устаревшее `gpus: all` (как в старом RagTest) — см. [документацию Ollama Docker](https://github.com/ollama/ollama/blob/main/docs/docker.md).
 

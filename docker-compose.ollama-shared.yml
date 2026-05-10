@@ -1,0 +1,16 @@
+# Переиспользование уже заполненного Docker-тома с моделями (без дубликата на диске).
+#
+# Проверьте имя: docker volume ls | grep ollama
+# Запуск:
+#   docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml up -d
+#
+# Ниже замените имя тома на своё, если отличается (должно совпадать с выводом volume ls).
+
+services:
+  ollama:
+    volumes:
+      - chatbot_ollama_data:/root/.ollama
+
+volumes:
+  chatbot_ollama_data:
+    external: true
