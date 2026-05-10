@@ -26,7 +26,26 @@ docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml exec ol
 
 Не держите запущенными **два** контейнера `ollama` на **одном** томе.
 
-GPU (NVIDIA): в `docker-compose.yml` у сервиса `ollama` можно добавить блок `deploy.resources.reservations.devices` или устаревшее `gpus: all` (как в старом RagTest) — см. [документацию Ollama Docker](https://github.com/ollama/ollama/blob/main/docs/docker.md).
+### GPU (NVIDIA) для Ollama
+
+В [`docker-compose.yml`](docker-compose.yml) у сервиса `ollama` задано **`gpus: all`** (все GPU в системе). Переменная **`NVIDIA_VISIBLE_DEVICES`** в `.env` позволяет ограничить карты, например `0` или `0,1` (индексы из `nvidia-smi`).
+
+На хосте (Debian/Ubuntu) нужен **NVIDIA Driver** и **[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)**. После установки перезапустите Docker:
+
+```bash
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+```
+
+Проверка, что контейнер видит GPU:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi
+```
+
+(Если образ `nvidia/cuda` не подтянется, используйте `nvidia/cuda:12.0-base-ubuntu22.04` или актуальный тег с Docker Hub.)
+
+После `docker compose up -d` в логах `ollama` вместо одной строки `library=cpu` должны появиться устройства **CUDA** / **GPU**. Две карты (3070 + 3080): Ollama обычно грузит модель на одну выбранную по умолчанию; при необходимости смотрите [документацию Ollama](https://github.com/ollama/ollama/blob/main/docs/docker.md) по нескольким GPU.
 
 Если Ollama должен остаться **только на хосте**, уберите сервис `ollama` из compose (или не используйте этот файл) и в `.env` задайте `OLLAMA_OPENAI_BASE_URL` и `OLLAMA_BASE_URL` на `http://IP_ХОСТА:11434/v1` (на Linux `host.docker.internal` часто не подходит без `extra_hosts`).
 3. Из корня репозитория:

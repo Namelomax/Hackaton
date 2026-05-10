@@ -24,10 +24,16 @@ services:
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
+    environment:
+      # Все GPU видны внутри контейнера (RTX 3070 + 3080 и т.д.). Ограничить: NVIDIA_VISIBLE_DEVICES=0 или 0,1
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
     volumes:
       - ollama_data:/root/.ollama
     ports:
       - "${OLLAMA_HOST_PORT:-127.0.0.1:11434}:11434"
+    # NVIDIA Container Toolkit на хосте: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+    # Как в классическом compose: все GPU (3070 + 3080). Ограничить: gpus: '"device=0"' или device=0,1
+    gpus: all
 
   rag-api:
     build:
