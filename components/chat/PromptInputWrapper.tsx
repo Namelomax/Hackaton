@@ -16,6 +16,94 @@ import {
   usePromptInputAttachments,
 } from '@/components/ai-elements/prompt-input';
 import { isTextExtractable } from '@/lib/utils';
+import { DatabaseIcon, Loader2Icon } from 'lucide-react';
+
+export type ChatTransportBodyExtras = {
+  chatProvider: 'openrouter' | 'ollama';
+  chatModel: string;
+  useRagContext: boolean;
+  ragMode: string;
+};
+
+async function blobUrlToFile(url: string, filename: string, mediaType?: string): Promise<File> {
+  const res = await fetch(url);
+  const blob = await res.blob();
+  return new File([blob], filename || 'upload.bin', {
+    type: mediaType || blob.type || 'application/octet-stream',
+  });
+}
+
+const RagIndexControl = ({
+  authUser,
+  status,
+  onOpenAuthDialog,
+  onRagIndexed,
+  onNotify,
+}: {
+  authUser: { id: string; username: string } | null;
+  status: string;
+  onOpenAuthDialog?: () => void;
+  onRagIndexed?: () => void;
+  onNotify: (message: string | null) => void;
+}) => {
+  const attachments = usePromptInputAttachments();
+  const [busy, setBusy] = useState(false);
+
+  const handleClick = async () => {
+    if (!authUser?.id) {
+      onOpenAuthDialog?.();
+      return;
+    }
+    const files = attachments.files;
+    if (!files.length) {
+      onNotify('Сначала прикрепите файл.');
+      return;
+    }
+
+    setBusy(true);
+    onNotify(null);
+    try {
+      for (const f of files) {
+        const url = String((f as any).url || '');
+        const name = String((f as any).filename || 'upload.bin');
+        const mt = (f as any).mediaType as string | undefined;
+        if (!url) continue;
+        const fileObj = await blobUrlToFile(url, name, mt);
+        const fd = new FormData();
+        fd.append('file', fileObj);
+        const res = await fetch('/api/rag/upload', { method: 'POST', body: fd });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const detail =
+            typeof j?.detail === 'string'
+              ? j.detail
+              : Array.isArray(j?.detail)
+                ? j.detail.map((x: unknown) => String(x)).join('; ')
+                : j?.error || res.statusText;
+          throw new Error(detail || 'RAG upload failed');
+        }
+      }
+      onRagIndexed?.();
+      onNotify('Файлы проиндексированы в RAG. Можно включить «контекст из RAG» и задать вопрос.');
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Ошибка индексации RAG');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      disabled={busy || status === 'submitted' || status === 'streaming'}
+      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-neutral-200 bg-white text-neutral-700 shadow-xs hover:bg-neutral-50 disabled:pointer-events-none disabled:opacity-40"
+      title="Отправить вложения в RAG (индексация)"
+      onClick={() => void handleClick()}
+    >
+      {busy ? <Loader2Icon className="size-4 animate-spin" /> : <DatabaseIcon className="size-4" />}
+    </button>
+  );
+};
 
 const AttachmentsSection = () => {
   const attachments = usePromptInputAttachments();
@@ -115,6 +203,8 @@ type PromptInputWrapperProps = {
   prepareSend?: () => Promise<string | null | undefined> | string | null | undefined;
   onUserMessageQueued?: (message: any) => void;
   onOpenAuthDialog?: () => void;
+  chatBody?: ChatTransportBodyExtras;
+  onRagIndexed?: () => void;
 };
 
 export const PromptInputWrapper = ({
@@ -134,10 +224,13 @@ export const PromptInputWrapper = ({
   prepareSend,
   onUserMessageQueued,
   onOpenAuthDialog,
+  chatBody,
+  onRagIndexed,
 }: PromptInputWrapperProps) => {
   const submitLockRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [authWarningOpen, setAuthWarningOpen] = useState(false);
+  const [ragNotice, setRagNotice] = useState<string | null>(null);
   const cancelRequestedRef = useRef(false);
   const preSendAbortRef = useRef<AbortController | null>(null);
   const authWarningTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -169,6 +262,12 @@ export const PromptInputWrapper = ({
       setIsSubmitting(false);
     }
   }, [status, isSubmitting]);
+
+  useEffect(() => {
+    if (!ragNotice) return;
+    const t = setTimeout(() => setRagNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [ragNotice]);
 
   const handleSubmit = async (
     message: PromptInputMessage,
@@ -260,6 +359,7 @@ export const PromptInputWrapper = ({
             selectedPromptId,
             documentContent: documentContent || undefined,
             ...(ensuredConversationId ? { conversationId: ensuredConversationId } : {}),
+            ...(chatBody ?? {}),
           },
         }
       );
@@ -291,6 +391,7 @@ return (
     >
       {/* Attachments*/}
       <AttachmentsSection />
+      {ragNotice && <div className="text-xs text-neutral-600 px-0.5">{ragNotice}</div>}
 
       {/* Input Area*/}
       <div className="flex items-end relative">
@@ -309,6 +410,14 @@ return (
               <PromptInputActionAddAttachments />
             </PromptInputActionMenuContent>
           </PromptInputActionMenu>
+
+          <RagIndexControl
+            authUser={authUser}
+            status={status}
+            onOpenAuthDialog={onOpenAuthDialog}
+            onRagIndexed={onRagIndexed}
+            onNotify={setRagNotice}
+          />
 
           <SubmitButton status={status} input={input} isLocked={isSubmitting} onStop={handleStop} />
         </div>

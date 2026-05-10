@@ -10,8 +10,43 @@ import { Sidebar } from '@/components/chat/Sidebar';
 import { ConversationArea } from '@/components/chat/ConversationArea';
 import { PromptInputWrapper } from '@/components/chat/PromptInputWrapper';
 import { Loader } from '@/components/ai-elements/loader';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { parseModelsFromEnv } from '@/lib/chat-models';
+
+const DEFAULT_OPENROUTER_MODEL = 'arcee-ai/trinity-large-preview:free';
 
 export default function ChatPage() {
+  const localModels = useMemo(() => parseModelsFromEnv(process.env.NEXT_PUBLIC_LOCAL_MODELS), []);
+
+  const [chatProvider, setChatProvider] = useState<'openrouter' | 'ollama'>('openrouter');
+  const [chatModel, setChatModel] = useState(DEFAULT_OPENROUTER_MODEL);
+  const [useRagContext, setUseRagContext] = useState(false);
+  const [ragMode, setRagMode] = useState<'hybrid' | 'local' | 'global'>('hybrid');
+
+  useEffect(() => {
+    if (chatProvider === 'ollama') {
+      setChatModel((prev) => (localModels.includes(prev) ? prev : localModels[0]!));
+    } else {
+      setChatModel(DEFAULT_OPENROUTER_MODEL);
+    }
+  }, [chatProvider, localModels]);
+
+  const chatBody = useMemo(
+    () => ({
+      chatProvider,
+      chatModel,
+      useRagContext,
+      ragMode,
+    }),
+    [chatProvider, chatModel, useRagContext, ragMode]
+  );
+
   const [authChecked, setAuthChecked] = useState(false);
   const [conversationsLoaded, setConversationsLoaded] = useState(false);
   const [promptsLoaded] = useState(true);
@@ -979,6 +1014,66 @@ export default function ChatPage() {
           {/* Поле ввода и менеджер промптов */}
           <div className="border-t px-4 py-2 min-h-[104px]">
             <div className="max-w-3xl mx-auto space-y-2">
+              <div className="flex flex-wrap gap-2 items-center text-xs text-neutral-700 pb-1">
+                <Select
+                  value={chatProvider}
+                  onValueChange={(v) => setChatProvider(v as 'openrouter' | 'ollama')}
+                >
+                  <SelectTrigger size="sm" className="h-8 min-w-[160px]">
+                    <SelectValue placeholder="Провайдер LLM" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="openrouter">Облако (OpenRouter)</SelectItem>
+                    <SelectItem value="ollama">Локально (Ollama)</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                {chatProvider === 'ollama' ? (
+                  <Select value={chatModel} onValueChange={setChatModel}>
+                    <SelectTrigger size="sm" className="h-8 min-w-[140px]">
+                      <SelectValue placeholder="Модель" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {localModels.map((m) => (
+                        <SelectItem key={m} value={m}>
+                          {m}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <span
+                    className="rounded border px-2 py-1 bg-neutral-50 text-[11px] max-w-[240px] truncate"
+                    title={chatModel}
+                  >
+                    {chatModel}
+                  </span>
+                )}
+
+                <Select
+                  value={ragMode}
+                  onValueChange={(v) => setRagMode(v as 'hybrid' | 'local' | 'global')}
+                >
+                  <SelectTrigger size="sm" className="h-8 min-w-[120px]">
+                    <SelectValue placeholder="Режим RAG" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="hybrid">RAG: hybrid</SelectItem>
+                    <SelectItem value="local">RAG: local</SelectItem>
+                    <SelectItem value="global">RAG: global</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    className="rounded border-neutral-300"
+                    checked={useRagContext}
+                    onChange={(e) => setUseRagContext(e.target.checked)}
+                  />
+                  Контекст из RAG
+                </label>
+              </div>
               <PromptInputWrapper
                 className="w-full"
                 input={input}
@@ -995,6 +1090,8 @@ export default function ChatPage() {
                 documentContent={document.content}
                 prepareSend={prepareSend}
                 onUserMessageQueued={undefined}
+                chatBody={chatBody}
+                onRagIndexed={() => setUseRagContext(true)}
                 onOpenAuthDialog={() => {
                   setAuthMode('login');
                   setAuthHintFromPrompt(true);

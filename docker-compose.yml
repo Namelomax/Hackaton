@@ -1,0 +1,68 @@
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:latest
+    command:
+      - start
+      - --log
+      - warn
+      - --bind
+      - 0.0.0.0:8000
+      - --user
+      - root
+      - --pass
+      - ${SURREAL_ROOT_PASSWORD:-root}
+      - rocksdb:/data/database.db
+    volumes:
+      - surreal-data:/data
+    ports:
+      - "${SURREAL_PORT:-8000}:8000"
+
+  rag-api:
+    build:
+      context: ./rag-api
+      dockerfile: Dockerfile
+    environment:
+      LOCAL_OPENAI_BASE_URL: ${OLLAMA_OPENAI_BASE_URL:-http://host.docker.internal:11434/v1}
+      LOCAL_OPENAI_API_KEY: ${OLLAMA_API_KEY:-ollama}
+      LOCAL_OPENAI_EMBEDDING_MODEL: ${LOCAL_OPENAI_EMBEDDING_MODEL:-nomic-embed-text}
+      RAG_CORS_ORIGINS: ${RAG_CORS_ORIGINS:-http://localhost:3000}
+    volumes:
+      - rag-uploads:/app/uploads
+      - rag-output:/app/output
+      - rag-storage:/app/rag_storage
+    ports:
+      - "${RAG_API_PORT:-8001}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      surrealdb:
+        condition: service_started
+      rag-api:
+        condition: service_started
+    environment:
+      SURREALDB_URL: ${SURREALDB_URL:-ws://surrealdb:8000/rpc}
+      SURREALDB_NAMESPACE: ${SURREALDB_NAMESPACE:-chatbot}
+      SURREALDB_DATABASE: ${SURREALDB_DATABASE:-main}
+      SURREALDB_USER: ${SURREALDB_USER:-root}
+      SURREALDB_PASSWORD: ${SURREALDB_PASSWORD:-root}
+      RAG_API_URL: ${RAG_API_URL:-http://rag-api:8000}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OPENROUTER_MODEL_DEFAULT: ${OPENROUTER_MODEL_DEFAULT:-arcee-ai/trinity-large-preview:free}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-ollama}
+      GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY:-}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  surreal-data:
+  rag-uploads:
+  rag-output:
+  rag-storage:

@@ -56,17 +56,24 @@ async function connectDB() {
     }
   }
 
-  await db.connect(
-    "wss://wild-mountain-06cupioiq9vpbadmqsbcb609a8.aws-euw1.surreal.cloud/rpc",
-    {
-      namespace: process.env.SURREAL_NAMESPACE,
-      database: process.env.SURREAL_DATABASE,
-      auth: {
-        username: String(process.env.SURREAL_USER),
-        password: String(process.env.SURREAL_PASS),
-      },
-    }
-  );
+  const url = process.env.SURREALDB_URL;
+  const namespace = process.env.SURREALDB_NAMESPACE;
+  const database = process.env.SURREALDB_DATABASE;
+  const username = process.env.SURREALDB_USER;
+  const password = process.env.SURREALDB_PASSWORD;
+
+  if (!url || !namespace || !database || !username || !password) {
+    throw new Error(
+      'Missing SurrealDB env: set SURREALDB_URL, SURREALDB_NAMESPACE, SURREALDB_DATABASE, SURREALDB_USER, SURREALDB_PASSWORD'
+    );
+  }
+
+  await db.connect(url, { reconnect: true });
+  await db.use({ namespace, database });
+  await db.signin({
+    username: String(username),
+    password: String(password),
+  });
 
   surrealState.isConnected = true;
   if (!surrealState.logged && process.env.SURREAL_LOG === '1') {

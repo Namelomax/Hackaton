@@ -1,30 +1,104 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { 
-  convertToModelMessages, 
+import { createOpenAI } from '@ai-sdk/openai';
+import {
+  convertToModelMessages,
 } from 'ai';
 import crypto from 'crypto';
 import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation } from '@/lib/getPromt';
+import { parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
 import { runMainAgent } from './agents/main-agent';
 import { AgentContext } from './agents/types';
 
 export const maxDuration = 300;
 export const runtime = 'nodejs';
 
-const openrouter = createOpenRouter({
-  apiKey: process.env.OPENROUTER_API_KEY!,
-  baseURL: 'https://openrouter.ai/api/v1',
-  compatibility: 'strict',
-  headers: {
-    'X-Title': 'AISDK',
-  },
-});
-
-const model = openrouter.chat('arcee-ai/trinity-large-preview:free');
-
 let cachedPrompt: string | null = null;
 
-function buildSystemPrompt(userPrompt: string, hiddenDocsContext?: string): string {
+function createOpenRouterInstance() {
+  const apiKey = process.env.OPENROUTER_API_KEY ?? '';
+  return createOpenRouter({
+    apiKey,
+    baseURL: 'https://openrouter.ai/api/v1',
+    compatibility: 'strict',
+    headers: {
+      'X-Title': 'AISDK',
+    },
+  });
+}
+
+function resolveOpenRouterSlug(requestedRaw: string): string {
+  const fallback = process.env.OPENROUTER_MODEL_DEFAULT || 'arcee-ai/trinity-large-preview:free';
+  const requested = requestedRaw.trim();
+  const allowedCsv = process.env.ALLOWED_OPENROUTER_MODELS?.trim();
+  if (!allowedCsv) {
+    if (requested && /^[\w\-./:]+$/.test(requested) && requested.length <= 160) return requested;
+    return fallback;
+  }
+  const allowed = allowedCsv.split(',').map((s) => s.trim()).filter(Boolean);
+  if (allowed.includes(requested)) return requested;
+  return allowed.includes(fallback) ? fallback : allowed[0]!;
+}
+
+function resolveLanguageModel(body: Record<string, unknown>) {
+  const provider = body.chatProvider === 'ollama' ? 'ollama' : 'openrouter';
+
+  if (provider === 'ollama') {
+    const allowed = parseAllowedOllamaModelsFromServerEnv(process.env.ALLOWED_OLLAMA_MODELS);
+    const requested = typeof body.chatModel === 'string' ? body.chatModel.trim() : '';
+    const modelId = allowed.includes(requested) ? requested : allowed[0]!;
+    const baseURL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434/v1';
+    const openai = createOpenAI({
+      baseURL,
+      apiKey: process.env.OLLAMA_API_KEY || 'ollama',
+    });
+    return openai.chat(modelId);
+  }
+
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    throw new Error('OPENROUTER_API_KEY is not set');
+  }
+  const slug = resolveOpenRouterSlug(typeof body.chatModel === 'string' ? body.chatModel : '');
+  return createOpenRouterInstance().chat(slug);
+}
+
+async function fetchRagSnippet(question: string, mode: string): Promise<string> {
+  const base = process.env.RAG_API_URL?.trim();
+  if (!base || !question.trim()) return '';
+
+  const normalizedMode = ['hybrid', 'local', 'global'].includes(mode) ? mode : 'hybrid';
+
+  try {
+    const url = `${base.replace(/\/$/, '')}/query`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question: question.slice(0, 8000),
+        mode: normalizedMode,
+      }),
+    });
+    if (!res.ok) return '';
+    const data = (await res.json().catch(() => null)) as { answer?: string } | null;
+    const answer = typeof data?.answer === 'string' ? data.answer : '';
+    return answer.trim().slice(0, 12000);
+  } catch {
+    return '';
+  }
+}
+
+function buildSystemPrompt(userPrompt: string, hiddenDocsContext?: string, ragContext?: string): string {
+  const ragBlock = ragContext?.trim()
+    ? `
+===== КОНТЕКСТ ИЗ RAG (ФРАГМЕНТЫ ИЗ ИНДЕКСА ДОКУМЕНТОВ) =====
+${ragContext.trim()}
+ИНСТРУКЦИЯ: опирайся на этот контекст для фактов из загруженных в RAG документов; если данных нет — так и скажи.
+===== КОНЕЦ КОНТЕКСТА RAG =====
+`
+    : '';
+
   return `
+${ragBlock}
 ===== ВЛОЖЕНИЯ ПОЛЬЗОВАТЕЛЯ (КОНТЕКСТ) =====
 ${hiddenDocsContext}
 
@@ -262,7 +336,8 @@ async function extractPptxTextFromAttachment(att: any): Promise<string | null> {
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
-  let { messages, newSystemPrompt, userId, selectedPromptId, documentContent } = body as any;
+  let { messages, newSystemPrompt, userId, selectedPromptId, documentContent, useRagContext, ragMode } =
+    body as any;
   let conversationId: string | null = null;
 
   try {
@@ -533,7 +608,37 @@ export async function POST(req: Request) {
     ? hiddenDocEntries.join('\n\n').slice(0, 4000)
     : '';
 
-  const systemPrompt = buildSystemPrompt(userPrompt, hiddenDocsContext);
+  let ragSnippet = '';
+  if (Boolean(useRagContext) && process.env.RAG_API_URL) {
+    const lastUser = [...messagesWithHidden].reverse().find((m) => m.role === 'user');
+    const raw =
+      typeof lastUser?.content === 'string'
+        ? lastUser.content.replace(/<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi, '').trim()
+        : '';
+    const modeStr = typeof ragMode === 'string' ? ragMode : 'hybrid';
+    if (raw) {
+      ragSnippet = await fetchRagSnippet(raw, modeStr);
+    }
+  }
+
+  const systemPrompt = buildSystemPrompt(
+    userPrompt,
+    hiddenDocsContext,
+    ragSnippet || undefined
+  );
+
+  let languageModel;
+  try {
+    languageModel = resolveLanguageModel(body as Record<string, unknown>);
+  } catch (err) {
+    console.error('Failed to resolve language model:', err);
+    return new Response(
+      JSON.stringify({
+        error: err instanceof Error ? err.message : 'Language model configuration error',
+      }),
+      { status: 500 }
+    );
+  }
 
   console.log('📦 Messages prepared:', {
     messagesWithHidden: messagesWithHidden.length,
@@ -574,7 +679,7 @@ export async function POST(req: Request) {
     userId,
     conversationId,
     documentContent,
-    model,
+    model: languageModel,
   };
 
   // 6. Run Main Agent

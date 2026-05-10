@@ -1,0 +1,8 @@
+node_modules
+.next
+.git
+rag-api/output
+rag-api/rag_storage
+**/__pycache__
+.env
+.env.*
