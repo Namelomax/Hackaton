@@ -17,7 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { parseModelsFromEnv } from '@/lib/chat-models';
+import { parseModelsFromEnv, pickDefaultLocalChatModel } from '@/lib/chat-models';
 import { copyTextToClipboard } from '@/lib/copyToClipboard';
 import { resolveMessagesFromRecord } from '@/lib/conversationMessages';
 
@@ -39,14 +39,16 @@ function buildPersistPutBody(
 export default function ChatPage() {
   const localModels = useMemo(() => parseModelsFromEnv(process.env.NEXT_PUBLIC_LOCAL_MODELS), []);
 
-  const [chatProvider, setChatProvider] = useState<'openrouter' | 'ollama'>('openrouter');
-  const [chatModel, setChatModel] = useState(DEFAULT_OPENROUTER_MODEL);
-  const [useRagContext, setUseRagContext] = useState(false);
-  const [ragMode, setRagMode] = useState<'hybrid' | 'local' | 'global'>('hybrid');
+  const [chatProvider, setChatProvider] = useState<'openrouter' | 'ollama'>('ollama');
+  const [chatModel, setChatModel] = useState<string>(() =>
+    pickDefaultLocalChatModel(process.env.NEXT_PUBLIC_LOCAL_MODELS),
+  );
 
   useEffect(() => {
     if (chatProvider === 'ollama') {
-      setChatModel((prev) => (localModels.includes(prev) ? prev : localModels[0]!));
+      setChatModel((prev) =>
+        localModels.includes(prev) ? prev : pickDefaultLocalChatModel(process.env.NEXT_PUBLIC_LOCAL_MODELS),
+      );
     } else {
       setChatModel(DEFAULT_OPENROUTER_MODEL);
     }
@@ -56,10 +58,8 @@ export default function ChatPage() {
     () => ({
       chatProvider,
       chatModel,
-      useRagContext,
-      ragMode,
     }),
-    [chatProvider, chatModel, useRagContext, ragMode]
+    [chatProvider, chatModel],
   );
 
   const [authChecked, setAuthChecked] = useState(false);
@@ -1116,30 +1116,6 @@ export default function ChatPage() {
                     {chatModel}
                   </span>
                 )}
-
-                <Select
-                  value={ragMode}
-                  onValueChange={(v) => setRagMode(v as 'hybrid' | 'local' | 'global')}
-                >
-                  <SelectTrigger size="sm" className="h-8 min-w-[120px]">
-                    <SelectValue placeholder="Режим RAG" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="hybrid">RAG: hybrid</SelectItem>
-                    <SelectItem value="local">RAG: local</SelectItem>
-                    <SelectItem value="global">RAG: global</SelectItem>
-                  </SelectContent>
-                </Select>
-
-                <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    className="rounded border-neutral-300"
-                    checked={useRagContext}
-                    onChange={(e) => setUseRagContext(e.target.checked)}
-                  />
-                  Контекст из RAG
-                </label>
               </div>
               <PromptInputWrapper
                 className="w-full"
@@ -1158,7 +1134,6 @@ export default function ChatPage() {
                 prepareSend={prepareSend}
                 onUserMessageQueued={undefined}
                 chatBody={chatBody}
-                onRagIndexed={() => setUseRagContext(true)}
                 onOpenAuthDialog={() => {
                   setAuthMode('login');
                   setAuthHintFromPrompt(true);

@@ -10,6 +10,8 @@ export interface AgentContext {
   conversationId?: string | null;
   documentContent?: string; // State Injection
   model: any; // The language model instance
+  /** Прерывание генерации при отмене запроса клиентом (кнопка «Стоп»). */
+  abortSignal?: AbortSignal | null;
 }
 
 export interface AgentResponse {

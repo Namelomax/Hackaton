@@ -138,7 +138,7 @@ export async function runChatAgent(
   systemPrompt: string,
   userPrompt: string,
 ) {
-  const { messages, model, userId, conversationId, documentContent } = context;
+  const { messages, model, userId, conversationId, documentContent, abortSignal } = context;
   const messagesWithUserPrompt: ModelMessage[] = [];
 
   if (userPrompt && userPrompt.trim()) {
@@ -194,6 +194,7 @@ export async function runChatAgent(
       temperature: 0,
       messages: messagesWithUserPrompt,
       system: adaptedSystemPrompt,
+      ...(abortSignal ? { abortSignal } : {}),
     });
 
     return stream.toUIMessageStreamResponse({
@@ -244,6 +245,7 @@ export async function runChatAgent(
           publishInvestigationProtocol,
         },
         stopWhen: stepCountIs(8),
+        ...(abortSignal ? { abortSignal } : {}),
       });
 
       writer.merge(result.toUIMessageStream());

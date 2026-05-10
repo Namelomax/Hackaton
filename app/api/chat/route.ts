@@ -741,6 +741,7 @@ export async function POST(req: Request) {
     conversationId,
     documentContent,
     model: languageModel,
+    abortSignal: req.signal,
   };
 
   // 6. Run Main Agent

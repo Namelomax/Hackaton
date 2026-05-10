@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { Message, MessageContent } from '@/components/ai-elements/message';
+import { Loader } from '@/components/ai-elements/loader';
 import { Response } from '@/components/ai-elements/response';
 import { Actions, Action } from '@/components/ai-elements/actions';
 import { RefreshCcw, Copy, Check, Wrench, Paperclip, FileText, Image as ImageIcon, Pencil, X, Send } from 'lucide-react';
@@ -156,25 +157,37 @@ export const MessageRenderer = ({
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState('');
 
+  const rawParts = Array.isArray(message?.parts) ? message.parts : [];
+
   const attachments: Attachment[] = Array.isArray(message?.metadata?.attachments)
     ? message.metadata.attachments
-    : Array.isArray(message?.parts)
-      ? message.parts
+    : rawParts
           .filter((p: any) => p?.type === 'file')
           .map((p: any) => ({
             id: p.id,
             name: p.filename,
             url: p.url,
             mediaType: p.mediaType,
-          }))
-      : [];
+          }));
 
-  const textParts = message.parts.filter(
-    (part: any): part is { type: 'text'; text: string } => part.type === 'text'
+  const textParts = rawParts.filter(
+    (part: any): part is { type: 'text'; text: string } => part.type === 'text',
   );
-  const toolParts = message.parts.filter(
-    (part: any) => part.type.startsWith('tool-') && !part.type.startsWith('tool-data')
+  const toolParts = rawParts.filter(
+    (part: any) =>
+      typeof part?.type === 'string' &&
+      part.type.startsWith('tool-') &&
+      !part.type.startsWith('tool-data'),
   );
+
+  const hasVisibleAssistantText = textParts.some((p: any) => String(p?.text ?? '').trim().length > 0);
+
+  const assistantStreamingAwaitingText =
+    message.role === 'assistant' &&
+    isLastMessage &&
+    status === 'streaming' &&
+    toolParts.length === 0 &&
+    !hasVisibleAssistantText;
 
   const isToolsStreaming = status === 'streaming' && isLastMessage && toolParts.length > 0;
 
@@ -193,8 +206,8 @@ export const MessageRenderer = ({
           </div>
         )}
 
-        {/* Рендеринг текста только если не редактируем */}
-        {!isEditing && textParts.map((part: any, index: number) => {
+        {/* Рендеринг текста только если не редактируем; до первого токена — кружок, а не пустой пузырь */}
+        {!isEditing && !assistantStreamingAwaitingText && textParts.map((part: any, index: number) => {
           try {
             const parsed = JSON.parse(part.text);
 
@@ -230,6 +243,13 @@ export const MessageRenderer = ({
             return renderTextResponse(part.text, `${message.id}-text-${index}`);
           }
         })}
+
+        {assistantStreamingAwaitingText && (
+          <div className="flex items-center gap-2 py-1 text-muted-foreground" aria-live="polite">
+            <Loader size={18} />
+            <span className="text-xs">Генерация ответа…</span>
+          </div>
+        )}
 
         {toolParts.length > 0 && <ToolsDisplay tools={toolParts} isStreaming={isToolsStreaming} />}
 

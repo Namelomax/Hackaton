@@ -48,6 +48,8 @@ export function createPublishInvestigationProtocolTool(
         context.model,
         context.documentContent,
         context.conversationId ?? null,
+        0.1,
+        context.abortSignal ?? undefined,
       );
       sink.markdown = md;
       return {

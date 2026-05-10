@@ -39,7 +39,8 @@ function stripTimecodeMarkers(text: string): string {
 }
 
 export async function runDocumentAgent(context: AgentContext) {
-  const { messages, uiMessages, model, userPrompt, documentContent, userId, conversationId } = context;
+  const { messages, uiMessages, model, userPrompt, documentContent, userId, conversationId, abortSignal } =
+    context;
   let generatedDocumentContent = '';
 
   const safeOriginalUIMessages = (() => {
@@ -67,7 +68,9 @@ export async function runDocumentAgent(context: AgentContext) {
           writer,
           model,
           documentContent,
-          conversationId
+          conversationId,
+          0.1,
+          abortSignal ?? undefined,
         );
       } catch (error) {
         console.error('Document generation error:', error);
@@ -108,6 +111,7 @@ export async function generateFinalDocument(
   existingDocument?: string,
   conversationId?: string | null,
   temperature: number = 0.1,
+  abortSignal?: AbortSignal,
 ): Promise<string> {
   const writeData = (payload: { type: string; data: any; id?: string; transient?: boolean }) => {
     dataStream.write({
@@ -167,6 +171,7 @@ export async function generateFinalDocument(
       temperature,
       schema: ProtocolSchema,
       prompt: protocolPrompt,
+      ...(abortSignal ? { abortSignal } : {}),
     });
 
     let lastMarkdown = '';
