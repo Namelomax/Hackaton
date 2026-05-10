@@ -98,6 +98,9 @@ export default function ChatPage() {
     content: '',
     isStreaming: false,
   });
+  /** Актуальный документ движка (для возврата в чат во время стрима — не подменять из списка). */
+  const engineDocumentRef = useRef(document);
+  engineDocumentRef.current = document;
   const [isChatsPanelVisible, setIsChatsPanelVisible] = useState(true);
   const selectedPromptId: string | null = null;
 
@@ -970,8 +973,14 @@ export default function ChatPage() {
       contentLength: documentContentToUse?.length,
     });
 
+    const rejoinEngineChatWhileStreaming =
+      Boolean(status !== 'ready' && conversationId && conversation.id === conversationId);
+
     // Update the visible document panel for the selected chat.
-    if (documentContentToUse) {
+    if (rejoinEngineChatWhileStreaming) {
+      // Правая панель: живое состояние движка, а не снимок из списка (во время стрима).
+      setViewDocument({ ...engineDocumentRef.current });
+    } else if (documentContentToUse) {
       const derived = extractTitleFromMarkdown(documentContentToUse);
       const newDoc = {
         title: (conversation.title && String(conversation.title).trim().toLowerCase() !== 'чат')
@@ -998,30 +1007,35 @@ export default function ChatPage() {
 
     // Otherwise switch the engine to this chat (safe).
     setConversationId(conversation.id);
-    const hydrated = toUIMessages(conversation.messages);
-    setLastSavedAssistantId(getLastAssistantId(hydrated));
-    setMessages(hydrated);
 
-    // Keep engine document in sync when engine chat changes.
-    if (documentContentToUse) {
-      const derived = extractTitleFromMarkdown(documentContentToUse);
-      const nextDoc = {
-        title: (conversation.title && String(conversation.title).trim().toLowerCase() !== 'чат')
-          ? conversation.title
-          : (derived || 'Документ'),
-        content: documentContentToUse,
-        isStreaming: false,
-      } as DocumentState;
-      console.log('[handleSelectConversation] Setting engine document:', {
-        title: nextDoc.title,
-        contentLength: nextDoc.content.length,
-      });
-      setDocument(nextDoc);
-      setViewDocument(nextDoc);
-    } else {
-      const emptyDoc = { title: '', content: '', isStreaming: false } as DocumentState;
-      setDocument(emptyDoc);
-      setViewDocument(emptyDoc);
+    // Не подменять сообщения из БД, если пользователь вернулся в тот же чат, где ещё идёт ответ —
+    // иначе optimistic user + частичный assistant пропадут из useChat.
+    if (!rejoinEngineChatWhileStreaming) {
+      const hydrated = toUIMessages(conversation.messages);
+      setLastSavedAssistantId(getLastAssistantId(hydrated));
+      setMessages(hydrated);
+
+      // Keep engine document in sync when engine chat changes.
+      if (documentContentToUse) {
+        const derived = extractTitleFromMarkdown(documentContentToUse);
+        const nextDoc = {
+          title: (conversation.title && String(conversation.title).trim().toLowerCase() !== 'чат')
+            ? conversation.title
+            : (derived || 'Документ'),
+          content: documentContentToUse,
+          isStreaming: false,
+        } as DocumentState;
+        console.log('[handleSelectConversation] Setting engine document:', {
+          title: nextDoc.title,
+          contentLength: nextDoc.content.length,
+        });
+        setDocument(nextDoc);
+        setViewDocument(nextDoc);
+      } else {
+        const emptyDoc = { title: '', content: '', isStreaming: false } as DocumentState;
+        setDocument(emptyDoc);
+        setViewDocument(emptyDoc);
+      }
     }
   };
 

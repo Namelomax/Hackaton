@@ -1,9 +1,13 @@
+import json
+import logging
 import os
 import subprocess
 import shutil
 import uuid
 from pathlib import Path
 import re
+
+logger = logging.getLogger(__name__)
 from lightrag.llm.openai import openai_embed
 from lightrag.utils import EmbeddingFunc
 from raganything import RAGAnything, RAGAnythingConfig
@@ -182,6 +186,12 @@ class RAGService:
                 os.remove(cleanup_pdf)
 
             print("Document processed")
+            logger.info(
+                "Ingest finished for source path=%s (normalized copy already removed). "
+                "If LightRAG logged «duplicate document», повторная вставка чанков не выполнялась — "
+                "запросы к /query всё равно используют уже существующий граф.",
+                file_path,
+            )
             return {"status": "success", "message": "Документ обработан"}
         except Exception as e:
             print(f"Error while processing document: {e}")
@@ -196,6 +206,10 @@ class RAGService:
             return ""
 
         # We only need retrieved context (Next.js will do final LLM generation).
+        qprev = (question or "").replace("\n", " ").strip()
+        if len(qprev) > 160:
+            qprev = qprev[:160] + "…"
+        logger.info("RAG /query mode=%s len=%s preview=%r", mode, len(question or ""), qprev)
         result = await self.rag.aquery(
             question,
             mode=mode,
@@ -214,6 +228,62 @@ class RAGService:
             # Fallback: represent dict in a stable way
             return str(result)
         return str(result)
+
+    def list_indexed_documents(self) -> list[dict]:
+        """Список документов в индексе LightRAG (по kv_store)."""
+        base = Path("./rag_storage")
+        by_id: dict[str, dict] = {}
+        status_path = base / "kv_store_doc_status.json"
+        if status_path.exists():
+            try:
+                data = json.loads(status_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    for doc_id, payload in data.items():
+                        if not isinstance(doc_id, str) or not doc_id.strip():
+                            continue
+                        name = doc_id
+                        st = ""
+                        if isinstance(payload, dict):
+                            st = str(payload.get("status") or "")
+                            fp = payload.get("file_path") or payload.get("path")
+                            if fp:
+                                name = os.path.basename(str(fp)) or doc_id
+                        by_id[doc_id] = {"id": doc_id, "filename": name, "status": st}
+            except Exception:
+                pass
+
+        full_path = base / "kv_store_full_docs.json"
+        if full_path.exists():
+            try:
+                data = json.loads(full_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    for doc_id in data.keys():
+                        if not isinstance(doc_id, str) or doc_id in by_id:
+                            continue
+                        by_id[doc_id] = {"id": doc_id, "filename": doc_id, "status": ""}
+            except Exception:
+                pass
+        return sorted(by_id.values(), key=lambda x: x["id"])
+
+    async def delete_indexed_document(self, doc_id: str) -> dict:
+        """Удаление документа из индекса LightRAG по id."""
+        if not doc_id or not str(doc_id).strip():
+            return {"ok": False, "error": "empty id"}
+        if self.rag is None or getattr(self.rag, "lightrag", None) is None:
+            return {"ok": False, "error": "RAG not initialized"}
+        lr = self.rag.lightrag
+        try:
+            if hasattr(lr, "adelete_by_doc_id"):
+                await lr.adelete_by_doc_id(doc_id)
+            elif hasattr(lr, "delete_by_doc_id"):
+                maybe = lr.delete_by_doc_id(doc_id)
+                if hasattr(maybe, "__await__"):
+                    await maybe
+            else:
+                return {"ok": False, "error": "delete_by_doc_id not supported in this LightRAG version"}
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     async def cleanup(self) -> None:
         """Graceful shutdown hook for FastAPI lifespan."""

@@ -99,6 +99,67 @@ ${hiddenDocsContext}
 ===== КОНЕЦ ВЛОЖЕНИЙ =====`;
 }
 
+/** Убираем служебные вставки про вложения — чтобы отличить «только файл» от полноценного текста. */
+function stripAttachmentPlaceholdersFromUserText(content: string): string {
+  let s = String(content ?? '')
+    .replace(HIDDEN_RE, '')
+    .trim();
+  s = s
+    .replace(/\n\n\[Файл «[^»]+»[^\]]*\]/g, '')
+    .replace(/\n\n\[Вложение «[^»]+»[^\]]*\]/g, '')
+    .replace(/\[RAG\][^\n]*/g, '')
+    .trim();
+  return s;
+}
+
+function collectUserAttachmentFilenames(msg: any): string[] {
+  const names: string[] = [];
+  const parts = Array.isArray(msg?.parts) ? msg.parts : [];
+  for (const p of parts) {
+    if (p?.type === 'file' && (p.filename || p.name)) {
+      names.push(String(p.filename || p.name));
+    }
+  }
+  const atts = Array.isArray(msg?.metadata?.attachments) ? msg.metadata.attachments : [];
+  for (const a of atts) {
+    if (a?.name || a?.filename) names.push(String(a.name || a.filename));
+  }
+  return [...new Set(names.filter(Boolean))];
+}
+
+/**
+ * Если пользователь прислал вложение(я) почти без текста — первый ответ без «Здравствуйте»,
+ * сразу с подтверждением по шаблону из продукта.
+ */
+function buildFileOnlyTurnAppendix(lastUserMessage: any): string {
+  if (!lastUserMessage || lastUserMessage.role !== 'user') return '';
+  const filenames = collectUserAttachmentFilenames(lastUserMessage);
+  if (filenames.length === 0) return '';
+  const raw =
+    typeof lastUserMessage.content === 'string' ? lastUserMessage.content : '';
+  const visible = stripAttachmentPlaceholdersFromUserText(raw);
+  if (visible.length > 16) return '';
+
+  const quoted = filenames.map((n) => `«${n}»`).join(', ');
+  const one = filenames.length === 1;
+  const requiredOpening = one
+    ? `Получен файл ${quoted}. Готов работать с ним согласно инструкции — отвечать на конкретные вопросы или выполнять задачи, связанные с его содержимым. Скажите, что именно вам нужно?`
+    : `Получены файлы ${quoted}. Готов работать с ними согласно инструкции — отвечать на конкретные вопросы или выполнять задачи, связанные с их содержимым. Скажите, что именно вам нужно?`;
+
+  return `
+
+===== ОСОБЫЙ СЛУЧАЙ: ТОЛЬКО ВЛОЖЕНИЕ(Я), БЕЗ ТЕКСТА ЗАДАЧИ =====
+Последнее сообщение пользователя: вложение(я) без содержательного запроса (без приветствия и без вопроса).
+
+Твой **первый** ответ в этом ходу должен **начинаться сразу** с **точно** такого текста (без «Здравствуйте», без любых вступлений **перед** этим абзацем):
+
+${requiredOpening}
+
+После этого абзаца при необходимости добавь не больше одного короткого предложения.
+===== КОНЕЦ ОСОБОГО СЛУЧАЯ =====
+`;
+}
+
 async function resolveSystemPrompt(userId?: string | null, selectedPromptId?: string | null): Promise<string> {
   if (selectedPromptId) {
     try {
@@ -657,8 +718,14 @@ export async function POST(req: Request) {
     undefined,
     ragOmitsAttachmentBodies,
   );
+
+  const lastTurn =
+    messagesWithHidden.length > 0 ? messagesWithHidden[messagesWithHidden.length - 1] : null;
+  systemPrompt += buildFileOnlyTurnAppendix(lastTurn);
+
   if (ragRetrievalEnabled) {
     systemPrompt += RAG_TOOL_MODE_SYSTEM_APPENDIX;
+    console.log('📚 RAG tool mode: enabled (retrieveFromIndexedDocuments; no pre-injected RAG block)');
   }
 
   let languageModel;

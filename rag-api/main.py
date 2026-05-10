@@ -5,7 +5,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import aiofiles
@@ -27,6 +27,17 @@ class DocumentResponse(BaseModel):
     message: str
     filename: str
     status: str
+
+
+class IndexedDocumentItem(BaseModel):
+    id: str
+    filename: str
+    status: str = ""
+
+
+class DeleteDocumentResponse(BaseModel):
+    ok: bool
+    error: Optional[str] = None
 
 # Жизненный цикл приложения
 rag_service = RAGService()
@@ -135,6 +146,12 @@ async def upload_document(
                     status_code=500,
                     detail=str(result.get("message") or "RAG processing failed"),
                 )
+            logger.info(
+                "POST /upload wait=true done: client_filename=%r status=%s message=%r",
+                file.filename,
+                result.get("status"),
+                result.get("message"),
+            )
             return DocumentResponse(
                 message=f"Документ {file.filename} проиндексирован",
                 filename=file.filename,
@@ -151,6 +168,36 @@ async def upload_document(
         filename=file.filename,
         status="queued",
     )
+
+@app.get("/documents", response_model=list[IndexedDocumentItem])
+async def list_indexed_documents():
+    """Документы, присутствующие в индексе LightRAG."""
+    try:
+        items = rag_service.list_indexed_documents()
+        return [IndexedDocumentItem(**x) for x in items]
+    except Exception as e:
+        logger.exception("RAG /documents list failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class DeleteByIdBody(BaseModel):
+    id: str
+
+
+@app.delete("/documents", response_model=DeleteDocumentResponse)
+async def delete_indexed_document(body: DeleteByIdBody = Body(...)):
+    """Удалить документ из индекса по id (как в списке /documents)."""
+    doc_id = (body.id or "").strip()
+    if not doc_id:
+        raise HTTPException(status_code=400, detail="id required")
+    result = await rag_service.delete_indexed_document(doc_id)
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail=str(result.get("error") or "delete failed"),
+        )
+    return DeleteDocumentResponse(ok=True)
+
 
 @app.post("/query", response_model=QueryResponse)
 async def query_rag(request: QueryRequest):
