@@ -16,6 +16,12 @@ docker compose up -d --build
 
 На Linux для доступа контейнеров к Ollama на хосте используется `extra_hosts: host.docker.internal:host-gateway`. При необходимости замените `OLLAMA_BASE_URL` / `OLLAMA_OPENAI_BASE_URL` на IP хоста.
 
+### SurrealDB: версия движка и npm-клиент
+
+Образ по умолчанию — **SurrealDB 2.6.x** (`SURREALDB_IMAGE` в compose). Пакет `surrealdb` в приложении (ветка 1.x) ожидает движок **`>= 1.4.2 < 3.0.0`**. Если поднять сервер **3.x** (`:latest`), в логах web появится `UnsupportedVersion`.
+
+Чтобы позже использовать SurrealDB 3, нужно обновить зависимость `surrealdb` в `package.json` до версии с поддержкой 3.x и пересобрать образ `web`.
+
 ### SurrealDB: `Permission denied` / RocksDB
 
 Если `docker compose logs surrealdb` показывает `Failed to create RocksDB directory` / `Permission denied`, в `docker-compose.yml` для сервиса `surrealdb` задано `user: "0:0"`. Подтяните изменения и пересоздайте контейнер:

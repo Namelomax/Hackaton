@@ -1,6 +1,7 @@
 services:
   surrealdb:
-    image: surrealdb/surrealdb:latest
+    # surrealdb npm ^1.x supports engine versions < 3.0.0 — do not use :latest (SurrealDB 3.x) until the JS SDK is upgraded.
+    image: ${SURREALDB_IMAGE:-surrealdb/surrealdb:v2.6.5}
     # Образ по умолчанию может работать не от root — без этого RocksDB в named volume часто даёт EACCES (код 13).
     user: "0:0"
     command:
