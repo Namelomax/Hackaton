@@ -3,7 +3,19 @@
 Предполагается установленный Docker и Docker Compose v2.
 
 1. Скопируйте `.env.example` в `.env` и заполните секреты (`OPENROUTER_API_KEY`, при необходимости `GOOGLE_GENERATIVE_AI_API_KEY`).
-2. На машине с GPU или достаточным RAM запустите **Ollama** на хосте и подтяните модели (`ollama pull qwen3:14b`, `ollama pull qwen3.6:27b`, `ollama pull nomic-embed-text`).
+2. В compose поднимается сервис **`ollama`**. После первого `up` подтяните модели **внутрь контейнера**:
+
+```bash
+docker compose exec ollama ollama pull nomic-embed-text
+docker compose exec ollama ollama pull qwen3:14b
+docker compose exec ollama ollama pull qwen3.6:27b
+```
+
+Без **`nomic-embed-text`** (или другой модели из `LOCAL_OPENAI_EMBEDDING_MODEL`) RAG падает на `/embeddings` с `APIConnectionError` / ретраями.
+
+GPU (NVIDIA): в `docker-compose.yml` у сервиса `ollama` можно добавить блок `deploy.resources.reservations.devices` или устаревшее `gpus: all` (как в старом RagTest) — см. [документацию Ollama Docker](https://github.com/ollama/ollama/blob/main/docs/docker.md).
+
+Если Ollama должен остаться **только на хосте**, уберите сервис `ollama` из compose (или не используйте этот файл) и в `.env` задайте `OLLAMA_OPENAI_BASE_URL` и `OLLAMA_BASE_URL` на `http://IP_ХОСТА:11434/v1` (на Linux `host.docker.internal` часто не подходит без `extra_hosts`).
 3. Из корня репозитория:
 
 ```bash
@@ -14,7 +26,17 @@ docker compose up -d --build
 5. SurrealDB слушает порт `8000` на хосте по умолчанию (`SURREAL_PORT`). Данные лежат в volume `surreal-data`.
 6. RAG API доступен с хоста на порту `8001` по умолчанию (`RAG_API_PORT`); внутри сети compose приложение ходит на `http://rag-api:8000`.
 
-На Linux для доступа контейнеров к Ollama на хосте используется `extra_hosts: host.docker.internal:host-gateway`. При необходимости замените `OLLAMA_BASE_URL` / `OLLAMA_OPENAI_BASE_URL` на IP хоста.
+### RAG: дубликат документа / «No new unique documents»
+
+Повторная загрузка того же PDF даёт `Duplicate document` — индекс уже содержит этот `doc-…`. Либо загрузите другой файл, либо сбросьте индекс (удаление тома **`rag-storage`**, это сотрёт весь RAG-корпус):
+
+```bash
+docker compose down
+docker volume rm ИМЯПРОЕКТА_rag-storage
+docker compose up -d
+```
+
+Предупреждения про multimodal / «Missing required fields» связаны с тем, что в `rag-api` для LightRAG частично используется упрощённая LLM-заглушка; на работу поиска после успешных эмбеддингов это обычно не критично.
 
 ### SurrealDB: версия движка и npm-клиент
 
@@ -37,6 +59,10 @@ docker compose down
 docker volume rm ИМЯПРОЕКТА_surreal-data
 docker compose up -d
 ```
+
+### После смены major-версии SurrealDB (3 → 2 или наоборот)
+
+Если в логах surrealdb: **«The data stored on disk is out-of-date with this version»**, том был создан другой major-версией движка. Либо удалите том и начните с чистой БД (см. выше), либо верните тот же major, что создавал данные, и мигрируйте по [официальным upgrade guides](https://surrealdb.com/docs).
 
 ---
 

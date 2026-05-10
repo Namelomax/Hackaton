@@ -20,12 +20,23 @@ services:
     ports:
       - "${SURREAL_PORT:-8000}:8000"
 
+  # Ollama в той же сети, что rag-api/web — надёжнее, чем host.docker.internal на Linux.
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "${OLLAMA_HOST_PORT:-127.0.0.1:11434}:11434"
+
   rag-api:
     build:
       context: ./rag-api
       dockerfile: Dockerfile
+    depends_on:
+      - ollama
     environment:
-      LOCAL_OPENAI_BASE_URL: ${OLLAMA_OPENAI_BASE_URL:-http://host.docker.internal:11434/v1}
+      LOCAL_OPENAI_BASE_URL: ${OLLAMA_OPENAI_BASE_URL:-http://ollama:11434/v1}
       LOCAL_OPENAI_API_KEY: ${OLLAMA_API_KEY:-ollama}
       LOCAL_OPENAI_EMBEDDING_MODEL: ${LOCAL_OPENAI_EMBEDDING_MODEL:-nomic-embed-text}
       RAG_CORS_ORIGINS: ${RAG_CORS_ORIGINS:-http://localhost:3000}
@@ -45,6 +56,8 @@ services:
     depends_on:
       surrealdb:
         condition: service_started
+      ollama:
+        condition: service_started
       rag-api:
         condition: service_started
     environment:
@@ -56,7 +69,7 @@ services:
       RAG_API_URL: ${RAG_API_URL:-http://rag-api:8000}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       OPENROUTER_MODEL_DEFAULT: ${OPENROUTER_MODEL_DEFAULT:-arcee-ai/trinity-large-preview:free}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434/v1}
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-ollama}
       GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY:-}
     ports:
@@ -66,6 +79,7 @@ services:
 
 volumes:
   surreal-data:
+  ollama_data:
   rag-uploads:
   rag-output:
   rag-storage:
