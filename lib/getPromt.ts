@@ -242,7 +242,15 @@ function sanitizeMessagePart(part: any): any {
   const type = String((part as any).type ?? '');
 
   if (type === 'text') {
-    return { type: 'text', text: typeof (part as any).text === 'string' ? (part as any).text : '' };
+    const raw = (part as any).text;
+    const alt = (part as any).content;
+    const text =
+      typeof raw === 'string'
+        ? raw
+        : typeof alt === 'string'
+          ? alt
+          : '';
+    return { type: 'text', text };
   }
 
   if (type === 'file') {
@@ -263,6 +271,23 @@ function sanitizeMessagePart(part: any): any {
   return out;
 }
 
+function textFromContentField(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const chunks: string[] = [];
+  for (const item of content) {
+    if (typeof item === 'string') {
+      chunks.push(item);
+      continue;
+    }
+    if (item && typeof item === 'object') {
+      const t = (item as any).text;
+      if (typeof t === 'string') chunks.push(t);
+    }
+  }
+  return chunks.join('');
+}
+
 function sanitizeMessage(message: any): any {
   const id =
     message?.id ||
@@ -274,12 +299,15 @@ function sanitizeMessage(message: any): any {
     ? message.parts.map(sanitizeMessagePart)
     : [];
 
-  const text =
-    message?.content ||
-    (Array.isArray(message?.parts)
-      ? message.parts.find((p: any) => p?.type === 'text')?.text
-      : '') ||
-    '';
+  const fromParts = Array.isArray(message?.parts)
+    ? message.parts
+        .filter((p: any) => p && (p.type === 'text' || String(p.type ?? '') === 'text'))
+        .map((p: any) => (typeof p.text === 'string' ? p.text : typeof p.content === 'string' ? p.content : ''))
+        .join('')
+    : '';
+
+  const fromContent = textFromContentField(message?.content);
+  const text = fromContent || fromParts;
 
   const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {};
 

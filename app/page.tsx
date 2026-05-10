@@ -20,7 +20,7 @@ import {
 import { parseModelsFromEnv } from '@/lib/chat-models';
 import { copyTextToClipboard } from '@/lib/copyToClipboard';
 
-const DEFAULT_OPENROUTER_MODEL = 'arcee-ai/trinity-large-preview:free';
+const DEFAULT_OPENROUTER_MODEL = 'nvidia/nemotron-3-super-120b-a12b:free';
 
 export default function ChatPage() {
   const localModels = useMemo(() => parseModelsFromEnv(process.env.NEXT_PUBLIC_LOCAL_MODELS), []);
@@ -162,16 +162,30 @@ export default function ChatPage() {
   );
 
   // Нормализация сообщений из БД в формат UIMessage
+  function coerceStoredPlainText(m: any): string {
+    if (typeof m?.text === 'string') return m.text;
+    if (typeof m?.content === 'string') return m.content;
+    if (Array.isArray(m?.text)) {
+      return m.text.map((x: any) => (typeof x === 'string' ? x : x?.text != null ? String(x.text) : '')).join('');
+    }
+    return '';
+  }
+
   function toUIMessages(raw: any[]): any[] {
     if (!Array.isArray(raw)) return [];
-    return raw.map(m => ({
-      id: m.id,
-      role: m.role === 'assistant' ? 'assistant' : 'user',
-      parts: Array.isArray(m.parts) && m.parts.length > 0
+    return raw.map((m) => {
+      const fallbackText = coerceStoredPlainText(m);
+      const hasParts = Array.isArray(m.parts) && m.parts.length > 0;
+      const parts = hasParts
         ? m.parts
-        : [{ type: 'text', text: m.text || '' }],
-      metadata: m.metadata || {},
-    }));
+        : [{ type: 'text', text: fallbackText }];
+      return {
+        id: m.id,
+        role: m.role === 'assistant' ? 'assistant' : 'user',
+        parts,
+        metadata: m.metadata || {},
+      };
+    });
   }
 
   function getLastAssistantId(uiMessages: any[]): string | null {
@@ -554,12 +568,14 @@ export default function ChatPage() {
             const savedConvId = localStorage.getItem('activeConversationId');
             let activeConv = null;
             
-            if (savedConvId && j.conversations) {
-              activeConv = j.conversations.find((c: any) => c.id === savedConvId);
+            // Важно: брать из `convs`, а не из `j.conversations` — в `convs` уже подставлены
+            // сообщения из `messages_raw`, если поле `messages` в Surreal пришло пустым.
+            if (savedConvId && convs.length > 0) {
+              activeConv = convs.find((c: any) => c.id === savedConvId) ?? null;
             }
-            
-            if (!activeConv && j.conversations && j.conversations.length > 0) {
-              activeConv = j.conversations[0];
+
+            if (!activeConv && convs.length > 0) {
+              activeConv = convs[0];
             }
             
             if (activeConv) {
@@ -659,7 +675,21 @@ export default function ChatPage() {
         if ((!json.conversations || json.conversations.length === 0) && json.user) {
             const resp = await fetch(`/api/conversations?userId=${encodeURIComponent(json.user.id)}`);
             const j = await resp.json();
-            if (j?.success) setConversationsList(j.conversations || []);
+            if (j?.success) {
+              const merged = (j.conversations || []).map((c: any) => {
+                let msgs = c.messages;
+                if ((!Array.isArray(msgs) || msgs.length === 0) && c.messages_raw) {
+                  try {
+                    const parsed = JSON.parse(c.messages_raw);
+                    if (Array.isArray(parsed)) msgs = parsed;
+                  } catch {
+                    /* ignore */
+                  }
+                }
+                return { ...c, messages: msgs };
+              });
+              setConversationsList(merged);
+            }
         }
       } else {
         alert(json?.message || 'Auth failed');
@@ -858,7 +888,7 @@ export default function ChatPage() {
       console.log('[handleDocumentEdit] Skipping backend save (local conversation or no viewConversationId)');
     }
   };
-//asd
+
   const handleNewLocalConversation = () => {
     createLocalConversation();
   };

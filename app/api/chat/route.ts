@@ -28,7 +28,7 @@ function createOpenRouterInstance() {
 }
 
 function resolveOpenRouterSlug(requestedRaw: string): string {
-  const fallback = process.env.OPENROUTER_MODEL_DEFAULT || 'arcee-ai/trinity-large-preview:free';
+  const fallback = process.env.OPENROUTER_MODEL_DEFAULT || 'nvidia/nemotron-3-super-120b-a12b:free';
   const requested = requestedRaw.trim();
   const allowedCsv = process.env.ALLOWED_OPENROUTER_MODELS?.trim();
   if (!allowedCsv) {

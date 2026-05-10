@@ -44,9 +44,37 @@ function uiMessageHasAttachments(msg: any): boolean {
   return false;
 }
 
-// Orchestrator: trust the classifier completely, no heuristic overrides.
+/** Явная просьба сформировать протокол в документе (правая панель), а не болтовня в чате */
+function explicitDocumentGenerationRequest(text: string): boolean {
+  const raw = String(text || '')
+    .replace(/\u00a0/g, ' ')
+    .trim();
+  if (!raw) return false;
+  const n = raw.toLowerCase().replace(/\s+/g, ' ');
+  const c = n.replace(/ё/g, 'е');
+
+  const patterns: RegExp[] = [
+    /сделай(те)? протокол/,
+    /сформируй(те)? протокол/,
+    /сгенерируй(те)? протокол/,
+    /подготовь(те)? протокол/,
+    /оформи(те)? протокол/,
+    /выведи(те)?(\s+в)?\s+документ/,
+    /в\s+прав(ую|ой)?\s+панел/,
+    /зафиксируй(те)?(\s+в)?\s+документе?/,
+    /сформируй(те)?(\s+финальный)?\s+документ/,
+    /делай(те)?\s+протокол/,
+    /можно(\s+уже)?\s+(делать|формировать|создавать)\s+протокол/,
+    /хорошо[,.\s]*(все|всё)\s+верно[,.\s]*.*протокол/,
+    /(все|всё)\s+верно[,.\s]*.*сделай(те)?\s+протокол/,
+    /готов(о)?[,.\s]*формируй(те)?(\s+протокол)?/,
+    /финализир(уй|ируйте)(\s+протокол)?/,
+  ];
+
+  return patterns.some((re) => re.test(c));
+}
+
 export function decideNextAction(context: AgentContext, intent: IntentType): OrchestratorDecision {
-  const msgs = context?.messages || [];
   const uiMsgs = Array.isArray((context as any)?.uiMessages) ? (context as any).uiMessages : [];
 
   const lastUiUser = Array.isArray(uiMsgs)
@@ -59,12 +87,20 @@ export function decideNextAction(context: AgentContext, intent: IntentType): Orc
     return { route: 'chat', reason: 'Upload-only: continue dialogue, do not generate document on file upload.' };
   }
 
-  // The classifier has already made the decision based on full context and LLM analysis.
-  // We simply trust it and route accordingly.
+  const lastUserPlain = uiMessageText(lastUiUser || {}).trim();
+
+  if (explicitDocumentGenerationRequest(lastUserPlain)) {
+    return {
+      route: 'document',
+      reason: 'User explicitly asked to generate the protocol document (panel output).',
+    };
+  }
+
   return {
     route: intent,
-    reason: intent === 'document' 
-      ? 'Classifier determined document generation is needed.'
-      : 'Classifier determined chat interaction should continue.',
+    reason:
+      intent === 'document'
+        ? 'Classifier determined document generation is needed.'
+        : 'Classifier determined chat interaction should continue.',
   };
 }
