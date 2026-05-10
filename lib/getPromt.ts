@@ -307,7 +307,16 @@ function sanitizeMessage(message: any): any {
     : '';
 
   const fromContent = textFromContentField(message?.content);
-  const text = fromContent || fromParts;
+  const fromTopLevel = typeof message?.text === 'string' ? message.text : '';
+  const text = fromParts || fromContent || fromTopLevel;
+
+  let finalParts = parts;
+  const hasNonEmptyTextPart = finalParts.some(
+    (p: any) => p && String(p.type) === 'text' && typeof p.text === 'string' && p.text.trim() !== '',
+  );
+  if (!hasNonEmptyTextPart && String(text).trim()) {
+    finalParts = [{ type: 'text', text: String(text) }, ...finalParts.filter((p: any) => String(p?.type) !== 'text')];
+  }
 
   const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {};
 
@@ -315,7 +324,7 @@ function sanitizeMessage(message: any): any {
     id,
     role: message?.role || 'user',
     text,
-    parts,
+    parts: finalParts,
     metadata,
   };
 }
