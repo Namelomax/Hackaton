@@ -320,6 +320,44 @@ function sanitizeMessage(message: any): any {
   };
 }
 
+/**
+ * После чтения из Surreal в `parts` иногда пусто или текстовые части без `text`,
+ * при этом поле `text` на верхнем уровне сообщения заполнено — иначе UI показывает пустые пузыри.
+ */
+export function repairMessagesForApi(messages: unknown): any[] {
+  if (!Array.isArray(messages)) return [];
+  return messages.map((raw) => {
+    const msg = raw && typeof raw === 'object' ? { ...(raw as Record<string, unknown>) } : {};
+    const textFallback =
+      typeof (msg as any).text === 'string'
+        ? (msg as any).text
+        : typeof (msg as any).content === 'string'
+          ? (msg as any).content
+          : '';
+    let parts = Array.isArray((msg as any).parts) ? [...((msg as any).parts as any[])] : [];
+    parts = parts.map((p: any) => {
+      if (!p || typeof p !== 'object') return p;
+      if (String(p.type) === 'text') {
+        const t = typeof p.text === 'string' ? p.text : '';
+        const c = typeof p.content === 'string' ? p.content : '';
+        const merged = t.trim() ? t : c;
+        return { ...p, type: 'text', text: merged };
+      }
+      return p;
+    });
+    const hasNonEmptyText = parts.some(
+      (p: any) => p && String(p.type) === 'text' && typeof p.text === 'string' && p.text.trim() !== '',
+    );
+    if (!hasNonEmptyText && textFallback.trim()) {
+      parts = [{ type: 'text', text: textFallback }, ...parts.filter((p: any) => String(p?.type) !== 'text')];
+    }
+    if (parts.length === 0) {
+      parts = [{ type: 'text', text: textFallback }];
+    }
+    return { ...msg, parts };
+  });
+}
+
 // Create a new user
 export async function createUser(username: string, passwordHash: string): Promise<User> {
   await connectDB();
@@ -520,19 +558,36 @@ export async function saveConversation(userId: string, messages: any, documentCo
     const fallback = {
       id: String(conv.id),
       user: String(userRecord),
-      messages: sanitizedClean,
+      messages: repairMessagesForApi(sanitizedClean),
       created: (conv as any)?.created ?? new Date().toISOString(),
+      title: 'Чат',
+      messages_raw: JSON.stringify(sanitizedClean),
+      document_content: documentContent ?? '',
     };
     return fallback as Conversation;
+  }
+
+  let outMessages = (storedConv as any).messages;
+  if ((!Array.isArray(outMessages) || outMessages.length === 0) && (storedConv as any).messages_raw) {
+    try {
+      const parsed = JSON.parse(String((storedConv as any).messages_raw));
+      if (Array.isArray(parsed)) outMessages = parsed;
+    } catch {
+      /* ignore */
+    }
   }
 
   return {
     id: storedConv.id.toString(),
     user: String((storedConv as any).user),
-    messages: storedConv.messages,
-    messages_raw: (storedConv as any).messages_raw,
+    messages: repairMessagesForApi(outMessages ?? sanitizedClean),
+    messages_raw: String((storedConv as any).messages_raw ?? JSON.stringify(sanitizedClean)),
     created: String((storedConv as any).created),
-    document_content: (storedConv as any).document_content,
+    title: String((storedConv as any).title ?? 'Чат'),
+    document_content:
+      typeof (storedConv as any).document_content === 'string'
+        ? (storedConv as any).document_content
+        : '',
   };
 }
 
@@ -606,9 +661,11 @@ export async function updateConversation(conversationId: string, messages: any, 
     return {
       id: recordIdString,
       user: '',
-      messages: sanitizedClean,
+      messages: repairMessagesForApi(sanitizedClean),
       messages_raw: JSON.stringify(sanitizedClean),
       created: new Date().toISOString(),
+      title: 'Чат',
+      document_content: typeof documentContent === 'string' ? documentContent : '',
     };
   }
 
@@ -638,13 +695,17 @@ export async function updateConversation(conversationId: string, messages: any, 
     documentContentLength: convData.document_content?.length,
   });
 
+  const mergedMessages = storedMessages ?? sanitizedClean;
+
   return {
     id: convData.id?.toString?.() ?? recordIdString,
     user: String((convData as any).user ?? ''),
-    messages: storedMessages ?? sanitizedClean,
+    messages: repairMessagesForApi(mergedMessages),
     messages_raw: String((convData as any).messages_raw ?? JSON.stringify(sanitizedClean)),
     created: String((convData as any).created ?? new Date().toISOString()),
-    document_content: (convData as any).document_content,
+    title: String((convData as any).title ?? 'Чат'),
+    document_content:
+      typeof (convData as any).document_content === 'string' ? (convData as any).document_content : '',
   };
 }
 
@@ -681,11 +742,12 @@ export async function renameConversation(convId: string, title: string): Promise
   return {
     id: convData.id?.toString?.() ?? `conversations:${clean}`,
     user: String((convData as any).user ?? ''),
-    messages: messages ?? [],
+    messages: repairMessagesForApi(messages ?? []),
     messages_raw: String((convData as any).messages_raw ?? ''),
     created: String((convData as any).created ?? new Date().toISOString()),
     title: trimmedTitle,
-    document_content: (convData as any).document_content,
+    document_content:
+      typeof (convData as any).document_content === 'string' ? (convData as any).document_content : '',
   };
 }
 
@@ -725,10 +787,12 @@ export async function createConversation(userId: string, title?: string): Promis
   return {
     id: conv.id.toString(),
     user: String((conv as any).user),
-    messages: (conv as any).messages,
-    messages_raw: (conv as any).messages_raw,
+    messages: repairMessagesForApi((conv as any).messages ?? []),
+    messages_raw: String((conv as any).messages_raw ?? JSON.stringify([])),
     created: String((conv as any).created),
-    document_content: (conv as any).document_content,
+    title: String((conv as any).title ?? title ?? 'Чат'),
+    document_content:
+      typeof (conv as any).document_content === 'string' ? (conv as any).document_content : '',
   };
 }
 
@@ -756,11 +820,11 @@ export async function getConversations(userId: string): Promise<Conversation[]> 
     return {
       id: r.id.toString(),
       user: String((r.user as any)?.toString?.() ?? r.user),
-      messages: messages,
-      messages_raw: r.messages_raw,
+      messages: repairMessagesForApi(messages),
+      messages_raw: typeof r.messages_raw === 'string' ? r.messages_raw : String(r.messages_raw ?? ''),
       created: String(r.created),
-      title: r.title ?? '',
-      document_content: r.document_content,
+      title: typeof r.title === 'string' && r.title.trim() ? r.title : 'Чат',
+      document_content: typeof r.document_content === 'string' ? r.document_content : '',
     };
   });
 }

@@ -188,10 +188,26 @@ export default function ChatPage() {
     if (!Array.isArray(raw)) return [];
     return raw.map((m) => {
       const fallbackText = coerceStoredPlainText(m);
-      const hasParts = Array.isArray(m.parts) && m.parts.length > 0;
-      const parts = hasParts
-        ? m.parts
-        : [{ type: 'text', text: fallbackText }];
+      let parts = Array.isArray(m.parts) && m.parts.length > 0 ? [...m.parts] : [];
+      if (parts.length > 0) {
+        parts = parts.map((p: any) => {
+          if (p?.type === 'text') {
+            const t = typeof p.text === 'string' ? p.text : '';
+            const c = typeof p.content === 'string' ? p.content : '';
+            const merged = (t && t.trim()) || c || fallbackText;
+            return { ...p, type: 'text', text: merged };
+          }
+          return p;
+        });
+        const hasText = parts.some(
+          (p: any) => p?.type === 'text' && typeof p.text === 'string' && p.text.trim() !== '',
+        );
+        if (!hasText && fallbackText.trim()) {
+          parts = [{ type: 'text', text: fallbackText }, ...parts.filter((p: any) => p?.type !== 'text')];
+        }
+      } else {
+        parts = [{ type: 'text', text: fallbackText }];
+      }
       return {
         id: m.id,
         role: m.role === 'assistant' ? 'assistant' : 'user',
