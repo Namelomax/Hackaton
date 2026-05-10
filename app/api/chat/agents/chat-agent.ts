@@ -1,45 +1,52 @@
-import { streamText, ModelMessage } from 'ai';
-import { AgentContext } from './types';
-import { updateConversation, saveConversation } from '@/lib/getPromt';
+import {
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+  streamText,
+  stepCountIs,
+  type ModelMessage,
+} from "ai";
+import type { AgentContext } from "./types";
+import { updateConversation, saveConversation } from "@/lib/getPromt";
+import {
+  createPublishInvestigationProtocolTool,
+  type ProtocolGenerationSink,
+} from "./protocol-tools";
 
-function buildConversationContext(messages: any[], limit: number = 24): string {
-  const list = Array.isArray(messages) ? messages.slice(-limit) : [];
-  return list
-    .map((msg) => {
-      const role = msg?.role || 'user';
-      if (typeof msg?.content === 'string') return `${role}: ${msg.content}`;
-      if (Array.isArray(msg?.parts)) {
-        const text = msg.parts.find((p: any) => p?.type === 'text' && typeof p.text === 'string')?.text;
-        return text ? `${role}: ${text}` : '';
-      }
-      if (typeof msg?.text === 'string') return `${role}: ${msg.text}`;
-      return '';
-    })
-    .filter(Boolean)
-    .join('\n');
-}
+const PROTOCOL_TOOL_SYSTEM_APPENDIX = `
+
+## Инструмент publishInvestigationProtocol
+- Это **единственный** поддерживаемый способ вывести полный протокол обследования (все разделы) в документ **справа**.
+- В тексте ответа пользователю **не** воспроизводи десять разделов протокола — после успешного вызова инструмента достаточно одной короткой фразы («Готово, протокол в панели справа»).
+- Вызывай инструмент **только** при явной просьбе оформить/сгенерировать протокол или документ; при сборе фактов и уточнений отвечай обычным текстом без инструмента.
+`;
 
 function hasAttachedFiles(messages: any[]): boolean {
   return messages.some((msg) => {
-    if (typeof msg?.content === 'string') {
+    if (typeof msg?.content === "string") {
       const c = msg.content;
       return (
-        c.includes('AI-HIDDEN') ||
-        c.includes('Вложенный файл') ||
-        c.includes('[RAG]') ||
-        c.includes('[Вложение «')
+        c.includes("AI-HIDDEN") ||
+        c.includes("Вложенный файл") ||
+        c.includes("[RAG]") ||
+        c.includes("[Вложение «")
       );
     }
     if (Array.isArray(msg?.parts)) {
-      return msg.parts.some((p: any) => p?.type === 'file');
+      return msg.parts.some((p: any) => p?.type === "file");
     }
     return false;
   });
 }
 
-function adaptSystemPrompt(systemPrompt: string, hasFiles: boolean, messageCount: number, hasDocumentContent: boolean): string {
-  // Если файлы загружены или сообщений уже больше одного → расшифровка получена
-  if ((hasFiles || messageCount > 1) && !systemPrompt.includes('АДАПТАЦИЯ: Расшифровка получена')) {
+function adaptSystemPrompt(
+  systemPrompt: string,
+  hasFiles: boolean,
+  messageCount: number,
+): string {
+  if (
+    (hasFiles || messageCount > 1) &&
+    !systemPrompt.includes("АДАПТАЦИЯ: Расшифровка получена")
+  ) {
     const adaptation = `АДАПТАЦИЯ: Расшифровка получена
 ════════════════════════════════════════════
 ⚡ ПРОПУСТИ ЭТАП 1 (приветствие)!
@@ -47,11 +54,11 @@ function adaptSystemPrompt(systemPrompt: string, hasFiles: boolean, messageCount
 ⚡ НЕМЕДЛЕННО ПЕРЕХОДИ К ЭТАПУ 2 (сбор информации): задавай ОДИН уточняющий вопрос за ответ (или одно короткое подтверждение без таблиц).
 ⚡ Начни с самого важного пропуска (часто — участники, дата, номер протокола), а не с выгрузки всего документа.
 ⚡ НЕ показывай приветствие "Привет! Я AI-агент..."
-⚡ В ЭТОМ ЧАТЕ ЗАПРЕЩЕНО выводить полный протокол из 10 разделов, все таблицы и весь текст «как в документе» за один ответ.
-⚡ ЗАПРЕЩЕНЫ заголовки как у финального документа: «Протокол встречи», «Номер протокола:», блоки с разделами 1–10 подряд — пользователь увидит это только в правой панели после явной команды приложения.
+⚡ В ЭТОМ ЧАТЕ ЗАПРЕЩЕНО выводить полный протокол из 10 разделов, все таблицы и весь текст «как в документе» за один ответ — используй инструмент publishInvestigationProtocol.
+⚡ ЗАПРЕЩЕНЫ заголовки как у финального документа: «Протокол встречи», «Номер протокола:», блоки с разделами 1–10 подряд — пользователь увидит это в правой панели после вызова инструмента.
 ⚡ Если текст пользователя уже похож на протокол — не переписывай его целиком; продолжай уточнять по одному пункту.
 ⚡ Пиши название компании «Форус». по продукту — только «протокол обследования».
-⚡ Полный протокол формируется отдельным шагом/агентом документа (правая панель), а не в ответе в чате.
+⚡ Полный протокол формируется только вызовом инструмента publishInvestigationProtocol (правая панель).
 ════════════════════════════════════════════
 
 `;
@@ -60,10 +67,10 @@ function adaptSystemPrompt(systemPrompt: string, hasFiles: boolean, messageCount
   return systemPrompt;
 }
 
-/**
- * Специальный промпт для обработки замечаний по документу
- */
-function buildFixIssuesPrompt(existingDocument: string, issuesText: string): string {
+function buildFixIssuesPrompt(
+  existingDocument: string,
+  issuesText: string,
+): string {
   return `ТЫ — редактор деловых документов. Твоя задача — исправить документ по замечаниям.
 
 ТЕКУЩАЯ ВЕРСИЯ ДОКУМЕНТА:
@@ -85,7 +92,7 @@ ${issuesText}
 5. НЕ удаляй существующую информацию, только исправляй ошибки
 6. Если замечание касается формата (таблицы, списки) — исправь форматирование
 7. Если замечание касается содержания — добавь/исправь информацию
-8. После всех исправлений — покажи ИСПРАВЛЕННУЮ ВЕРСИЮ всего документа
+8. После всех исправлений — покажи ИСПРАВЛЕННУЮ ВЕРСИЮ всего документа в формате Markdown.
 
 ════════════════════════════════════════════
 ФОРМАТ ОТВЕТА:
@@ -109,85 +116,156 @@ ${issuesText}
 - Сохраняй деловой стиль документа`;
 }
 
-export async function runChatAgent(context: AgentContext, systemPrompt: string, userPrompt: string) {
+function safeOriginalUIMessages(context: AgentContext): any[] {
+  const { messages, uiMessages } = context;
+  if (Array.isArray(uiMessages) && uiMessages.length > 0)
+    return uiMessages as any[];
+  return (Array.isArray(messages) ? messages : []).map(
+    (m: any, idx: number) => {
+      const text = typeof m?.content === "string" ? m.content : "";
+      return {
+        id: String(m?.id ?? `m-${idx}-${Date.now()}`),
+        role: m?.role === "assistant" ? "assistant" : "user",
+        parts: [{ type: "text", text }],
+        metadata: m?.metadata ?? {},
+      };
+    },
+  );
+}
+
+export async function runChatAgent(
+  context: AgentContext,
+  systemPrompt: string,
+  userPrompt: string,
+) {
   const { messages, model, userId, conversationId, documentContent } = context;
   const messagesWithUserPrompt: ModelMessage[] = [];
 
-  // Добавляем системный промпт от пользователя
   if (userPrompt && userPrompt.trim()) {
     messagesWithUserPrompt.push({
-      role: 'system',
+      role: "system",
       content: userPrompt,
     });
   }
 
-  // Проверяем, есть ли в сообщениях запрос на исправление замечаний
   const lastUserMessage = messages[messages.length - 1];
-  let lastUserText = '';
-  
+  let lastUserText = "";
+
   if (lastUserMessage) {
     const msg = lastUserMessage as any;
-    if (typeof msg.content === 'string') {
+    if (typeof msg.content === "string") {
       lastUserText = msg.content;
     } else if (Array.isArray(msg.parts)) {
-      const textPart = msg.parts.find((p: any) => p?.type === 'text' && typeof p.text === 'string');
-      lastUserText = textPart?.text || '';
+      const textPart = msg.parts.find(
+        (p: any) => p?.type === "text" && typeof p.text === "string",
+      );
+      lastUserText = textPart?.text || "";
     }
   }
-  
-  const hasFixRequest = lastUserText.includes('исправь') && 
-                        (lastUserText.includes('замечан') || lastUserText.includes('ошибк') || lastUserText.includes('предлож'));
 
-  // Если это запрос на исправление замечаний И есть документ — используем специальный промпт
+  const hasFixRequest =
+    lastUserText.includes("исправь") &&
+    (lastUserText.includes("замечан") ||
+      lastUserText.includes("ошибк") ||
+      lastUserText.includes("предлож"));
+
   if (hasFixRequest && documentContent && documentContent.trim()) {
-    // Извлекаем текст замечаний из сообщения пользователя
-    const issuesMatch = lastUserText.match(/ЗАМЕЧАНИЯ, КОТОРЫЕ НУЖНО ИСПРАВИТЬ:([\s\S]*)/i);
+    const issuesMatch = lastUserText.match(
+      /ЗАМЕЧАНИЯ, КОТОРЫЕ НУЖНО ИСПРАВИТЬ:([\s\S]*)/i,
+    );
     const issuesText = issuesMatch ? issuesMatch[1] : lastUserText;
-    
+
     const fixPrompt = buildFixIssuesPrompt(documentContent, issuesText);
     messagesWithUserPrompt.push({
-      role: 'system',
+      role: "system",
       content: fixPrompt,
     });
-    
-    // Добавляем только последнее сообщение пользователя (остальные не нужны для исправления)
-    messagesWithUserPrompt.push(lastUserMessage);
-  } else {
-    // Добавляем контекст документа, если он есть (пользователь редактировал вручную)
-    if (documentContent && documentContent.trim()) {
-      messagesWithUserPrompt.push({
-        role: 'system',
-        content: `ТЕКУЩАЯ ВЕРСИЯ ДОКУМЕНТА (пользователь редактировал вручную):\n\n${documentContent}\n\nИспользуй эту версию как основу для дальнейшей работы. Если пользователь вносит изменения в документ, сохраняй их и учитывай в следующих ответах.`,
-      });
-    }
 
-    messagesWithUserPrompt.push(...(messages as ModelMessage[]));
+    messagesWithUserPrompt.push(lastUserMessage);
+
+    const adaptedSystemPrompt = adaptSystemPrompt(
+      systemPrompt,
+      hasAttachedFiles(messages),
+      messages.length,
+    );
+
+    const stream = streamText({
+      model,
+      temperature: 0,
+      messages: messagesWithUserPrompt,
+      system: adaptedSystemPrompt,
+    });
+
+    return stream.toUIMessageStreamResponse({
+      onFinish: async ({ messages: finished }) => {
+        if (userId) {
+          try {
+            if (conversationId) {
+              await updateConversation(conversationId, finished);
+            } else {
+              await saveConversation(userId, finished);
+            }
+          } catch (e) {
+            console.error("chat persistence failed", e);
+          }
+        }
+      },
+    });
   }
 
-  // Адаптируем systemPrompt в зависимости от контекста
+  if (documentContent && documentContent.trim()) {
+    messagesWithUserPrompt.push({
+      role: "system",
+      content: `ТЕКУЩАЯ ВЕРСИЯ ДОКУМЕНТА (пользователь редактировал вручную):\n\n${documentContent}\n\nИспользуй эту версию как основу для дальнейшей работы. Если пользователь вносит изменения в документ, сохраняй их и учитывай в следующих ответах.`,
+    });
+  }
+
+  messagesWithUserPrompt.push(...(messages as ModelMessage[]));
+
   const hasFiles = hasAttachedFiles(messages);
-  const adaptedSystemPrompt = adaptSystemPrompt(systemPrompt, hasFiles, messages.length, !!documentContent);
+  const adaptedSystemPrompt =
+    adaptSystemPrompt(systemPrompt, hasFiles, messages.length) +
+    PROTOCOL_TOOL_SYSTEM_APPENDIX;
 
-  const stream = streamText({
-    model,
-    temperature: 0,
-    messages: messagesWithUserPrompt,
-    system: adaptedSystemPrompt, // System instructions + adaptive header
-  });
+  const sink: ProtocolGenerationSink = { markdown: "" };
 
-  return stream.toUIMessageStreamResponse({
+  const stream = createUIMessageStream({
+    originalMessages: safeOriginalUIMessages(context),
+    execute: async ({ writer }) => {
+      const publishInvestigationProtocol =
+        createPublishInvestigationProtocolTool(writer, context, sink);
+
+      const result = streamText({
+        model,
+        temperature: 0,
+        messages: messagesWithUserPrompt,
+        system: adaptedSystemPrompt,
+        tools: {
+          publishInvestigationProtocol,
+        },
+        stopWhen: stepCountIs(8),
+      });
+
+      writer.merge(result.toUIMessageStream());
+      await result.usage;
+    },
     onFinish: async ({ messages: finished }) => {
-      if (userId) {
-        try {
-          if (conversationId) {
-            await updateConversation(conversationId, finished);
-          } else {
-            await saveConversation(userId, finished);
-          }
-        } catch (e) {
-          console.error('chat persistence failed', e);
+      if (!userId) return;
+      try {
+        const doc =
+          typeof sink.markdown === "string" && sink.markdown.trim().length > 0
+            ? sink.markdown
+            : undefined;
+        if (conversationId) {
+          await updateConversation(conversationId, finished, doc);
+        } else {
+          await saveConversation(userId, finished, doc);
         }
+      } catch (e) {
+        console.error("chat persistence failed", e);
       }
     },
   });
+
+  return createUIMessageStreamResponse({ stream });
 }

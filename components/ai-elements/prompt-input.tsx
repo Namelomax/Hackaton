@@ -511,7 +511,6 @@ export const PromptInput = ({
     
     // Для файлов < 3 MB используем data URL (работает везде, включая локальную разработку)
     // Для файлов >= 3 MB пробуем Vercel Blob (требует BLOB_READ_WRITE_TOKEN в .env)
-    if (fileSizeMB < 3) {
       console.log(`[PromptInput] Small file (${fileSizeMB.toFixed(2)} MB), using data URL`);
       return new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -519,28 +518,7 @@ export const PromptInput = ({
         reader.onerror = reject;
         reader.readAsDataURL(fileBlob);
       });
-    }
     
-    // Для больших файлов пытаемся использовать Vercel Blob
-    try {
-      console.log(`[PromptInput] Large file (${fileSizeMB.toFixed(2)} MB), uploading to Vercel Blob...`);
-      const { upload } = await import('@vercel/blob/client');
-      const result = await upload(filename, fileBlob, {
-        access: 'public',
-        handleUploadUrl: '/api/upload/blob-token',
-      });
-      console.log(`[PromptInput] Upload successful: ${result.url}`);
-      return result.url;
-    } catch (uploadErr) {
-      console.warn('[PromptInput] Vercel Blob upload failed, falling back to data URL:', uploadErr);
-      // Fallback: convert to base64 data URL so the app still works locally.
-      return new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result as string);
-        reader.onerror = reject;
-        reader.readAsDataURL(fileBlob);
-      });
-    }
   };
 
   const handleSubmit: FormEventHandler<HTMLFormElement> = (event) => {

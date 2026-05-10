@@ -209,7 +209,9 @@ Signature tables for both sides
 </thinking>
 
 ## OUTPUT
-Generate the complete protocol following the exact structure above. For any missing information, clearly indicate "Information not provided in transcript."`;
+Generate the complete protocol following the exact structure above. For any missing information, clearly indicate "Information not provided in transcript."
+
+**Structured output contract:** The model response is validated against a fixed JSON schema (Protocol): every required field and nested object must be present. Use empty string \`""\` or empty array \`[]\` where data is unknown — never omit keys. Arrays must contain objects with the exact keys defined by the schema (participants, terms, Q&A pairs, decisions, etc.).`;
 
 export const SGR_CLASSIFIER_PROMPT = `## ROLE
 You are an intent classifier using Schema-Guided Reasoning to determine if the conversation is ready for document generation.

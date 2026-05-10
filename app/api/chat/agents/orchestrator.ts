@@ -45,7 +45,7 @@ function uiMessageHasAttachments(msg: any): boolean {
 }
 
 /** Явная просьба сформировать протокол в документе (правая панель), а не болтовня в чате */
-function explicitDocumentGenerationRequest(text: string): boolean {
+export function explicitDocumentGenerationRequest(text: string): boolean {
   const raw = String(text || '')
     .replace(/\u00a0/g, ' ')
     .trim();
@@ -74,6 +74,15 @@ function explicitDocumentGenerationRequest(text: string): boolean {
   return patterns.some((re) => re.test(c));
 }
 
+/** Последнее текстовое сообщение пользователя (из uiMessages). */
+export function getLastUserPlainText(context: AgentContext): string {
+  const uiMsgs = Array.isArray((context as any)?.uiMessages) ? ((context as any).uiMessages as any[]) : [];
+  const lastUiUser = Array.isArray(uiMsgs)
+    ? [...uiMsgs].reverse().find((m: any) => m?.role === 'user')
+    : null;
+  return uiMessageText(lastUiUser || {}).trim();
+}
+
 export function decideNextAction(context: AgentContext, intent: IntentType): OrchestratorDecision {
   const uiMsgs = Array.isArray((context as any)?.uiMessages) ? (context as any).uiMessages : [];
 
@@ -87,7 +96,7 @@ export function decideNextAction(context: AgentContext, intent: IntentType): Orc
     return { route: 'chat', reason: 'Upload-only: continue dialogue, do not generate document on file upload.' };
   }
 
-  const lastUserPlain = uiMessageText(lastUiUser || {}).trim();
+  const lastUserPlain = getLastUserPlainText(context);
 
   if (explicitDocumentGenerationRequest(lastUserPlain)) {
     return {

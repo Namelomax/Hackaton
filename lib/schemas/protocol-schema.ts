@@ -106,6 +106,146 @@ export const ProtocolSchema = z.object({
 
 export type Protocol = z.infer<typeof ProtocolSchema>;
 
+const toStr = (value: unknown) => (value == null ? '' : String(value));
+const toArr = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
+
+/** Приводит произвольный черновик (в т.ч. частичный от streamObject) к форме Protocol перед Zod-проверкой. */
+export function coerceProtocolPartial(partial: unknown): Protocol {
+  const p =
+    partial && typeof partial === 'object' && !Array.isArray(partial)
+      ? (partial as Record<string, unknown>)
+      : {};
+
+  const toPeople = (value: unknown) =>
+    toArr(value).map((row: unknown) => {
+      const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+      return {
+        fullName: toStr(r.fullName ?? r.name),
+        position: toStr(r.position ?? r.role),
+      };
+    });
+
+  const meetingContentRaw =
+    p.meetingContent && typeof p.meetingContent === 'object' && !Array.isArray(p.meetingContent)
+      ? (p.meetingContent as Record<string, unknown>)
+      : {};
+
+  return {
+    protocolNumber: toStr(p.protocolNumber),
+    meetingDate: toStr(p.meetingDate),
+    agenda: {
+      title: toStr((p.agenda as Record<string, unknown> | undefined)?.title),
+      items: toArr<string>((p.agenda as Record<string, unknown> | undefined)?.items).map(toStr),
+    },
+    participants: {
+      customer: {
+        organizationName: toStr(
+          ((p.participants as Record<string, unknown> | undefined)?.customer as Record<string, unknown> | undefined)
+            ?.organizationName,
+        ),
+        people: toPeople(
+          ((p.participants as Record<string, unknown> | undefined)?.customer as Record<string, unknown> | undefined)
+            ?.people,
+        ),
+      },
+      executor: {
+        organizationName: toStr(
+          ((p.participants as Record<string, unknown> | undefined)?.executor as Record<string, unknown> | undefined)
+            ?.organizationName,
+        ),
+        people: toPeople(
+          ((p.participants as Record<string, unknown> | undefined)?.executor as Record<string, unknown> | undefined)
+            ?.people,
+        ),
+      },
+    },
+    termsAndDefinitions: toArr(p.termsAndDefinitions).map((item: unknown) => {
+      const row = item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
+      return { term: toStr(row.term), definition: toStr(row.definition) };
+    }),
+    abbreviations: toArr(p.abbreviations).map((item: unknown) => {
+      const row = item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
+      return { abbreviation: toStr(row.abbreviation), fullForm: toStr(row.fullForm) };
+    }),
+    meetingContent: {
+      introduction: meetingContentRaw.introduction !== undefined ? toStr(meetingContentRaw.introduction) : '',
+      topics: toArr(meetingContentRaw.topics).map((topic: unknown) => {
+        const t = topic && typeof topic === 'object' ? (topic as Record<string, unknown>) : {};
+        return {
+          title: toStr(t.title),
+          content: toStr(t.content),
+          subtopics: toArr(t.subtopics).map((sub: unknown) => {
+            const s = sub && typeof sub === 'object' ? (sub as Record<string, unknown>) : {};
+            return { title: s.title !== undefined ? toStr(s.title) : '', content: toStr(s.content) };
+          }),
+        };
+      }),
+      migrationFeatures: toArr(meetingContentRaw.migrationFeatures).map((feat: unknown) => {
+        const f = feat && typeof feat === 'object' ? (feat as Record<string, unknown>) : {};
+        return { tab: toStr(f.tab), features: toStr(f.features) };
+      }),
+    },
+    questionsAndAnswers: toArr(p.questionsAndAnswers).map((qa: unknown) => {
+      const row = qa && typeof qa === 'object' ? (qa as Record<string, unknown>) : {};
+      return { question: toStr(row.question), answer: toStr(row.answer) };
+    }),
+    decisions: toArr(p.decisions).map((decision: unknown) => {
+      const row = decision && typeof decision === 'object' ? (decision as Record<string, unknown>) : {};
+      return { decision: toStr(row.decision), responsible: toStr(row.responsible) };
+    }),
+    openQuestions: toArr<string>(p.openQuestions).map(toStr),
+    approval: {
+      executorSignature: {
+        organization: toStr(
+          (
+            (p.approval as Record<string, unknown> | undefined)?.executorSignature as
+              | Record<string, unknown>
+              | undefined
+          )?.organization,
+        ),
+        representative: toStr(
+          (
+            (p.approval as Record<string, unknown> | undefined)?.executorSignature as
+              | Record<string, unknown>
+              | undefined
+          )?.representative,
+        ),
+      },
+      customerSignature: {
+        organization: toStr(
+          (
+            (p.approval as Record<string, unknown> | undefined)?.customerSignature as
+              | Record<string, unknown>
+              | undefined
+          )?.organization,
+        ),
+        representative: toStr(
+          (
+            (p.approval as Record<string, unknown> | undefined)?.customerSignature as
+              | Record<string, unknown>
+              | undefined
+          )?.representative,
+        ),
+      },
+    },
+  };
+}
+
+/**
+ * Жёсткая проверка соответствия `ProtocolSchema` после получения итогового JSON от модели.
+ * Частичный поток streamObject не гарантирует валидность — всегда вызывать на финальном объекте.
+ */
+export function parseProtocolStrict(input: unknown): Protocol {
+  return ProtocolSchema.parse(coerceProtocolPartial(input));
+}
+
+/**
+ * Тот же разбор без исключения — для логов и диагностики.
+ */
+export function safeParseProtocol(input: unknown) {
+  return ProtocolSchema.safeParse(coerceProtocolPartial(input));
+}
+
 /**
  * Схема для валидации и анализа исходной расшифровки встречи
  */

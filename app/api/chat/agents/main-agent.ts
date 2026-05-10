@@ -1,22 +1,23 @@
-import { AgentContext } from './types';
-import { classifyIntent } from './classifier';
-import { decideNextAction } from './orchestrator';
-import { runChatAgent } from './chat-agent';
-import { runDocumentAgent } from './document-agent';
+import type { AgentContext } from "./types";
+import {
+  explicitDocumentGenerationRequest,
+  getLastUserPlainText,
+} from "./orchestrator";
+import { runChatAgent } from "./chat-agent";
+import { runDocumentAgent } from "./document-agent";
 
-export async function runMainAgent(context: AgentContext, systemPrompt: string, userPrompt: string) {
-  // 1. Classify Intent
-  const intent = await classifyIntent(context);
-  
-  // 2. Orchestrate Decision
-  const decision = decideNextAction(context, intent);
+export async function runMainAgent(
+  context: AgentContext,
+  systemPrompt: string,
+  userPrompt: string,
+) {
+  const lastUser = getLastUserPlainText(context);
 
-  console.log('🧭 Orchestrator decision:', decision);
-
-  // 3. Route to Agent
-  if (decision.route === 'document') {
+  if (explicitDocumentGenerationRequest(lastUser)) {
+    console.log("🧭 Main agent: explicit protocol request → document pipeline");
     return runDocumentAgent(context);
   }
 
+  console.log("🧭 Main agent: chat stream + publishInvestigationProtocol tool");
   return runChatAgent(context, systemPrompt, userPrompt);
 }

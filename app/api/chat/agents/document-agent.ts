@@ -1,7 +1,12 @@
 import { createUIMessageStream, JsonToSseTransformStream, streamObject } from 'ai';
 import { AgentContext } from './types';
 import { updateConversation, saveConversation } from '@/lib/getPromt';
-import { ProtocolSchema, type Protocol } from '@/lib/schemas/protocol-schema';
+import {
+  ProtocolSchema,
+  coerceProtocolPartial,
+  parseProtocolStrict,
+  type Protocol,
+} from '@/lib/schemas/protocol-schema';
 import { generateProtocolDocx } from '@/lib/docx-generator';
 import { SGR_DOCUMENT_AGENT_PROMPT } from '@/lib/prompts/sgr-prompts';
 
@@ -22,77 +27,6 @@ function extractMessageText(msg: any): string {
     }
   }
   return '';
-}
-
-function coerceProtocol(partial: Partial<Protocol>): Protocol {
-  const toString = (value: any) => (value == null ? '' : String(value));
-  const toArray = <T>(value: any): T[] => (Array.isArray(value) ? value : []);
-  const toPeople = (value: any) =>
-    toArray(value).map((p: any) => ({
-      fullName: toString(p?.fullName || p?.name),
-      position: toString(p?.position || p?.role),
-    }));
-
-  return {
-    protocolNumber: toString(partial.protocolNumber),
-    meetingDate: toString(partial.meetingDate),
-    agenda: {
-      title: toString(partial.agenda?.title),
-      items: toArray<string>(partial.agenda?.items).map(toString),
-    },
-    participants: {
-      customer: {
-        organizationName: toString(partial.participants?.customer?.organizationName),
-        people: toPeople(partial.participants?.customer?.people),
-      },
-      executor: {
-        organizationName: toString(partial.participants?.executor?.organizationName),
-        people: toPeople(partial.participants?.executor?.people),
-      },
-    },
-    termsAndDefinitions: toArray(partial.termsAndDefinitions).map((item: any) => ({
-      term: toString(item?.term),
-      definition: toString(item?.definition),
-    })),
-    abbreviations: toArray(partial.abbreviations).map((item: any) => ({
-      abbreviation: toString(item?.abbreviation),
-      fullForm: toString(item?.fullForm),
-    })),
-    meetingContent: {
-      introduction: toString(partial.meetingContent?.introduction || ''),
-      topics: toArray(partial.meetingContent?.topics).map((topic: any) => ({
-        title: toString(topic?.title),
-        content: toString(topic?.content),
-        subtopics: toArray(topic?.subtopics).map((sub: any) => ({
-          title: toString(sub?.title || ''),
-          content: toString(sub?.content),
-        })),
-      })),
-      migrationFeatures: toArray(partial.meetingContent?.migrationFeatures).map((feat: any) => ({
-        tab: toString(feat?.tab),
-        features: toString(feat?.features),
-      })),
-    },
-    questionsAndAnswers: toArray(partial.questionsAndAnswers).map((qa: any) => ({
-      question: toString(qa?.question),
-      answer: toString(qa?.answer),
-    })),
-    decisions: toArray(partial.decisions).map((decision: any) => ({
-      decision: toString(decision?.decision),
-      responsible: toString(decision?.responsible),
-    })),
-    openQuestions: toArray<string>(partial.openQuestions).map(toString),
-    approval: {
-      executorSignature: {
-        organization: toString(partial.approval?.executorSignature?.organization),
-        representative: toString(partial.approval?.executorSignature?.representative),
-      },
-      customerSignature: {
-        organization: toString(partial.approval?.customerSignature?.organization),
-        representative: toString(partial.approval?.customerSignature?.representative),
-      },
-    },
-  };
 }
 
 function stripTimecodeMarkers(text: string): string {
@@ -165,7 +99,8 @@ export async function runDocumentAgent(context: AgentContext) {
   return new Response(readable, { headers: { 'Content-Type': 'text/event-stream' } });
 }
 
-async function generateFinalDocument(
+/** Генерация протокола в правую панель (`data-title`, `data-documentDelta`, …). Пишет в переданный writer. */
+export async function generateFinalDocument(
   uiMessages: any[], // Changed from messages to uiMessages
   userPrompt: string | null,
   dataStream: any,
@@ -224,11 +159,10 @@ async function generateFinalDocument(
     .replace('{{CONVERSATION_CONTEXT}}', conversationContext)
     .replace('{{EXISTING_DOCUMENT_CONTEXT}}', existingDocumentContext);
 
-  let protocol: Protocol | null = null;
   let markdownContent = '';
 
   try {
-    const { partialObjectStream } = streamObject({
+    const streamResult = streamObject({
       model,
       temperature,
       schema: ProtocolSchema,
@@ -238,9 +172,8 @@ async function generateFinalDocument(
     let lastMarkdown = '';
     let lastTitle = '';
 
-    for await (const partial of partialObjectStream) {
-      const safeProtocol = coerceProtocol(partial as Partial<Protocol>);
-      protocol = safeProtocol;
+    for await (const partial of streamResult.partialObjectStream) {
+      const safeProtocol = coerceProtocolPartial(partial);
 
       let nextMarkdown = '';
       try {
@@ -266,19 +199,30 @@ async function generateFinalDocument(
       markdownContent = nextMarkdown;
     }
 
-    writeData({ type: 'data-finish', data: null, transient: true });
-
-    if (!protocol) {
-      throw new Error('Failed to generate protocol');
+    let validated: Protocol;
+    try {
+      validated = parseProtocolStrict(await streamResult.object);
+    } catch (validationErr) {
+      console.error('[generateFinalDocument] Protocol schema validation failed:', validationErr);
+      throw new Error(
+        'Итоговый протокол не прошёл проверку структуры (protocol-schema). Сформируйте документ повторно или дополните расшифровку.',
+      );
     }
 
-    const docxBuffer = await generateProtocolDocx(protocol);
+    const finalMarkdown = protocolToMarkdown(validated);
+    markdownContent = finalMarkdown;
+    writeData({ type: 'data-clear', data: null, transient: true });
+    writeData({ type: 'data-documentDelta', data: finalMarkdown, transient: true });
+
+    writeData({ type: 'data-finish', data: null, transient: true });
+
+    const docxBuffer = await generateProtocolDocx(validated);
     const base64Docx = docxBuffer.toString('base64');
     writeData({
       type: 'data-docx',
       data: {
         content: base64Docx,
-        filename: `Протокол_обследования_${protocol.protocolNumber.replace(/[^0-9]/g, '')}_${protocol.meetingDate.replace(/\./g, '-')}.docx`,
+        filename: `Протокол_обследования_${validated.protocolNumber.replace(/[^0-9]/g, '')}_${validated.meetingDate.replace(/\./g, '-')}.docx`,
       },
     });
   } catch (error) {

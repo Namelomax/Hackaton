@@ -22,6 +22,19 @@ import { copyTextToClipboard } from '@/lib/copyToClipboard';
 
 const DEFAULT_OPENROUTER_MODEL = 'nvidia/nemotron-3-super-120b-a12b:free';
 
+/** Не передавать пустой documentContent в PUT — иначе БД перезапишет документ пустой строкой */
+function buildPersistPutBody(
+  conversationId: string,
+  messages: unknown[],
+  documentContent?: string | null,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = { conversationId, messages };
+  if (typeof documentContent === 'string' && documentContent.trim().length > 0) {
+    body.documentContent = documentContent;
+  }
+  return body;
+}
+
 export default function ChatPage() {
   const localModels = useMemo(() => parseModelsFromEnv(process.env.NEXT_PUBLIC_LOCAL_MODELS), []);
 
@@ -504,6 +517,18 @@ export default function ChatPage() {
     );
   }, [document.content, conversationId]);
 
+  // Панель справа может показывать другой чат, чем движок; без этого в списке сайдбара не будет актуального document_content.
+  useEffect(() => {
+    if (!viewConversationId || String(viewConversationId).startsWith('local-')) return;
+    const text = viewDocument.content?.trim() ?? '';
+    if (!text) return;
+    setConversationsList((prev) =>
+      prev.map((c) =>
+        c.id === viewConversationId ? { ...c, document_content: viewDocument.content } : c
+      )
+    );
+  }, [viewDocument.content, viewConversationId]);
+
   const [lastSavedAssistantId, setLastSavedAssistantId] = useState<string | null>(null);
   useEffect(() => {
     if (!authUser?.id || !conversationId) return;
@@ -522,7 +547,7 @@ export default function ChatPage() {
         const resp = await fetch('/api/conversations', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ conversationId, messages, documentContent: document.content }),
+          body: JSON.stringify(buildPersistPutBody(conversationId, messages, document.content)),
         });
         const j = await resp.json();
         if (j?.success) {
@@ -903,18 +928,25 @@ export default function ChatPage() {
       documentContentPreview: conversation.document_content?.slice(0, 100),
     });
 
-    // Save current conversation state before switching (prevent message loss)
-    if (conversationId && !String(conversationId).startsWith('local-') && authUser?.id && messages.length > 0) {
-      // Fire and forget - save current messages to avoid losing user's last message
+    const switchingAway = conversation.id !== conversationId;
+    // Save current conversation before switching (сообщения); documentContent только если не пустой — не затирать БД.
+    if (
+      switchingAway &&
+      conversationId &&
+      !String(conversationId).startsWith('local-') &&
+      authUser?.id &&
+      messages.length > 0
+    ) {
       console.log('[handleSelectConversation] Saving current conversation before switch:', {
         conversationId,
-        documentContent: document.content?.slice(0, 100),
+        documentContentPreview: document.content?.slice(0, 100),
+        omitEmptyDoc: !document.content?.trim(),
       });
       fetch('/api/conversations', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversationId, messages, documentContent: document.content }),
-      }).catch(err => console.warn('Failed to save conversation on switch', err));
+        body: JSON.stringify(buildPersistPutBody(conversationId, messages, document.content)),
+      }).catch((err) => console.warn('Failed to save conversation on switch', err));
     }
 
     // Always change the viewed chat immediately.
