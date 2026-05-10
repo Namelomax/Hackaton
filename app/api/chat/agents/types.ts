@@ -12,6 +12,9 @@ export interface AgentContext {
   model: any; // The language model instance
   /** Прерывание генерации при отмене запроса клиентом (кнопка «Стоп»). */
   abortSignal?: AbortSignal | null;
+  /** RAG через инструмент retrieveFromIndexedDocuments (без пре-инъекции в системный промпт). */
+  ragRetrievalEnabled?: boolean;
+  ragMode?: string;
 }
 
 export interface AgentResponse {

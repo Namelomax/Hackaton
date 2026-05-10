@@ -11,6 +11,7 @@ import {
   createPublishInvestigationProtocolTool,
   type ProtocolGenerationSink,
 } from "./protocol-tools";
+import { createRetrieveFromIndexedDocumentsTool } from "./rag-tools";
 
 const PROTOCOL_TOOL_SYSTEM_APPENDIX = `
 
@@ -138,7 +139,16 @@ export async function runChatAgent(
   systemPrompt: string,
   userPrompt: string,
 ) {
-  const { messages, model, userId, conversationId, documentContent, abortSignal } = context;
+  const {
+    messages,
+    model,
+    userId,
+    conversationId,
+    documentContent,
+    abortSignal,
+    ragRetrievalEnabled,
+    ragMode,
+  } = context;
   const messagesWithUserPrompt: ModelMessage[] = [];
 
   if (userPrompt && userPrompt.trim()) {
@@ -189,11 +199,22 @@ export async function runChatAgent(
       messages.length,
     );
 
+    const ragTool =
+      ragRetrievalEnabled &&
+      createRetrieveFromIndexedDocumentsTool({
+        model,
+        messages: messagesWithUserPrompt,
+        ragMode: ragMode ?? "hybrid",
+        abortSignal,
+      });
+
     const stream = streamText({
       model,
       temperature: 0,
       messages: messagesWithUserPrompt,
       system: adaptedSystemPrompt,
+      ...(ragTool ? { tools: { retrieveFromIndexedDocuments: ragTool } } : {}),
+      ...(ragTool ? { stopWhen: stepCountIs(12) } : {}),
       ...(abortSignal ? { abortSignal } : {}),
     });
 
@@ -230,21 +251,35 @@ export async function runChatAgent(
 
   const sink: ProtocolGenerationSink = { markdown: "" };
 
+  const retrieveFromIndexedDocumentsTool =
+    ragRetrievalEnabled &&
+    createRetrieveFromIndexedDocumentsTool({
+      model,
+      messages: messagesWithUserPrompt,
+      ragMode: ragMode ?? "hybrid",
+      abortSignal,
+    });
+
   const stream = createUIMessageStream({
     originalMessages: safeOriginalUIMessages(context),
     execute: async ({ writer }) => {
       const publishInvestigationProtocol =
         createPublishInvestigationProtocolTool(writer, context, sink);
 
+      const tools = {
+        publishInvestigationProtocol,
+        ...(retrieveFromIndexedDocumentsTool
+          ? { retrieveFromIndexedDocuments: retrieveFromIndexedDocumentsTool }
+          : {}),
+      };
+
       const result = streamText({
         model,
         temperature: 0,
         messages: messagesWithUserPrompt,
         system: adaptedSystemPrompt,
-        tools: {
-          publishInvestigationProtocol,
-        },
-        stopWhen: stepCountIs(8),
+        tools,
+        stopWhen: stepCountIs(ragRetrievalEnabled ? 14 : 8),
         ...(abortSignal ? { abortSignal } : {}),
       });
 

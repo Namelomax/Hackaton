@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation } from '@/lib/getPromt';
 import { parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
 import { runMainAgent } from './agents/main-agent';
+import { RAG_TOOL_MODE_SYSTEM_APPENDIX } from './agents/rag-tools';
 import { AgentContext } from './agents/types';
 
 // Должно быть ≥ таймаута прокси/Ollama для длинных ответов (300s совпадало с 5m и обрывом стрима).
@@ -61,31 +62,6 @@ function resolveLanguageModel(body: Record<string, unknown>) {
   }
   const slug = resolveOpenRouterSlug(typeof body.chatModel === 'string' ? body.chatModel : '');
   return createOpenRouterInstance().chat(slug);
-}
-
-async function fetchRagSnippet(question: string, mode: string): Promise<string> {
-  const base = process.env.RAG_API_URL?.trim();
-  if (!base || !question.trim()) return '';
-
-  const normalizedMode = ['hybrid', 'local', 'global'].includes(mode) ? mode : 'hybrid';
-
-  try {
-    const url = `${base.replace(/\/$/, '')}/query`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        question: question.slice(0, 8000),
-        mode: normalizedMode,
-      }),
-    });
-    if (!res.ok) return '';
-    const data = (await res.json().catch(() => null)) as { answer?: string } | null;
-    const answer = typeof data?.answer === 'string' ? data.answer : '';
-    return answer.trim().slice(0, 12000);
-  } catch {
-    return '';
-  }
 }
 
 function buildSystemPrompt(
@@ -668,25 +644,22 @@ export async function POST(req: Request) {
     ? hiddenDocEntries.join('\n\n').slice(0, 4000)
     : '';
 
-  let ragSnippet = '';
-  if (Boolean(useRagContext) && process.env.RAG_API_URL) {
-    const lastUser = [...messagesWithHidden].reverse().find((m) => m.role === 'user');
-    const raw =
-      typeof lastUser?.content === 'string'
-        ? lastUser.content.replace(/<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi, '').trim()
-        : '';
-    const modeStr = typeof ragMode === 'string' ? ragMode : 'hybrid';
-    if (raw) {
-      ragSnippet = await fetchRagSnippet(raw, modeStr);
-    }
-  }
+  const ragRetrievalEnabled =
+    Boolean(useRagContext) && Boolean(process.env.RAG_API_URL?.trim());
+  const ragModeStr =
+    typeof ragMode === 'string' && ['hybrid', 'local', 'global'].includes(ragMode)
+      ? ragMode
+      : 'hybrid';
 
-  const systemPrompt = buildSystemPrompt(
+  let systemPrompt = buildSystemPrompt(
     userPrompt,
     hiddenDocsContext,
-    ragSnippet || undefined,
-    ragOmitsAttachmentBodies
+    undefined,
+    ragOmitsAttachmentBodies,
   );
+  if (ragRetrievalEnabled) {
+    systemPrompt += RAG_TOOL_MODE_SYSTEM_APPENDIX;
+  }
 
   let languageModel;
   try {
@@ -742,6 +715,8 @@ export async function POST(req: Request) {
     documentContent,
     model: languageModel,
     abortSignal: req.signal,
+    ragRetrievalEnabled,
+    ragMode: ragModeStr,
   };
 
   // 6. Run Main Agent
