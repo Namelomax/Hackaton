@@ -47,6 +47,20 @@ docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml run --r
 
 После `docker compose up -d` в логах `ollama` вместо одной строки `library=cpu` должны появиться устройства **CUDA** / **GPU**. Две карты (3070 + 3080): Ollama обычно грузит модель на одну выбранную по умолчанию; при необходимости смотрите [документацию Ollama](https://github.com/ollama/ollama/blob/main/docs/docker.md) по нескольким GPU.
 
+### «Зависание» и строка `model requires more gpu memory… evicting`
+
+Один процесс **Ollama** обслуживает и **чат** (Next → несколько запросов подряд: классификатор + стрим), и **RAG** (`rag-api` → эмбеддинги `nomic-embed-text`). Если в VRAM одновременно пытаются жить **две большие модели** (например 27B и 14B) или **27B + эмбеддинги**, сервер начинает **eviction** (`Operation:close`). На части сборок это выглядит как долгая пауза без новых логов и без текста на сайте.
+
+В [`docker-compose.yml`](docker-compose.yml) для `ollama` задано **`OLLAMA_MAX_LOADED_MODELS=1`**: в памяти по сути одна полная загрузка LLM, остальные запросы ждут выгрузки — предсказуемее, чем «параллельно две модели». После `git pull` пересоздайте контейнер:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml up -d --force-recreate ollama
+```
+
+Перед тестом чата можно остановить лишнюю нагрузку на тот же Ollama (например не гонять тяжёлый RAG в тот же момент). Для nginx при стриме см. выше: **`proxy_buffering off`**, большие **`proxy_read_timeout`**.
+
+Если зависания останутся, временно проверьте **одну** видимую карту: `NVIDIA_VISIBLE_DEVICES=0` (только 3080) — проще схема размещения слоёв.
+
 Если Ollama должен остаться **только на хосте**, уберите сервис `ollama` из compose (или не используйте этот файл) и в `.env` задайте `OLLAMA_OPENAI_BASE_URL` и `OLLAMA_BASE_URL` на `http://IP_ХОСТА:11434/v1` (на Linux `host.docker.internal` часто не подходит без `extra_hosts`).
 3. Из корня репозитория:
 

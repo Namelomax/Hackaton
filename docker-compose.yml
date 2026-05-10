@@ -27,6 +27,9 @@ services:
     environment:
       # Все GPU видны внутри контейнера (RTX 3070 + 3080 и т.д.). Ограничить: NVIDIA_VISIBLE_DEVICES=0 или 0,1
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      # Одновременно держать только одну «большую» загрузку модели: иначе классификатор + чат + RAG/embeddings
+      # конкурируют за VRAM → eviction / зависание без новых строк в логе. 0 в Ollama = без лимита.
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-1}
     volumes:
       - ollama_data:/root/.ollama
     ports:
