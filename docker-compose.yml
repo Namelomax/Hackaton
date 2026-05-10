@@ -79,7 +79,10 @@ services:
 
 volumes:
   surreal-data:
+  # Явное имя тома: переиспользование моделей (напр. chatbot_ollama_data) без второго pull.
+  # По умолчанию — как раньше: ${COMPOSE_PROJECT_NAME}_ollama_data (имя папки проекта + суффикс).
   ollama_data:
+    name: ${OLLAMA_VOLUME_NAME:-${COMPOSE_PROJECT_NAME}_ollama_data}
   rag-uploads:
   rag-output:
   rag-storage:

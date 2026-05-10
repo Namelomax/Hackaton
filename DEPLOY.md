@@ -13,6 +13,8 @@ docker compose exec ollama ollama pull qwen3.6:27b
 
 Без **`nomic-embed-text`** (или другой модели из `LOCAL_OPENAI_EMBEDDING_MODEL`) RAG падает на `/embeddings` с `APIConnectionError` / ретраями.
 
+Переиспользование моделей из старого проекта: тома вида `chatbot_ollama_data` и `chatbot2_ollama_data` — это **разные каталоги**. Чтобы не качать модели второй раз, в `.env` задайте **`OLLAMA_VOLUME_NAME=chatbot_ollama_data`** (имя из `docker volume ls`) и выполните `docker compose up -d`. Не держите запущенными **два** контейнера `ollama`, смонтированных в **один** том — возможна порча данных.
+
 GPU (NVIDIA): в `docker-compose.yml` у сервиса `ollama` можно добавить блок `deploy.resources.reservations.devices` или устаревшее `gpus: all` (как в старом RagTest) — см. [документацию Ollama Docker](https://github.com/ollama/ollama/blob/main/docs/docker.md).
 
 Если Ollama должен остаться **только на хосте**, уберите сервис `ollama` из compose (или не используйте этот файл) и в `.env` задайте `OLLAMA_OPENAI_BASE_URL` и `OLLAMA_BASE_URL` на `http://IP_ХОСТА:11434/v1` (на Linux `host.docker.internal` часто не подходит без `extra_hosts`).
