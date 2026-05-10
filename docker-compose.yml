@@ -1,6 +1,8 @@
 services:
   surrealdb:
     image: surrealdb/surrealdb:latest
+    # Образ по умолчанию может работать не от root — без этого RocksDB в named volume часто даёт EACCES (код 13).
+    user: "0:0"
     command:
       - start
       - --log

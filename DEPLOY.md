@@ -16,6 +16,22 @@ docker compose up -d --build
 
 На Linux для доступа контейнеров к Ollama на хосте используется `extra_hosts: host.docker.internal:host-gateway`. При необходимости замените `OLLAMA_BASE_URL` / `OLLAMA_OPENAI_BASE_URL` на IP хоста.
 
+### SurrealDB: `Permission denied` / RocksDB
+
+Если `docker compose logs surrealdb` показывает `Failed to create RocksDB directory` / `Permission denied`, в `docker-compose.yml` для сервиса `surrealdb` задано `user: "0:0"`. Подтяните изменения и пересоздайте контейнер:
+
+```bash
+docker compose up -d --force-recreate surrealdb
+```
+
+Если volume уже создан с «чужими» правами и ошибка остаётся, удалите только том Surreal (**потеря данных этой БД**):
+
+```bash
+docker compose down
+docker volume rm ИМЯПРОЕКТА_surreal-data
+docker compose up -d
+```
+
 ---
 
 ## Локальная разработка без Docker
