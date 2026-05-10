@@ -54,12 +54,16 @@ export default function ChatPage() {
     }
   }, [chatProvider, localModels]);
 
+  const [useRagContext, setUseRagContext] = useState(false);
+
   const chatBody = useMemo(
     () => ({
       chatProvider,
       chatModel,
+      useRagContext,
+      ragMode: 'hybrid' as const,
     }),
-    [chatProvider, chatModel],
+    [chatProvider, chatModel, useRagContext],
   );
 
   const [authChecked, setAuthChecked] = useState(false);
@@ -1116,6 +1120,16 @@ export default function ChatPage() {
                     {chatModel}
                   </span>
                 )}
+
+                <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    className="rounded border-neutral-300"
+                    checked={useRagContext}
+                    onChange={(e) => setUseRagContext(e.target.checked)}
+                  />
+                  Контекст из RAG
+                </label>
               </div>
               <PromptInputWrapper
                 className="w-full"
@@ -1134,6 +1148,7 @@ export default function ChatPage() {
                 prepareSend={prepareSend}
                 onUserMessageQueued={undefined}
                 chatBody={chatBody}
+                onRagIndexed={() => setUseRagContext(true)}
                 onOpenAuthDialog={() => {
                   setAuthMode('login');
                   setAuthHintFromPrompt(true);

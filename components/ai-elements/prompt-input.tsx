@@ -105,39 +105,43 @@ export function PromptInputAttachment({
 
   return (
     <div
-      className={cn(
-        "group relative h-14 w-14 overflow-hidden rounded-md border bg-muted/20",
-        className
-      )}
+      className={cn("group relative shrink-0", className)}
       title={data.filename}
       key={data.id}
       {...props}
     >
-      {isImage ? (
-        <img
-          alt={data.filename || "attachment"}
-          className="size-full rounded-md object-cover"
-          height={56}
-          src={data.url}
-          width={56}
-        />
-      ) : (
-        <div className="flex size-full flex-col items-center justify-center gap-1 text-muted-foreground">
-          {getIcon()}
-          <span className="text-[10px] font-medium uppercase tracking-wide">
-            {extension || "FILE"}
+      {/* Превью с overflow-hidden отдельно — иначе кнопка «×» с отрицательными inset обрезается и не нажимается */}
+      <div className="relative h-14 w-14 overflow-hidden rounded-md border bg-muted/20">
+        {isImage ? (
+          <img
+            alt={data.filename || "attachment"}
+            className="size-full object-cover"
+            height={56}
+            src={data.url}
+            width={56}
+          />
+        ) : (
+          <div className="flex size-full flex-col items-center justify-center gap-1 text-muted-foreground">
+            {getIcon()}
+            <span className="text-[10px] font-medium uppercase tracking-wide">
+              {extension || "FILE"}
+            </span>
+          </div>
+        )}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center bg-black/60 px-1 py-0.5 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100">
+          <span className="truncate" title={data.filename}>
+            {data.filename || "Файл"}
           </span>
         </div>
-      )}
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center bg-black/60 px-1 py-0.5 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100">
-        <span className="truncate" title={data.filename}>
-          {data.filename || "Файл"}
-        </span>
       </div>
       <Button
-        aria-label="Remove attachment"
-        className="-right-1.5 -top-1.5 absolute h-6 w-6 rounded-full opacity-0 group-hover:opacity-100"
-        onClick={() => attachments.remove(data.id)}
+        aria-label="Удалить вложение"
+        className="absolute -right-1 -top-1 z-10 h-6 w-6 rounded-full border bg-background shadow-sm hover:bg-muted"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          attachments.remove(data.id);
+        }}
         size="icon"
         type="button"
         variant="outline"
