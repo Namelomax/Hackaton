@@ -170,13 +170,17 @@ async def upload_document(
     )
 
 @app.get("/documents", response_model=list[IndexedDocumentItem])
+@app.get("/indexed-documents", response_model=list[IndexedDocumentItem])
 async def list_indexed_documents():
-    """Документы, присутствующие в индексе LightRAG."""
+    """Документы, присутствующие в индексе LightRAG.
+
+    Два пути: /documents и /indexed-documents — на случай прокси/старых образов, где один из путей отдаёт 404.
+    """
     try:
         items = rag_service.list_indexed_documents()
         return [IndexedDocumentItem(**x) for x in items]
     except Exception as e:
-        logger.exception("RAG /documents list failed")
+        logger.exception("RAG list indexed documents failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -185,8 +189,9 @@ class DeleteByIdBody(BaseModel):
 
 
 @app.delete("/documents", response_model=DeleteDocumentResponse)
+@app.delete("/indexed-documents", response_model=DeleteDocumentResponse)
 async def delete_indexed_document(body: DeleteByIdBody = Body(...)):
-    """Удалить документ из индекса по id (как в списке /documents)."""
+    """Удалить документ из индекса по id (как в списке /documents или /indexed-documents)."""
     doc_id = (body.id or "").strip()
     if not doc_id:
         raise HTTPException(status_code=400, detail="id required")

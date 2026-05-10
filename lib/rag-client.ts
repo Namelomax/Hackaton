@@ -17,7 +17,10 @@ export async function fetchRagSnippet(question: string, mode: string): Promise<s
         mode: normalizedMode,
       }),
     });
-    if (!res.ok) return '';
+    if (!res.ok) {
+      console.warn('[fetchRagSnippet] RAG /query failed', res.status, await res.text().catch(() => ''));
+      return '';
+    }
     const data = (await res.json().catch(() => null)) as { answer?: string } | null;
     const answer = typeof data?.answer === 'string' ? data.answer : '';
     return answer.trim().slice(0, 12000);
