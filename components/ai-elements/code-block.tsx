@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { copyTextToClipboard } from "@/lib/copyToClipboard";
 import { cn } from "@/lib/utils";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactNode } from "react";
@@ -117,18 +118,17 @@ export const CodeBlockCopyButton = ({
   const { code } = useContext(CodeBlockContext);
 
   const copyToClipboard = async () => {
-    if (typeof window === "undefined" || !navigator.clipboard.writeText) {
+    if (typeof window === "undefined") {
       onError?.(new Error("Clipboard API not available"));
       return;
     }
-
-    try {
-      await navigator.clipboard.writeText(code);
+    const ok = await copyTextToClipboard(code);
+    if (ok) {
       setIsCopied(true);
       onCopy?.();
       setTimeout(() => setIsCopied(false), timeout);
-    } catch (error) {
-      onError?.(error as Error);
+    } else {
+      onError?.(new Error("Clipboard API not available"));
     }
   };
 

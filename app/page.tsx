@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { parseModelsFromEnv } from '@/lib/chat-models';
+import { copyTextToClipboard } from '@/lib/copyToClipboard';
 
 const DEFAULT_OPENROUTER_MODEL = 'arcee-ai/trinity-large-preview:free';
 
@@ -794,12 +795,13 @@ export default function ChatPage() {
   };
 
   const handleCopy = async (text: string, id: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
+    const ok = await copyTextToClipboard(text);
+    if (ok) {
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 2000);
-    } catch (err) {
-      console.error(err);
+    } else {
+      console.error('Clipboard: не удалось скопировать');
+      alert('Копирование недоступно в этом браузере (нужен HTTPS или разрешение на буфер).');
     }
   };
 

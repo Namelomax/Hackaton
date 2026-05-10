@@ -24,6 +24,7 @@ import { DocumentReviewPanel } from '@/components/document/DocumentReviewPanel';
 import type { DocumentReview } from '@/app/api/chat/agents/review-agent';
 import type { Attachment, DocumentState } from '@/lib/document/types';
 import { buildDocxMarkdown, extractTitleFromMarkdown, formatDocumentContent, sanitizeFilename } from '@/lib/document/formatting';
+import { copyTextToClipboard } from '@/lib/copyToClipboard';
 
 type DocumentPanelProps = {
   document: DocumentState;
@@ -156,13 +157,14 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
   const handleCopy = async () => {
     const formatted = `# ${displayTitle}\n\n${viewContent}`;
 
-    try {
-      await navigator.clipboard.writeText(formatted);
+    const ok = await copyTextToClipboard(formatted);
+    if (ok) {
       setCopied(true);
       onCopy?.({ title: document.title, content: document.content });
       setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Ошибка при копировании:', err);
+    } else {
+      console.error('Ошибка при копировании: буфер недоступен');
+      alert('Копирование недоступно (HTTPS или разрешение браузера).');
     }
   };
 

@@ -88,12 +88,21 @@ async function fetchRagSnippet(question: string, mode: string): Promise<string> 
   }
 }
 
-function buildSystemPrompt(userPrompt: string, hiddenDocsContext?: string, ragContext?: string): string {
+function buildSystemPrompt(
+  userPrompt: string,
+  hiddenDocsContext?: string,
+  ragContext?: string,
+  ragOmitsAttachmentBodies?: boolean
+): string {
   const ragBlock = ragContext?.trim()
     ? `
 ===== КОНТЕКСТ ИЗ RAG (ФРАГМЕНТЫ ИЗ ИНДЕКСА ДОКУМЕНТОВ) =====
 ${ragContext.trim()}
-ИНСТРУКЦИЯ: опирайся на этот контекст для фактов из загруженных в RAG документов; если данных нет — так и скажи.
+ИНСТРУКЦИЯ: опирайся на этот контекст для фактов из загруженных в RAG документов; если данных нет — так и скажи.${
+      ragOmitsAttachmentBodies
+        ? ' Тексты прикреплённых файлов в этот запрос не подставлялись (только имена); факты из документов бери из этого блока.'
+        : ''
+    }
 ===== КОНЕЦ КОНТЕКСТА RAG =====
 `
     : '';
@@ -106,7 +115,11 @@ ${hiddenDocsContext}
 ИНСТРУКЦИЯ ПО РАБОТЕ С ВЛОЖЕНИЯМИ:
 1. Это справочные материалы. НЕ делай их краткий пересказ (summary), если пользователь об этом явно не попросил.
 2. Используй информацию из них только для ответов на конкретные вопросы или выполнения задач пользователя.
-3. Если пользователь не задал вопрос, просто подтверди получение файлов и скажи, что готов работать с ними согласно твоей основной инструкции.
+3. Если пользователь не задал вопрос, просто подтверди получение файлов и скажи, что готов работать с ними согласно твоей основной инструкции.${
+      ragOmitsAttachmentBodies
+        ? '\n4. Режим RAG: ниже могут быть только имена файлов без полного текста — опирайся на блок RAG выше.'
+        : ''
+    }
 ===== КОНЕЦ ВЛОЖЕНИЙ =====`;
 }
 
@@ -514,6 +527,8 @@ export async function POST(req: Request) {
 
   console.log('✅ Normalized messages:', normalizedMessagesNonEmpty.length);
 
+  const ragOmitsAttachmentBodies = Boolean(useRagContext);
+
   // 3. Process Attachments
   for (const msg of normalizedMessagesNonEmpty) {
     const atts: any[] = Array.isArray(msg?.metadata?.attachments) ? msg.metadata.attachments : [];
@@ -521,36 +536,45 @@ export async function POST(req: Request) {
 
     const collected: string[] = [];
 
-    for (const att of atts) {
-      const name = att?.name || att?.filename || 'документ';
-      const mt = att?.mediaType || att?.mimeType || 'unknown';
-      const ext = guessFileExt(att);
-      let extracted: string | null = null;
-
-      try {
-        if (mt === 'application/pdf') {
-          extracted = await extractPdfTextFromAttachment(att);
-        } else if (mt === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || mt === 'application/msword') {
-          extracted = await extractDocText(att);
-        } else if (mt === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || mt === 'application/vnd.ms-excel') {
-          extracted = await extractXlsxTextFromAttachment(att);
-        } else if (mt === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' || mt === 'application/vnd.ms-powerpoint') {
-          extracted = await extractPptxTextFromAttachment(att);
-        } else if (ext === 'doc' || ext === 'docx') {
-          extracted = await extractDocText(att);
-        } else if (ext === 'xls' || ext === 'xlsx') {
-          extracted = await extractXlsxTextFromAttachment(att);
-        } else if (ext === 'ppt' || ext === 'pptx') {
-          extracted = await extractPptxTextFromAttachment(att);
-        }
-      } catch (err) {
-        console.error('Failed to parse attachment', name, mt, err);
+    if (ragOmitsAttachmentBodies) {
+      for (const att of atts) {
+        const name = att?.name || att?.filename || 'документ';
+        collected.push(
+          `[RAG] Файл «${name}» — полный текст в промпт не передаётся; факты из документа используй из блока «КОНТЕКСТ ИЗ RAG» в системном сообщении.`
+        );
       }
+    } else {
+      for (const att of atts) {
+        const name = att?.name || att?.filename || 'документ';
+        const mt = att?.mediaType || att?.mimeType || 'unknown';
+        const ext = guessFileExt(att);
+        let extracted: string | null = null;
 
-      if (extracted && extracted.trim()) {
-        collected.push(extracted.trim());
-      } else {
-        collected.push(`Файл "${name}": текст не извлечён (тип ${mt}).`);
+        try {
+          if (mt === 'application/pdf') {
+            extracted = await extractPdfTextFromAttachment(att);
+          } else if (mt === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || mt === 'application/msword') {
+            extracted = await extractDocText(att);
+          } else if (mt === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || mt === 'application/vnd.ms-excel') {
+            extracted = await extractXlsxTextFromAttachment(att);
+          } else if (mt === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' || mt === 'application/vnd.ms-powerpoint') {
+            extracted = await extractPptxTextFromAttachment(att);
+          } else if (ext === 'doc' || ext === 'docx') {
+            extracted = await extractDocText(att);
+          } else if (ext === 'xls' || ext === 'xlsx') {
+            extracted = await extractXlsxTextFromAttachment(att);
+          } else if (ext === 'ppt' || ext === 'pptx') {
+            extracted = await extractPptxTextFromAttachment(att);
+          }
+        } catch (err) {
+          console.error('Failed to parse attachment', name, mt, err);
+        }
+
+        if (extracted && extracted.trim()) {
+          collected.push(extracted.trim());
+        } else {
+          collected.push(`Файл "${name}": текст не извлечён (тип ${mt}).`);
+        }
       }
     }
 
@@ -565,12 +589,26 @@ export async function POST(req: Request) {
 
   // 4. Prepare Context for Agents
   const userPrompt = await resolveSystemPrompt(userId, selectedPromptId);
-  
+
+  /** Полное тело вложения только в последнем user-сообщении с файлами (без RAG), чтобы не раздувать контекст. */
+  let lastUserWithAttachmentsIndex = -1;
+  if (!ragOmitsAttachmentBodies) {
+    for (let i = normalizedMessagesNonEmpty.length - 1; i >= 0; i--) {
+      const m = normalizedMessagesNonEmpty[i];
+      if (m?.role !== 'user') continue;
+      const ht = Array.isArray((m as any)?.metadata?.hiddenTexts) ? (m as any).metadata.hiddenTexts : [];
+      if (ht.length > 0) {
+        lastUserWithAttachmentsIndex = i;
+        break;
+      }
+    }
+  }
+
   // Prepare hidden docs context and enrich messages with file content
   const hiddenDocEntries: string[] = [];
   const messagesWithHidden: any[] = [];
-  
-  normalizedMessagesNonEmpty.forEach((msg) => {
+
+  normalizedMessagesNonEmpty.forEach((msg, msgIdx) => {
     const hiddenTexts: string[] = Array.isArray((msg as any)?.metadata?.hiddenTexts)
       ? (msg as any).metadata.hiddenTexts
       : [];
@@ -578,23 +616,44 @@ export async function POST(req: Request) {
       ? (msg as any).metadata.attachments
       : [];
 
-    // Build file content summary for context
     const fileContents: string[] = [];
-    hiddenTexts.forEach((hidden, idx) => {
+    hiddenTexts.forEach((hidden, attIdx) => {
       const cleaned = String(hidden ?? '').trim();
       if (!cleaned) return;
-      const attName = attachmentsMeta[idx]?.name || attachmentsMeta[idx]?.filename;
+      const attName = attachmentsMeta[attIdx]?.name || attachmentsMeta[attIdx]?.filename;
       const label = attName ? `Документ "${attName}"` : `Документ ${hiddenDocEntries.length + 1}`;
       const snippet = cleaned.length > 1200 ? `${cleaned.slice(0, 1200)} …` : cleaned;
       hiddenDocEntries.push(`${label}:\n${snippet}`);
-      
-      // Add full content to this message
-      fileContents.push(`\n\n---\nВложенный файл: ${attName || 'документ'}\n${cleaned}\n---`);
+
+      if (ragOmitsAttachmentBodies) {
+        fileContents.push(
+          `\n\n[Вложение «${attName || 'документ'}» — только имя; полный текст в промпт не передаётся (включён контекст из RAG).]`
+        );
+      } else {
+        fileContents.push(`\n\n---\nВложенный файл: ${attName || 'документ'}\n${cleaned}\n---`);
+      }
     });
-    
-    // If message has file attachments, append their content to the message
+
     if (fileContents.length > 0) {
-      const enrichedContent = `${msg.content}${fileContents.join('')}`;
+      let attachmentSection: string;
+      if (ragOmitsAttachmentBodies) {
+        attachmentSection = fileContents.join('');
+      } else {
+        const useFullAttachmentBodies = msgIdx === lastUserWithAttachmentsIndex;
+        attachmentSection = useFullAttachmentBodies
+          ? fileContents.join('')
+          : hiddenTexts
+              .map((hidden, attIdx) => {
+                const cleaned = String(hidden ?? '').trim();
+                if (!cleaned) return '';
+                const name =
+                  attachmentsMeta[attIdx]?.name || attachmentsMeta[attIdx]?.filename || 'документ';
+                return `\n\n[Файл «${name}» (${cleaned.length} симв.) — полный текст в истории не дублируется; краткая выжимка в системном блоке «ВЛОЖЕНИЯ».]`;
+              })
+              .filter(Boolean)
+              .join('');
+      }
+      const enrichedContent = `${msg.content}${attachmentSection}`;
       messagesWithHidden.push({
         ...msg,
         content: enrichedContent,
@@ -625,7 +684,8 @@ export async function POST(req: Request) {
   const systemPrompt = buildSystemPrompt(
     userPrompt,
     hiddenDocsContext,
-    ragSnippet || undefined
+    ragSnippet || undefined,
+    ragOmitsAttachmentBodies
   );
 
   let languageModel;
