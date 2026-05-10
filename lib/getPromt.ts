@@ -2,6 +2,7 @@ import Surreal, { u } from "surrealdb";
 import { RecordId } from "surrealdb";
 import crypto from 'crypto';
 import { DEFAULT_PROMPT } from '@/lib/db/repositories/default-promt';
+import { messagesArrayLooksCorrupt, resolveMessagesFromRecord } from '@/lib/conversationMessages';
 
 const db = new Surreal();
 const surrealState = (globalThis as any).__surrealState || ((globalThis as any).__surrealState = {
@@ -576,14 +577,12 @@ export async function saveConversation(userId: string, messages: any, documentCo
     return fallback as Conversation;
   }
 
-  let outMessages = (storedConv as any).messages;
-  if ((!Array.isArray(outMessages) || outMessages.length === 0) && (storedConv as any).messages_raw) {
-    try {
-      const parsed = JSON.parse(String((storedConv as any).messages_raw));
-      if (Array.isArray(parsed)) outMessages = parsed;
-    } catch {
-      /* ignore */
-    }
+  let outMessages = resolveMessagesFromRecord(
+    (storedConv as any).messages,
+    (storedConv as any).messages_raw,
+  );
+  if (outMessages.length === 0 || messagesArrayLooksCorrupt(outMessages)) {
+    outMessages = sanitizedClean;
   }
 
   return {
@@ -687,15 +686,9 @@ export async function updateConversation(conversationId: string, messages: any, 
   }
   */
 
-  // If messages empty but messages_raw exists, try to parse it
-  let storedMessages: any = convData?.messages;
-  if ((!Array.isArray(storedMessages) || storedMessages.length === 0) && convData?.messages_raw) {
-    try {
-      const parsed = JSON.parse(String(convData.messages_raw));
-      if (Array.isArray(parsed)) storedMessages = parsed;
-    } catch (e) {
-      // ignore parse errors
-    }
+  let mergedMessages = resolveMessagesFromRecord(convData?.messages, convData?.messages_raw);
+  if (mergedMessages.length === 0 || messagesArrayLooksCorrupt(mergedMessages)) {
+    mergedMessages = sanitizedClean;
   }
 
   console.log('[updateConversation] Returning:', {
@@ -703,8 +696,6 @@ export async function updateConversation(conversationId: string, messages: any, 
     hasDocumentContent: !!convData.document_content,
     documentContentLength: convData.document_content?.length,
   });
-
-  const mergedMessages = storedMessages ?? sanitizedClean;
 
   return {
     id: convData.id?.toString?.() ?? recordIdString,
@@ -738,15 +729,7 @@ export async function renameConversation(convId: string, title: string): Promise
     };
   }
 
-  let messages = convData.messages;
-  if ((!Array.isArray(messages) || messages.length === 0) && convData.messages_raw) {
-    try {
-      const parsed = JSON.parse(String(convData.messages_raw));
-      if (Array.isArray(parsed)) messages = parsed;
-    } catch (e) {
-      /* ignore */
-    }
-  }
+  const messages = resolveMessagesFromRecord(convData.messages, convData.messages_raw);
 
   return {
     id: convData.id?.toString?.() ?? `conversations:${clean}`,
@@ -815,16 +798,7 @@ export async function getConversations(userId: string): Promise<Conversation[]> 
 
   const records = (result?.[0] ?? []);
   return records.map((r: any) => {
-    let messages = r.messages;
-    // If messages array is empty but we stored messages_raw fallback, try to parse it
-    if ((!Array.isArray(messages) || messages.length === 0) && r.messages_raw) {
-      try {
-        const parsed = JSON.parse(r.messages_raw);
-        if (Array.isArray(parsed)) messages = parsed;
-      } catch (e) {
-        // ignore parse errors
-      }
-    }
+    const messages = resolveMessagesFromRecord(r.messages, r.messages_raw);
 
     return {
       id: r.id.toString(),

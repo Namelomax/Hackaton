@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/select';
 import { parseModelsFromEnv } from '@/lib/chat-models';
 import { copyTextToClipboard } from '@/lib/copyToClipboard';
+import { resolveMessagesFromRecord } from '@/lib/conversationMessages';
 
 const DEFAULT_OPENROUTER_MODEL = 'nvidia/nemotron-3-super-120b-a12b:free';
 
@@ -597,14 +598,12 @@ export default function ChatPage() {
         const resp = await fetch(`/api/conversations?userId=${encodeURIComponent(authUser.id)}`);
         const j = await resp.json();
         if (j?.success) {
-            const convs = (j.conversations || []).map((c: any) => {
-              let msgs = c.messages;
-              if ((!Array.isArray(msgs) || msgs.length === 0) && c.messages_raw) {
-                  const parsed = JSON.parse(c.messages_raw);
-                  if (Array.isArray(parsed)) msgs = parsed;
-              }
-              return normalizeConversationTitle({ ...c, messages: msgs });
-            });
+            const convs = (j.conversations || []).map((c: any) =>
+              normalizeConversationTitle({
+                ...c,
+                messages: resolveMessagesFromRecord(c.messages, c.messages_raw),
+              }),
+            );
             setConversationsList(convs);
             const savedConvId = localStorage.getItem('activeConversationId');
             let activeConv = null;
@@ -677,14 +676,10 @@ export default function ChatPage() {
         // Load last conversation
         if (Array.isArray(json.conversations) && json.conversations.length > 0) {
           try {
-            const convs = json.conversations.map((c: any) => {
-              let msgs = c.messages;
-              if ((!Array.isArray(msgs) || msgs.length === 0) && c.messages_raw) {
-                  const parsed = JSON.parse(c.messages_raw);
-                  if (Array.isArray(parsed)) msgs = parsed;
-              }
-              return { ...c, messages: msgs };
-            });
+            const convs = json.conversations.map((c: any) => ({
+              ...c,
+              messages: resolveMessagesFromRecord(c.messages, c.messages_raw),
+            }));
             setConversationsList(convs);
             const first = convs[0];
             if (first) {
@@ -717,18 +712,10 @@ export default function ChatPage() {
             const resp = await fetch(`/api/conversations?userId=${encodeURIComponent(json.user.id)}`);
             const j = await resp.json();
             if (j?.success) {
-              const merged = (j.conversations || []).map((c: any) => {
-                let msgs = c.messages;
-                if ((!Array.isArray(msgs) || msgs.length === 0) && c.messages_raw) {
-                  try {
-                    const parsed = JSON.parse(c.messages_raw);
-                    if (Array.isArray(parsed)) msgs = parsed;
-                  } catch {
-                    /* ignore */
-                  }
-                }
-                return { ...c, messages: msgs };
-              });
+              const merged = (j.conversations || []).map((c: any) => ({
+                ...c,
+                messages: resolveMessagesFromRecord(c.messages, c.messages_raw),
+              }));
               setConversationsList(merged);
             }
         }
