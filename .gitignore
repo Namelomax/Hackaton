@@ -34,6 +34,9 @@ yarn-error.log*
 .env*
 !.env.example
 
+# Локальный override (например том chatbot_ollama_data): см. docker-compose.override.example.yml
+docker-compose.override.yml
+
 # vercel
 .vercel
 

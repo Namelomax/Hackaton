@@ -1,8 +1,12 @@
 # Переиспользование уже заполненного Docker-тома с моделями (без дубликата на диске).
 #
 # Проверьте имя: docker volume ls | grep ollama
-# Запуск:
-#   docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml up -d
+#
+# Вариант A — второй файл (удобно в CI / скриптах):
+#   docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml up -d --force-recreate ollama
+#
+# Вариант B — один раз скопировать пример в override (дальше обычный `docker compose up`):
+#   cp docker-compose.override.example.yml docker-compose.override.yml
 #
 # Ниже замените имя тома на своё, если отличается (должно совпадать с выводом volume ls).
 

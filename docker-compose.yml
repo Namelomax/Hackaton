@@ -24,6 +24,10 @@ services:
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
+    # Том по умолчанию: <имя_проекта>_ollama_data (у chatbot2 — свой пустой том).
+    # Чтобы использовать уже скачанные модели из chatbot_ollama_data:
+    #   cp docker-compose.override.example.yml docker-compose.override.yml
+    # или: docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml up -d
     environment:
       # Все GPU видны внутри контейнера (RTX 3070 + 3080 и т.д.). Ограничить: NVIDIA_VISIBLE_DEVICES=0 или 0,1
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
@@ -80,6 +84,8 @@ services:
       OPENROUTER_MODEL_DEFAULT: ${OPENROUTER_MODEL_DEFAULT:-arcee-ai/trinity-large-preview:free}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434/v1}
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-ollama}
+      ALLOWED_OLLAMA_MODELS: ${ALLOWED_OLLAMA_MODELS:-}
+      NEXT_PUBLIC_LOCAL_MODELS: ${NEXT_PUBLIC_LOCAL_MODELS:-}
       GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY:-}
     ports:
       - "${WEB_PORT:-3000}:3000"

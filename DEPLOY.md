@@ -7,20 +7,33 @@
 
 ```bash
 docker compose exec ollama ollama pull nomic-embed-text
+docker compose exec ollama ollama pull qwen3:8b
 docker compose exec ollama ollama pull qwen3:14b
-docker compose exec ollama ollama pull qwen3.6:27b
+# опционально: docker compose exec ollama ollama pull qwen3.6:27b
 ```
 
 Без **`nomic-embed-text`** (или другой модели из `LOCAL_OPENAI_EMBEDDING_MODEL`) RAG падает на `/embeddings` с `APIConnectionError` / ретраями.
 
-Переиспользование моделей из старого проекта: тома `chatbot_ollama_data` и `chatbot2_ollama_data` — **разные каталоги**. Переменная `OLLAMA_VOLUME_NAME` в имени тома в Compose на части установок **не подставляется** — контейнер остаётся на пустом томе.
+### Один проект chatbot2, а модели лежат в томе `chatbot_ollama_data`
 
-Надёжный способ: второй файл compose с **внешним** томом (отредактируйте имя тома в файле под вывод `docker volume ls`):
+По умолчанию Compose создаёт **отдельный** том вида `<имя_папки>_ollama_data` (например `foruschatbot2_ollama_data`) — это **не** тот же каталог, что у старого `chatbot`. В логах Ollama **`total blobs: 0`** как раз означает «смонтирован пустой том».
+
+**Вариант 1 (удобно на сервере):** один раз скопировать override и дальше обычный `docker compose up`:
+
+```bash
+cp docker-compose.override.example.yml docker-compose.override.yml
+docker compose up -d --force-recreate ollama
+docker compose exec ollama ollama list
+```
+
+**Вариант 2:** явно указать второй файл compose (ничего не «убирали» из репозитория — он в [`docker-compose.ollama-shared.yml`](docker-compose.ollama-shared.yml)):
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml up -d --force-recreate ollama
 docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml exec ollama ollama list
 ```
+
+Если имя тома не `chatbot_ollama_data`, отредактируйте override или `docker-compose.ollama-shared.yml` под вывод `docker volume ls | grep ollama`.
 
 Уберите из `.env` строку **`OLLAMA_BASE_URL=http://host.docker.internal:...`** для режима с контейнером `ollama`; нужно **`OLLAMA_BASE_URL=http://ollama:11434/v1`** (и то же для `OLLAMA_OPENAI_BASE_URL` у rag-api), иначе `web` ходит не в тот Ollama.
 
