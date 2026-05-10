@@ -9,7 +9,8 @@ import { parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
 import { runMainAgent } from './agents/main-agent';
 import { AgentContext } from './agents/types';
 
-export const maxDuration = 300;
+// Должно быть ≥ таймаута прокси/Ollama для длинных ответов (300s совпадало с 5m и обрывом стрима).
+export const maxDuration = 900;
 export const runtime = 'nodejs';
 
 let cachedPrompt: string | null = null;

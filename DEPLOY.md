@@ -62,7 +62,17 @@ docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml run --r
 
 ### Длина контекста (`OLLAMA_CONTEXT_LENGTH`)
 
-В [`docker-compose.yml`](docker-compose.yml) для `ollama` по умолчанию задано **262144** токенов (~256k), чтобы не резать длинные промпты на ~4096, как при авто-режиме. Реально используемый контекст всё равно ограничен **VRAM** (KV cache): на больших моделях при OOM или ошибках загрузки уменьшите в `.env`, например `OLLAMA_CONTEXT_LENGTH=8192` или `32768`.
+В [`docker-compose.yml`](docker-compose.yml) по умолчанию **16384**. Значения вроде **260000** на двух потребительских GPU заставляют Ollama вынести большинство слоёв и KV на **CPU** — ответ может не появляться долго, в логах **`POST /v1/chat/completions` → `500` ровно через `5m0s`**.
+
+### Почему `docker compose logs ollama -f` «не меняется» после правки `.env`
+
+Переменные подхватываются **при старте контейнера**. Пока не выполните **`docker compose up -d --force-recreate ollama`**, в первой строке лога будет старый `OLLAMA_CONTEXT_LENGTH`. Убедитесь, что правите **тот** `.env`, из которого compose читает (каталог с `docker-compose.yml`).
+
+### Отладка «тишины» и 500
+
+- Временно: **`OLLAMA_DEBUG_LOG_REQUESTS=true`** в `.env` и пересоздайте `ollama` — Ollama пишет тела запросов во временный каталог (путь подскажет в логах при старте).
+- Параллельно: **`docker compose logs web -f`**, **`docker stats`**, на хосте **`watch -n1 nvidia-smi`** — видно, грузятся ли GPU или всё ушло в CPU.
+- В приложении для длинных ответов увеличен **`maxDuration`** у API чата (см. `app/api/chat/route.ts`).
 
 ### «Зависание» и строка `model requires more gpu memory… evicting`
 
