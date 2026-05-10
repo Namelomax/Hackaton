@@ -34,6 +34,8 @@ services:
       # Одновременно держать только одну «большую» загрузку модели: иначе классификатор + чат + RAG/embeddings
       # конкурируют за VRAM → eviction / зависание без новых строк в логе. 0 в Ollama = без лимита.
       OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-1}
+      # Размер контекста (токены). 0 = авто по VRAM (часто ~4096). qwen3.6 и др. до 256k — задаём 262144; при OOM уменьшите в .env.
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-260000}
     volumes:
       - ollama_data:/root/.ollama
     ports:

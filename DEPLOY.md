@@ -60,6 +60,10 @@ docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml run --r
 
 После `docker compose up -d` в логах `ollama` вместо одной строки `library=cpu` должны появиться устройства **CUDA** / **GPU**. Две карты (3070 + 3080): Ollama обычно грузит модель на одну выбранную по умолчанию; при необходимости смотрите [документацию Ollama](https://github.com/ollama/ollama/blob/main/docs/docker.md) по нескольким GPU.
 
+### Длина контекста (`OLLAMA_CONTEXT_LENGTH`)
+
+В [`docker-compose.yml`](docker-compose.yml) для `ollama` по умолчанию задано **262144** токенов (~256k), чтобы не резать длинные промпты на ~4096, как при авто-режиме. Реально используемый контекст всё равно ограничен **VRAM** (KV cache): на больших моделях при OOM или ошибках загрузки уменьшите в `.env`, например `OLLAMA_CONTEXT_LENGTH=8192` или `32768`.
+
 ### «Зависание» и строка `model requires more gpu memory… evicting`
 
 Один процесс **Ollama** обслуживает и **чат** (Next → несколько запросов подряд: классификатор + стрим), и **RAG** (`rag-api` → эмбеддинги `nomic-embed-text`). Если в VRAM одновременно пытаются жить **две большие модели** (например 27B и 14B) или **27B + эмбеддинги**, сервер начинает **eviction** (`Operation:close`). На части сборок это выглядит как долгая пауза без новых логов и без текста на сайте.
