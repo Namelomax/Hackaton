@@ -7,8 +7,13 @@ import crypto from 'crypto';
 import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation } from '@/lib/getPromt';
 import { parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
 import { fetchRagSnippet } from '@/lib/rag-client';
+import { hydratedChatTranscriptForRag } from '@/lib/rag-search-query';
 import { runMainAgent } from './agents/main-agent';
-import { RAG_TOOL_MODE_SYSTEM_APPENDIX } from './agents/rag-tools';
+import {
+  generateRagSearchQueryLine,
+  RAG_AUTO_PURPOSE_FOCUS,
+  RAG_TOOL_MODE_SYSTEM_APPENDIX,
+} from './agents/rag-tools';
 import { AgentContext } from './agents/types';
 
 // Должно быть ≥ таймаута прокси/Ollama для длинных ответов (300s совпадало с 5m и обрывом стрима).
@@ -713,7 +718,20 @@ export async function POST(req: Request) {
       ? ragMode
       : 'hybrid';
 
-  /** Текст последних user-реплик для автозапроса в RAG (модели без tool-calls всё равно получают контекст). */
+  let languageModel;
+  try {
+    languageModel = resolveLanguageModel(body as Record<string, unknown>);
+  } catch (err) {
+    console.error('Failed to resolve language model:', err);
+    return new Response(
+      JSON.stringify({
+        error: err instanceof Error ? err.message : 'Language model configuration error',
+      }),
+      { status: 500 }
+    );
+  }
+
+  /** Fallback для RAG, если генерация поисковой строки через LLM недоступна. */
   let ragAutoQuery = '';
   for (let i = messagesWithHidden.length - 1; i >= 0 && i >= messagesWithHidden.length - 8; i--) {
     const m = messagesWithHidden[i];
@@ -725,16 +743,35 @@ export async function POST(req: Request) {
   }
   ragAutoQuery = ragAutoQuery.replace(/\s+/g, ' ').trim().slice(0, 6000);
 
+  const ragTranscript = hydratedChatTranscriptForRag(messagesWithHidden, 12000);
+
   let ragAutoContext: string | undefined;
-  if (ragRetrievalEnabled && ragAutoQuery.length > 0) {
+  if (ragRetrievalEnabled && ragTranscript.trim().length > 0) {
     try {
-      ragAutoContext = await fetchRagSnippet(ragAutoQuery, ragModeStr);
-      const preview = ragAutoQuery.slice(0, 120);
-      console.log('📚 RAG auto-retrieval:', {
-        queryLen: ragAutoQuery.length,
-        preview,
-        excerptLen: (ragAutoContext || '').length,
-      });
+      let queryLine = '';
+      try {
+        queryLine = await generateRagSearchQueryLine({
+          model: languageModel,
+          transcript: ragTranscript,
+          purposeFocus: RAG_AUTO_PURPOSE_FOCUS,
+          abortSignal: req.signal,
+        });
+      } catch (genErr) {
+        console.warn('📚 RAG query-line generation failed, using fallback text:', genErr);
+      }
+      const snippetQuery =
+        queryLine.trim() ||
+        ragAutoQuery.trim() ||
+        ragTranscript.replace(/\s+/g, ' ').trim().slice(0, 6000);
+      if (snippetQuery) {
+        ragAutoContext = await fetchRagSnippet(snippetQuery, ragModeStr);
+        console.log('📚 RAG auto-retrieval:', {
+          usedGeneratedLine: Boolean(queryLine.trim()),
+          queryLen: snippetQuery.length,
+          preview: snippetQuery.slice(0, 120),
+          excerptLen: (ragAutoContext || '').length,
+        });
+      }
     } catch (e) {
       console.warn('📚 RAG auto-retrieval failed:', e);
     }
@@ -754,19 +791,6 @@ export async function POST(req: Request) {
   if (ragRetrievalEnabled) {
     systemPrompt += RAG_TOOL_MODE_SYSTEM_APPENDIX;
     console.log('📚 RAG: tool retrieveFromIndexedDocuments enabled; system prompt may include auto RAG block');
-  }
-
-  let languageModel;
-  try {
-    languageModel = resolveLanguageModel(body as Record<string, unknown>);
-  } catch (err) {
-    console.error('Failed to resolve language model:', err);
-    return new Response(
-      JSON.stringify({
-        error: err instanceof Error ? err.message : 'Language model configuration error',
-      }),
-      { status: 500 }
-    );
   }
 
   console.log('📦 Messages prepared:', {

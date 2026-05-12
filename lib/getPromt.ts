@@ -3,6 +3,10 @@ import { RecordId } from "surrealdb";
 import crypto from 'crypto';
 import { DEFAULT_PROMPT } from '@/lib/db/repositories/default-promt';
 import { messagesArrayLooksCorrupt, resolveMessagesFromRecord } from '@/lib/conversationMessages';
+import {
+  readSurrealConnectionEnv,
+  surrealEnvMissingMessage,
+} from '@/lib/surreal-env';
 
 const db = new Surreal();
 const surrealState = (globalThis as any).__surrealState || ((globalThis as any).__surrealState = {
@@ -57,16 +61,11 @@ async function connectDB() {
     }
   }
 
-  const url = process.env.SURREALDB_URL;
-  const namespace = process.env.SURREALDB_NAMESPACE;
-  const database = process.env.SURREALDB_DATABASE;
-  const username = process.env.SURREALDB_USER;
-  const password = process.env.SURREALDB_PASSWORD;
+  const { url, namespace, database, username, password } =
+    readSurrealConnectionEnv();
 
   if (!url || !namespace || !database || !username || !password) {
-    throw new Error(
-      'Missing SurrealDB env: set SURREALDB_URL, SURREALDB_NAMESPACE, SURREALDB_DATABASE, SURREALDB_USER, SURREALDB_PASSWORD'
-    );
+    throw new Error(surrealEnvMissingMessage());
   }
 
   await db.connect(url, { reconnect: true });

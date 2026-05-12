@@ -1,8 +1,10 @@
+import { resolveRagApiBaseUrl } from '@/lib/rag-api-url';
+
 export const maxDuration = 300;
 export const runtime = 'nodejs';
 
 export async function POST(req: Request) {
-  const base = process.env.RAG_API_URL?.replace(/\/$/, '');
+  const base = resolveRagApiBaseUrl();
   if (!base) {
     return Response.json({ error: 'RAG_API_URL is not configured' }, { status: 503 });
   }
@@ -17,10 +19,25 @@ export async function POST(req: Request) {
   outgoing.append('file', file);
 
   const target = `${base}/upload?wait=true`;
-  const upstream = await fetch(target, {
-    method: 'POST',
-    body: outgoing,
-  });
+  let upstream: Response;
+  try {
+    upstream = await fetch(target, {
+      method: 'POST',
+      body: outgoing,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[api/rag/upload]', msg);
+    return Response.json(
+      {
+        error: 'RAG service unreachable',
+        ...(process.env.NODE_ENV === 'development'
+          ? { detail: `${msg}. Локально: запустите rag-api и проверьте порт (часто 8000).` }
+          : {}),
+      },
+      { status: 502 },
+    );
+  }
 
   const text = await upstream.text();
   try {

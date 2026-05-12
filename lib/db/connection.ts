@@ -1,4 +1,8 @@
 import Surreal from "surrealdb";
+import {
+  readSurrealConnectionEnv,
+  surrealEnvMissingMessage,
+} from "@/lib/surreal-env";
 
 let db: Surreal | null = null;
 
@@ -10,14 +14,11 @@ export async function getDB(): Promise<Surreal> {
   db = new Surreal();
 
   try {
-    const url = process.env.SURREALDB_URL;
-    const namespace = process.env.SURREALDB_NAMESPACE;
-    const database = process.env.SURREALDB_DATABASE;
-    const username = process.env.SURREALDB_USER;
-    const password = process.env.SURREALDB_PASSWORD;
+    const { url, namespace, database, username, password } =
+      readSurrealConnectionEnv();
 
     if (!url || !namespace || !database || !username || !password) {
-      throw new Error("Missing required SurrealDB environment variables");
+      throw new Error(surrealEnvMissingMessage());
     }
 
     // Connect to the database

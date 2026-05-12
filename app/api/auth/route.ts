@@ -38,8 +38,14 @@ export async function POST(req: Request) {
     }
 
     return new Response(JSON.stringify({ success: false, message: 'Invalid action' }), { status: 400 });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('Auth error:', err);
-    return new Response(JSON.stringify({ success: false, message: 'Server error' }), { status: 500 });
+    const detail =
+      err instanceof Error ? err.message : typeof err === 'string' ? err : undefined;
+    const body: Record<string, unknown> = { success: false, message: 'Server error' };
+    if (process.env.NODE_ENV === 'development' && detail) {
+      body.detail = detail;
+    }
+    return new Response(JSON.stringify(body), { status: 500 });
   }
 }

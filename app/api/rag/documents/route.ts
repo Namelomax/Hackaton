@@ -1,8 +1,9 @@
+import { resolveRagApiBaseUrl } from "@/lib/rag-api-url";
+
 export const runtime = "nodejs";
 
 function ragBase(): string | null {
-  const b = process.env.RAG_API_URL?.trim();
-  return b ? b.replace(/\/$/, "") : null;
+  return resolveRagApiBaseUrl();
 }
 
 /** Список/удаление: сначала новый путь (меньше конфликтов с прокси), затем /documents. */
@@ -32,7 +33,22 @@ export async function GET() {
   if (!base) {
     return Response.json({ error: "RAG_API_URL is not configured" }, { status: 503 });
   }
-  const upstream = await fetchRagDocumentsList(base);
+  let upstream: Response;
+  try {
+    upstream = await fetchRagDocumentsList(base);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[api/rag/documents] GET", msg);
+    return Response.json(
+      {
+        error: "RAG service unreachable",
+        ...(process.env.NODE_ENV === "development"
+          ? { detail: `${msg}. Локально: запустите rag-api на том же порту.` }
+          : {}),
+      },
+      { status: 502 },
+    );
+  }
   const text = await upstream.text();
   try {
     const json = JSON.parse(text);
@@ -55,7 +71,20 @@ export async function DELETE(req: Request) {
   if (!id) {
     return Response.json({ error: "id required" }, { status: 400 });
   }
-  const upstream = await fetchRagDocumentsDelete(base, id);
+  let upstream: Response;
+  try {
+    upstream = await fetchRagDocumentsDelete(base, id);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[api/rag/documents] DELETE", msg);
+    return Response.json(
+      {
+        error: "RAG service unreachable",
+        ...(process.env.NODE_ENV === "development" ? { detail: msg } : {}),
+      },
+      { status: 502 },
+    );
+  }
   const text = await upstream.text();
   try {
     const json = JSON.parse(text);
