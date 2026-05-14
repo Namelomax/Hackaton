@@ -763,7 +763,7 @@ export async function POST(req: Request) {
           ragTranscript.replace(/\s+/g, ' ').trim().slice(0, 6000),
       );
       if (snippetQuery) {
-        const rawSnippet = await fetchRagSnippet(snippetQuery, ragModeStr);
+        const rawSnippet = await fetchRagSnippet(snippetQuery, ragModeStr, conversationId);
         const trimmedSnippet = rawSnippet?.trim() ?? '';
         if (trimmedSnippet.length >= minRagContextChars) {
           ragAutoContext = trimmedSnippet;

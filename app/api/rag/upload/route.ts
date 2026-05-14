@@ -18,10 +18,19 @@ export async function POST(req: Request) {
   const outgoing = new FormData();
   outgoing.append('file', file);
 
-  const target = `${base}/upload?wait=true`;
+  // Пробрасываем conversation_id из query-параметра запроса
+  const incomingUrl = new URL(req.url);
+  const conversationId = incomingUrl.searchParams.get('conversation_id') ?? '';
+
+  const targetUrl = new URL(`${base}/upload`);
+  targetUrl.searchParams.set('wait', 'true');
+  if (conversationId) {
+    targetUrl.searchParams.set('conversation_id', conversationId);
+  }
+
   let upstream: Response;
   try {
-    upstream = await fetch(target, {
+    upstream = await fetch(targetUrl.toString(), {
       method: 'POST',
       body: outgoing,
     });

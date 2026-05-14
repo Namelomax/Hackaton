@@ -39,12 +39,14 @@ const RagIndexControl = ({
   onOpenAuthDialog,
   onRagIndexed,
   onNotify,
+  conversationId,
 }: {
   authUser: { id: string; username: string } | null;
   status: string;
   onOpenAuthDialog?: () => void;
   onRagIndexed?: () => void;
   onNotify: (message: string | null) => void;
+  conversationId?: string | null;
 }) => {
   const attachments = usePromptInputAttachments();
   const [busy, setBusy] = useState(false);
@@ -84,7 +86,10 @@ const RagIndexControl = ({
         const fileObj = await blobUrlToFile(url, name, mt);
         const fd = new FormData();
         fd.append('file', fileObj);
-        const res = await fetch('/api/rag/upload', { method: 'POST', body: fd });
+        const uploadUrl = conversationId
+          ? `/api/rag/upload?conversation_id=${encodeURIComponent(conversationId)}`
+          : '/api/rag/upload';
+        const res = await fetch(uploadUrl, { method: 'POST', body: fd });
         const j = await res.json().catch(() => ({}));
         if (!res.ok) {
           const detail =
@@ -136,9 +141,11 @@ type RagIndexedDoc = { id: string; filename: string; status?: string };
 const RagDocumentsPanel = ({
   refreshNonce,
   onNotify,
+  conversationId,
 }: {
   refreshNonce: number;
   onNotify: (message: string | null) => void;
+  conversationId?: string | null;
 }) => {
   const [open, setOpen] = useState(false);
   const [docs, setDocs] = useState<RagIndexedDoc[]>([]);
@@ -149,7 +156,10 @@ const RagDocumentsPanel = ({
     setLoading(true);
     onNotify(null);
     try {
-      const res = await fetch('/api/rag/documents');
+      const listUrl = conversationId
+        ? `/api/rag/documents?conversation_id=${encodeURIComponent(conversationId)}`
+        : '/api/rag/documents';
+      const res = await fetch(listUrl);
       const j = await res.json().catch(() => null);
       if (!res.ok) {
         const detail =
@@ -169,7 +179,7 @@ const RagDocumentsPanel = ({
     } finally {
       setLoading(false);
     }
-  }, [onNotify]);
+  }, [onNotify, conversationId]);
 
   useEffect(() => {
     if (open) void load();
@@ -180,10 +190,12 @@ const RagDocumentsPanel = ({
     setDeletingId(id);
     onNotify(null);
     try {
+      const deleteBody: Record<string, string> = { id };
+      if (conversationId) deleteBody.conversation_id = conversationId;
       const res = await fetch('/api/rag/documents', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id }),
+        body: JSON.stringify(deleteBody),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -362,6 +374,13 @@ type PromptInputWrapperProps = {
   onRagIndexed?: () => void;
 };
 
+/**
+ * Файлы крупнее этого порога автоматически уходят в RAG-индекс вместо прямого вложения.
+ * ~30KB ≈ 5–7 страниц A4 — при qwen3:14b (контекст 65K) можно поднять до 60_000,
+ * при gemma3:27b (128K) — до 100_000.
+ */
+const AUTO_RAG_THRESHOLD_BYTES = 30_000;
+
 export const PromptInputWrapper = ({
   input,
   setInput,
@@ -384,6 +403,8 @@ export const PromptInputWrapper = ({
 }: PromptInputWrapperProps) => {
   const submitLockRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // URL-ы blob, уже ушедшие в RAG через авто-роутинг — не дублируем при повторной отправке
+  const autoRaggedUrlsRef = useRef<Set<string>>(new Set());
   const [authWarningOpen, setAuthWarningOpen] = useState(false);
   const [ragNotice, setRagNotice] = useState<string | null>(null);
   const [ragDocsNonce, setRagDocsNonce] = useState(0);
@@ -462,8 +483,56 @@ export const PromptInputWrapper = ({
       const hasPayload = Boolean(trimmedText) || preparedFiles.length > 0;
       if (!hasPayload) return;
 
+      // Авто-роутинг: файлы крупнее AUTO_RAG_THRESHOLD_BYTES уходят в RAG-индекс,
+      // остальные — как прямые вложения к сообщению.
+      const filesToSend: FileUIPart[] = [];
+      let autoRaggedCount = 0;
+      for (const f of preparedFiles) {
+        const url = String((f as any).url || '');
+        if (!url) { filesToSend.push(f); continue; }
+        if (autoRaggedUrlsRef.current.has(url)) {
+          // Уже проиндексирован — не передаём как вложение
+          continue;
+        }
+        try {
+          const blobRes = await fetch(url);
+          const blob = await blobRes.blob();
+          if (blob.size > AUTO_RAG_THRESHOLD_BYTES) {
+            const name = String((f as any).filename || 'upload.bin');
+            const mt = (f as any).mediaType as string | undefined;
+            const fileObj = new File([blob], name, { type: mt || blob.type });
+            const fd = new FormData();
+            fd.append('file', fileObj);
+            const autoUploadUrl = conversationId
+              ? `/api/rag/upload?conversation_id=${encodeURIComponent(conversationId)}`
+              : '/api/rag/upload';
+            const uploadRes = await fetch(autoUploadUrl, { method: 'POST', body: fd });
+            if (uploadRes.ok) {
+              autoRaggedUrlsRef.current.add(url);
+              autoRaggedCount++;
+              // Не добавляем в filesToSend — файл пошёл в индекс, не вложением
+              continue;
+            }
+          }
+        } catch {
+          // При ошибке авто-индексации оставляем как вложение
+        }
+        filesToSend.push(f);
+      }
+
+      if (autoRaggedCount > 0) {
+        onRagIndexed?.();
+        setRagDocsNonce((n) => n + 1);
+        setRagNotice(
+          `${autoRaggedCount > 1 ? `${autoRaggedCount} файла` : 'Файл'} автоматически отправлен в RAG-индекс (документ большой). Поиск по документу включён.`,
+        );
+      }
+
+      // Обновляем список файлов: без тех, что ушли в RAG
+      const finalFiles = filesToSend;
+
       // Avoid blocking UI on client-side extraction; server performs extraction/injection.
-      void preparedFiles.map((f) => (f?.mediaType ? isTextExtractable(f.mediaType) : false));
+      void finalFiles.map((f) => (f?.mediaType ? isTextExtractable(f.mediaType) : false));
 
       const baseConversationId = prepareSend ? (await prepareSend()) ?? null : conversationId;
       if (baseConversationId === null) return;
@@ -476,7 +545,7 @@ export const PromptInputWrapper = ({
       if (onUserMessageQueued) {
         const parts: any[] = [];
         if (trimmedText) parts.push({ type: 'text', text: trimmedText });
-        for (const f of preparedFiles) {
+        for (const f of finalFiles) {
           parts.push({
             type: 'file',
             id: (f as any)?.id,
@@ -507,7 +576,7 @@ export const PromptInputWrapper = ({
         {
           id: clientMessageId,
           text: trimmedText,
-          files: preparedFiles,
+          files: finalFiles,
         } as any,
         {
           body: {
@@ -547,7 +616,7 @@ return (
       {/* Attachments*/}
       <AttachmentsSection />
       {ragNotice && <div className="text-xs text-neutral-600 px-0.5">{ragNotice}</div>}
-      <RagDocumentsPanel refreshNonce={ragDocsNonce} onNotify={setRagNotice} />
+      <RagDocumentsPanel refreshNonce={ragDocsNonce} onNotify={setRagNotice} conversationId={conversationId} />
 
       {/* Input Area*/}
       <div className="flex items-end relative">
@@ -576,6 +645,7 @@ return (
               setRagDocsNonce((n) => n + 1);
             }}
             onNotify={setRagNotice}
+            conversationId={conversationId}
           />
 
           <SubmitButton status={status} input={input} isLocked={isSubmitting} onStop={handleStop} />

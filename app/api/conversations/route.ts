@@ -7,11 +7,6 @@ export async function GET(req: Request) {
     const userId = url.searchParams.get('userId');
     if (!userId) return new Response(JSON.stringify({ success: false, message: 'userId required' }), { status: 400 });
     const convs = await getConversations(userId);
-    try {
-      console.log('GET /api/conversations: returning', JSON.stringify(convs.slice(0,5)));
-    } catch (e) {
-      console.log('GET /api/conversations: returning [unserializable]');
-    }
     return new Response(JSON.stringify({ success: true, conversations: convs }), { status: 200 });
   } catch (err) {
     console.error('Conversations GET error', err);

@@ -246,6 +246,7 @@ export async function runChatAgent(
       messages: messagesWithUserPrompt,
       ragMode: ragMode ?? "hybrid",
       abortSignal,
+      conversationId,
     });
 
   const stream = createUIMessageStream({

@@ -18,17 +18,13 @@ BASE_URL = os.getenv("LOCAL_OPENAI_BASE_URL", "http://127.0.0.1:1234/v1")
 API_KEY = os.getenv("LOCAL_OPENAI_API_KEY", "lm-studio")
 EMBEDDING_MODEL = os.getenv("LOCAL_OPENAI_EMBEDDING_MODEL", "text-embedding-nomic")
 
-# Реальная LLM для индексации (entity/relation extraction в LightRAG). Без неё граф знаний пустой
-# и Raw search results=0 даже после загрузки документов. По умолчанию используем тот же Ollama-эндпоинт.
 LLM_BASE_URL = os.getenv("RAG_OLLAMA_BASE_URL", BASE_URL)
 LLM_API_KEY = os.getenv("RAG_OLLAMA_API_KEY", API_KEY)
 LLM_MODEL = os.getenv("RAG_OLLAMA_LLM_MODEL", "qwen3:14b")
-# Таймаут одного LLM-вызова: индексация делает много обращений, локальная Ollama медленнее облака.
 LLM_TIMEOUT = int(os.getenv("RAG_OLLAMA_LLM_TIMEOUT", "600"))
 
 
 def log_openai_compat_embedding_settings() -> None:
-    """Один раз при старте: фактический URL для /embeddings (частая ошибка — 127.0.0.1 внутри Docker)."""
     logger.info(
         "OpenAI-compatible API for embeddings: base_url=%s model=%s",
         BASE_URL,
@@ -78,10 +74,6 @@ def _extract_user_query_from_keyword_prompt(prompt_text: str) -> str:
 
 
 def _keywords_json_for_lightrag(prompt_text: str) -> str:
-    """
-    LightRAG extract_keywords_only ожидает от llm_model_func валидный JSON с ключами
-    high_level_keywords / low_level_keywords (списки строк). Иначе — пустые keywords и пустой retrieval.
-    """
     query_text = _extract_user_query_from_keyword_prompt(prompt_text)
     trivial = {
         "hello", "hi", "ok", "yes", "no", "thanks", "привет", "здравствуйте",
@@ -127,8 +119,8 @@ def _safe_log_preview(text: str | None, limit: int = 400) -> str:
         return s
     return s[: limit - 1] + "…"
 
+
 def _hash_file_contents(file_path: str, chunk_size: int = 1 << 20) -> str:
-    """SHA1 содержимого файла (детерминированный id для дедупа повторных загрузок)."""
     h = hashlib.sha1()
     with open(file_path, "rb") as f:
         while True:
@@ -139,38 +131,146 @@ def _hash_file_contents(file_path: str, chunk_size: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
+def _sanitize_conv_id(conversation_id: str | None) -> str | None:
+    """Нормализует conversation_id для использования как имя директории.
+    Возвращает None для дефолтного индекса.
+    """
+    if not conversation_id or not conversation_id.strip():
+        return None
+    cid = conversation_id.strip()
+    # Убираем префикс вида "conversations:"
+    if ":" in cid:
+        cid = cid.rsplit(":", 1)[-1]
+    cid = re.sub(r"[^\w\-]", "_", cid)[:64]
+    return cid or None
+
+
+class _ConvData:
+    """Состояние одного RAG-индекса (для одного диалога или дефолтного)."""
+
+    def __init__(self, working_dir: str):
+        self.working_dir = working_dir
+        self.rag: RAGAnything | None = None
+        self.initialized = False
+        self.init_lock: asyncio.Lock = asyncio.Lock()
+        self.hash_locks: dict[str, asyncio.Lock] = {}
+        self.indexed_hashes: set[str] = set()
+        # sha1 → [doc_id, ...] — для очистки indexed_hashes при удалении
+        self.hash_to_doc_ids: dict[str, list[str]] = {}
+        self.filename_map_path = Path(working_dir) / "filename_map.json"
+        self.filename_map: dict[str, str] = self._load_filename_map()
+
+    def _load_filename_map(self) -> dict[str, str]:
+        try:
+            if self.filename_map_path.exists():
+                data = json.loads(self.filename_map_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return {str(k): str(v) for k, v in data.items()}
+        except Exception:
+            pass
+        return {}
+
+    def save_filename_map(self) -> None:
+        try:
+            self.filename_map_path.parent.mkdir(parents=True, exist_ok=True)
+            self.filename_map_path.write_text(
+                json.dumps(self.filename_map, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.warning("Could not save filename_map: %s", e)
+
+    def resolve_display_name(self, doc_id: str, fallback: str) -> str:
+        return self.filename_map.get(doc_id) or self.filename_map.get(fallback) or fallback
+
+    @staticmethod
+    def is_visible_doc(doc_id: str, status: str) -> bool:
+        if not isinstance(doc_id, str) or not doc_id.strip():
+            return False
+        if doc_id.startswith("dup-"):
+            return False
+        if (status or "").strip().upper() == "FAILED":
+            return False
+        return True
+
+    def list_documents(self) -> list[dict]:
+        base = Path(self.working_dir)
+        by_id: dict[str, dict] = {}
+        status_path = base / "kv_store_doc_status.json"
+        if status_path.exists():
+            try:
+                data = json.loads(status_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    for doc_id, payload in data.items():
+                        raw_name = doc_id if isinstance(doc_id, str) else ""
+                        st = ""
+                        if isinstance(payload, dict):
+                            st = str(payload.get("status") or "")
+                            fp = payload.get("file_path") or payload.get("path")
+                            if fp:
+                                raw_name = os.path.basename(str(fp)) or raw_name
+                        if not self.is_visible_doc(doc_id, st):
+                            continue
+                        display = self.resolve_display_name(doc_id, raw_name)
+                        by_id[doc_id] = {"id": doc_id, "filename": display, "status": st}
+            except Exception:
+                pass
+
+        full_path = base / "kv_store_full_docs.json"
+        if full_path.exists():
+            try:
+                data = json.loads(full_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    for doc_id in data.keys():
+                        if not isinstance(doc_id, str) or doc_id in by_id:
+                            continue
+                        if not self.is_visible_doc(doc_id, ""):
+                            continue
+                        display = self.resolve_display_name(doc_id, doc_id)
+                        by_id[doc_id] = {"id": doc_id, "filename": display, "status": ""}
+            except Exception:
+                pass
+        return sorted(by_id.values(), key=lambda x: x["id"])
+
+
 class RAGService:
     def __init__(self):
-        self.rag = None
-        self._initialized = False
-        # Lock per content-hash: предотвращает параллельную обработку одного и того же файла,
-        # если фронт случайно дважды нажал на индексацию (React strict-mode / двойной клик).
-        self._hash_locks: dict[str, asyncio.Lock] = {}
-        # Хеши успешно проиндексированных файлов в текущей сессии: чтобы пропустить повторный full pipeline.
-        self._indexed_hashes: set[str] = set()
+        # Дефолтный индекс — использует ./rag_storage/ (обратная совместимость)
+        self._default_data = _ConvData("./rag_storage")
+        # Индексы по диалогам: sanitized_conv_id → _ConvData
+        self._conv_data: dict[str, _ConvData] = {}
+        self._conv_data_lock: asyncio.Lock = asyncio.Lock()
+
+    # ─── инициализация ───────────────────────────────────────────────────────
 
     async def initialize(self):
-        """Инициализация RAG один раз при старте (как в вашем main)"""
-        if self._initialized:
+        """Загружаем дефолтный индекс при старте."""
+        await self._ensure_initialized(self._default_data)
+        print("RAG service ready")
+        log_openai_compat_embedding_settings()
+
+    async def _ensure_initialized(self, data: _ConvData) -> None:
+        if data.initialized:
             return
+        async with data.init_lock:
+            if data.initialized:
+                return
+            await self._bootstrap_rag(data)
+            data.initialized = True
+
+    async def _bootstrap_rag(self, data: _ConvData) -> None:
+        os.makedirs(data.working_dir, exist_ok=True)
 
         config = RAGAnythingConfig(
-            working_dir="./rag_storage",
+            working_dir=data.working_dir,
             parser="mineru",
-            # MinerU CLI поддерживает только: auto, txt, ocr
             parse_method="auto",
-            # Без vision-модели картинки/формулы превращаются в мусор в графе. Таблицы оставляем (текстовые).
             enable_image_processing=False,
             enable_table_processing=True,
             enable_equation_processing=False,
         )
 
         async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
-            """
-            LLM для LightRAG: при keyword_extraction отдаём детерминированный JSON (быстро, без вызова Ollama),
-            во всех остальных случаях — РЕАЛЬНЫЙ вызов Ollama. Без этого entity/relation extraction на этапе
-            индексации возвращает мусор (слова из самого промпта) и граф знаний остаётся пустым.
-            """
             prompt_text = prompt if isinstance(prompt, str) else str(prompt)
             if kwargs.get("keyword_extraction"):
                 return _keywords_json_for_lightrag(prompt_text)
@@ -199,45 +299,44 @@ class RAGService:
             ),
         )
 
-        # Всё как в вашем рабочем коде
-        self.rag = RAGAnything(
+        data.rag = RAGAnything(
             config=config,
             llm_model_func=llm_model_func,
             embedding_func=embedding_func,
             lightrag_kwargs={
                 "llm_model_kwargs": {"timeout": 6000},
                 "llm_model_max_async": 3,
-                # Мелкие чанки (~300 слов) дают 15–25 кусков из типичной расшифровки.
-                # С chunk_token_size=2000 документ нарезался в 2 куска и семантический
-                # поиск возвращал 0 vector chunks — вся расшифровка размазывалась по одному
-                # огромному вектору и косинусное сходство с конкретным запросом не
-                # превышало порог 0.2. После смены на 400 поиск станет точечным.
                 "chunk_token_size": 200,
                 "chunk_overlap_token_size": 80,
-                # Снижаем порог косинусного сходства (default 0.2) чтобы находить чанки
-                # даже при частичном совпадении — особенно важно при небольшом индексе.
                 "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.1},
-                # Официальный способ задать язык entity/relation extraction в LightRAG.
                 "addon_params": {"language": "Russian"},
             },
         )
 
-        self._initialized = True
-        print("RAGAnything initialized")
-
-        # RAGAnything creates LightRAG lazily inside process_document_complete(), after
-        # doc_parser.check_installation(). Without MinerU CLI that gate never passes and
-        # lightrag stays None — POST /query then raises (seen as HTTP 500) while upload
-        # returns "queued" but indexing fails in the background.
-        # Mark parser checked once so storages initialize at startup; ingest still runs MinerU
-        # when processing files — MinerU must be installed in the image (requirements/Dockerfile).
-        self.rag._parser_installation_checked = True
-        bootstrap = await self.rag._ensure_lightrag_initialized()
+        data.rag._parser_installation_checked = True
+        bootstrap = await data.rag._ensure_lightrag_initialized()
         if isinstance(bootstrap, dict) and bootstrap.get("success") is False:
-            print(f"WARNING: LightRAG bootstrap failed: {bootstrap.get('error')}")
+            logger.warning("LightRAG bootstrap failed for %s: %s", data.working_dir, bootstrap.get("error"))
         else:
-            print("LightRAG storages ready")
-            log_openai_compat_embedding_settings()
+            logger.info("LightRAG storages ready for working_dir=%s", data.working_dir)
+
+    async def _get_conv_data(self, conversation_id: str | None) -> _ConvData:
+        cid = _sanitize_conv_id(conversation_id)
+        if cid is None:
+            await self._ensure_initialized(self._default_data)
+            return self._default_data
+
+        if cid not in self._conv_data:
+            async with self._conv_data_lock:
+                if cid not in self._conv_data:
+                    working_dir = f"./rag_storage/conv_{cid}"
+                    self._conv_data[cid] = _ConvData(working_dir)
+
+        data = self._conv_data[cid]
+        await self._ensure_initialized(data)
+        return data
+
+    # ─── конвертация Office → PDF ─────────────────────────────────────────────
 
     def _convert_office_to_pdf(self, file_path: str) -> str:
         source_path = Path(file_path).resolve()
@@ -264,12 +363,20 @@ class RAGService:
 
         return str(pdf_path)
 
-    async def process_document(self, file_path: str) -> dict:
-        """
-        Обработка документа. Дедуп по контент-хешу: если фронт случайно отправил тот же файл дважды
-        (другой UUID-префикс, но идентичное содержимое) — повторно гонять MinerU + LLM-индексацию
-        не нужно. Параллельные дубли блокируются per-hash asyncio-локом.
-        """
+    # ─── обработка документа ─────────────────────────────────────────────────
+
+    async def process_document(
+        self,
+        file_path: str,
+        original_filename: str | None = None,
+        conversation_id: str | None = None,
+    ) -> dict:
+        data = await self._get_conv_data(conversation_id)
+        return await self._process_document_for_data(data, file_path, original_filename)
+
+    async def _process_document_for_data(
+        self, data: _ConvData, file_path: str, original_filename: str | None
+    ) -> dict:
         safe_name = os.path.basename(file_path) or file_path
         if not os.path.exists(file_path):
             logger.warning("process_document: source missing: %s", safe_name)
@@ -283,12 +390,12 @@ class RAGService:
 
         lock = None
         if content_hash:
-            lock = self._hash_locks.setdefault(content_hash, asyncio.Lock())
+            lock = data.hash_locks.setdefault(content_hash, asyncio.Lock())
 
         async def _do_process() -> dict:
-            if content_hash and content_hash in self._indexed_hashes:
+            if content_hash and content_hash in data.indexed_hashes:
                 logger.info(
-                    "process_document: same content already indexed in this session (sha1=%s) — skipping. file=%s",
+                    "process_document: same content already indexed (sha1=%s) — skipping. file=%s",
                     content_hash[:8],
                     safe_name,
                 )
@@ -305,15 +412,17 @@ class RAGService:
                     cleanup_pdf = source_for_processing
                     logger.info("Converted to PDF: %s", os.path.basename(source_for_processing))
 
-                # MinerU on Windows can fail with long/non-ASCII temp names.
-                # Normalize to a short ASCII filename before parsing.
                 normalized_ext = Path(source_for_processing).suffix.lower() or ".pdf"
                 normalized_name = f"rag_input_{uuid.uuid4().hex}{normalized_ext}"
                 normalized_path = str(Path("uploads") / normalized_name)
                 shutil.copy2(source_for_processing, normalized_path)
 
+                display_name = original_filename or safe_name
+                data.filename_map[normalized_name] = display_name
+                data.save_filename_map()
+
                 try:
-                    await self.rag.process_document_complete(
+                    await data.rag.process_document_complete(
                         file_path=normalized_path,
                         output_dir="./output",
                         backend="pipeline",
@@ -326,11 +435,10 @@ class RAGService:
                     os.remove(cleanup_pdf)
 
                 if content_hash:
-                    self._indexed_hashes.add(content_hash)
+                    data.indexed_hashes.add(content_hash)
 
                 logger.info(
-                    "Ingest finished file=%s (normalized temp removed). "
-                    "Duplicate doc in LightRAG = chunks already in graph.",
+                    "Ingest finished file=%s (normalized temp removed).",
                     safe_name,
                 )
                 return {"status": "success", "message": "Документ обработан"}
@@ -343,18 +451,31 @@ class RAGService:
         async with lock:
             return await _do_process()
 
-    async def query(self, question: str, mode: str = "hybrid") -> str:
-        """Запрос к RAG — как у вас в основном коде"""
-        if self.rag is None:
+    # ─── запрос к RAG ─────────────────────────────────────────────────────────
+
+    async def query(
+        self,
+        question: str,
+        mode: str = "hybrid",
+        conversation_id: str | None = None,
+    ) -> str:
+        data = await self._get_conv_data(conversation_id)
+        if data.rag is None:
             return ""
-        if getattr(self.rag, "lightrag", None) is None:
-            logger.warning("LightRAG missing; skipping RAG query")
+        if getattr(data.rag, "lightrag", None) is None:
+            logger.warning("LightRAG missing for conv=%s; skipping RAG query", conversation_id)
             return ""
 
         qprev = (question or "").replace("\n", " ").strip()
         if len(qprev) > 160:
             qprev = qprev[:160] + "…"
-        logger.info("RAG /query request mode=%s len=%s preview=%r", mode, len(question or ""), qprev)
+        logger.info(
+            "RAG /query request conv=%s mode=%s len=%s preview=%r",
+            conversation_id or "default",
+            mode,
+            len(question or ""),
+            qprev,
+        )
 
         def _normalize_result(result) -> str:
             if result is None:
@@ -369,7 +490,7 @@ class RAGService:
             return str(result)
 
         async def _run_once(m: str):
-            return await self.rag.aquery(
+            return await data.rag.aquery(
                 question,
                 mode=m,
                 enable_rerank=False,
@@ -386,7 +507,6 @@ class RAGService:
             result = None
 
         text = _normalize_result(result).strip()
-        # Сигнал «нечего отдавать» из LightRAG: повторные вызовы local/global тоже вернут это.
         looks_no_context = (
             not text
             or "[no-context]" in text.lower()
@@ -414,101 +534,75 @@ class RAGService:
         )
         return text
 
-    @staticmethod
-    def _is_visible_doc(doc_id: str, status: str) -> bool:
-        """В UI показываем только реальные записи: без dup-* и без FAILED-хвостов."""
-        if not isinstance(doc_id, str) or not doc_id.strip():
-            return False
-        if doc_id.startswith("dup-"):
-            return False
-        if (status or "").strip().upper() == "FAILED":
-            return False
-        return True
+    # ─── список и удаление документов ────────────────────────────────────────
 
-    def list_indexed_documents(self) -> list[dict]:
-        """Список документов в индексе LightRAG (по kv_store).
+    def list_indexed_documents(self, conversation_id: str | None = None) -> list[dict]:
+        """Список документов для конкретного диалога (или дефолтного индекса)."""
+        cid = _sanitize_conv_id(conversation_id)
+        if cid is None:
+            data = self._default_data
+        else:
+            data = self._conv_data.get(cid)
+            if data is None:
+                # Индекс ещё не инициализирован — читаем файл напрямую без инициализации RAG
+                working_dir = f"./rag_storage/conv_{cid}"
+                data = _ConvData(working_dir)
+        return data.list_documents()
 
-        Скрываем `dup-…` (LightRAG создаёт их при повторной отправке с тем же контентом)
-        и записи со статусом FAILED — иначе пользователь видит «3 файла» вместо одного.
+    async def _clear_from_doc_status(self, data: "_ConvData", doc_id: str) -> None:
+        """Удаляет doc_id (и все dup-* записи) из kv_store_doc_status.json.
+
+        LightRAG's adelete_by_doc_id удаляет чанки/графы/векторы, но НЕ трогает kv_store_doc_status.
+        Из-за этого повторная загрузка того же файла блокируется как «дубликат» —
+        LightRAG видит doc_id в статус-сторе и отказывается вставлять.
         """
-        base = Path("./rag_storage")
-        by_id: dict[str, dict] = {}
-        status_path = base / "kv_store_doc_status.json"
-        if status_path.exists():
-            try:
-                data = json.loads(status_path.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    for doc_id, payload in data.items():
-                        name = doc_id if isinstance(doc_id, str) else ""
-                        st = ""
-                        if isinstance(payload, dict):
-                            st = str(payload.get("status") or "")
-                            fp = payload.get("file_path") or payload.get("path")
-                            if fp:
-                                name = os.path.basename(str(fp)) or name
-                        if not self._is_visible_doc(doc_id, st):
-                            continue
-                        by_id[doc_id] = {"id": doc_id, "filename": name, "status": st}
-            except Exception:
-                pass
+        lr = data.rag.lightrag if data.rag else None
 
-        full_path = base / "kv_store_full_docs.json"
-        if full_path.exists():
+        # Пробуем через внутренний KV-стор LightRAG (если API доступно)
+        if lr and hasattr(lr, "doc_status"):
+            kv = lr.doc_status
             try:
-                data = json.loads(full_path.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    for doc_id in data.keys():
-                        if not isinstance(doc_id, str) or doc_id in by_id:
-                            continue
-                        if not self._is_visible_doc(doc_id, ""):
-                            continue
-                        by_id[doc_id] = {"id": doc_id, "filename": doc_id, "status": ""}
-            except Exception:
-                pass
-        return sorted(by_id.values(), key=lambda x: x["id"])
-
-    async def prune_failed_documents(self) -> dict:
-        """
-        Удаляет из индекса записи со статусом FAILED и сиротские dup-* (как остатки прошлых попыток).
-        Возвращает количество удалённых записей.
-        """
-        if self.rag is None or getattr(self.rag, "lightrag", None) is None:
-            return {"ok": False, "error": "RAG not initialized"}
-
-        status_path = Path("./rag_storage") / "kv_store_doc_status.json"
-        targets: list[str] = []
-        if status_path.exists():
-            try:
-                data = json.loads(status_path.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    for doc_id, payload in data.items():
-                        if not isinstance(doc_id, str) or not doc_id.strip():
-                            continue
-                        st = ""
-                        if isinstance(payload, dict):
-                            st = str(payload.get("status") or "").strip().upper()
-                        if doc_id.startswith("dup-") or st == "FAILED":
-                            targets.append(doc_id)
+                if hasattr(kv, "delete"):
+                    await kv.delete([doc_id])
+                elif hasattr(kv, "drop"):
+                    await kv.drop([doc_id])
             except Exception as e:
-                return {"ok": False, "error": f"failed to read doc_status: {e}"}
+                logger.debug("LightRAG doc_status.delete failed (%s), falling back to file patch", e)
 
-        deleted: list[str] = []
-        errors: list[dict] = []
-        for doc_id in targets:
-            res = await self.delete_indexed_document(doc_id)
-            if res.get("ok"):
-                deleted.append(doc_id)
-            else:
-                errors.append({"id": doc_id, "error": res.get("error")})
-        return {"ok": True, "deleted": deleted, "errors": errors, "deleted_count": len(deleted)}
+        # Надёжный fallback: напрямую правим JSON-файл
+        status_path = Path(data.working_dir) / "kv_store_doc_status.json"
+        if not status_path.exists():
+            return
+        try:
+            raw = json.loads(status_path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                return
+            changed = False
+            if doc_id in raw:
+                del raw[doc_id]
+                changed = True
+            # Dup-* записи — артефакты повторных загрузок, тоже блокируют re-insert
+            for key in list(raw.keys()):
+                if key.startswith("dup-"):
+                    del raw[key]
+                    changed = True
+            if changed:
+                status_path.write_text(
+                    json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                logger.info("Patched kv_store_doc_status.json: removed %r + dup-* entries", doc_id)
+        except Exception as e:
+            logger.warning("Could not patch kv_store_doc_status.json: %s", e)
 
-    async def delete_indexed_document(self, doc_id: str) -> dict:
-        """Удаление документа из индекса LightRAG по id."""
+    async def delete_indexed_document(
+        self, doc_id: str, conversation_id: str | None = None
+    ) -> dict:
+        data = await self._get_conv_data(conversation_id)
         if not doc_id or not str(doc_id).strip():
             return {"ok": False, "error": "empty id"}
-        if self.rag is None or getattr(self.rag, "lightrag", None) is None:
+        if data.rag is None or getattr(data.rag, "lightrag", None) is None:
             return {"ok": False, "error": "RAG not initialized"}
-        lr = self.rag.lightrag
+        lr = data.rag.lightrag
         try:
             if hasattr(lr, "adelete_by_doc_id"):
                 await lr.adelete_by_doc_id(doc_id)
@@ -518,11 +612,50 @@ class RAGService:
                     await maybe
             else:
                 return {"ok": False, "error": "delete_by_doc_id not supported in this LightRAG version"}
+
+            # Чистим doc_status — ключевой шаг, без него тот же файл не пройдёт re-insert
+            await self._clear_from_doc_status(data, doc_id)
+
+            # Сбрасываем sha1-кэш сессии — разрешаем повторную загрузку того же контента
+            data.indexed_hashes.clear()
+
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    async def prune_failed_documents(self, conversation_id: str | None = None) -> dict:
+        data = await self._get_conv_data(conversation_id)
+        if data.rag is None or getattr(data.rag, "lightrag", None) is None:
+            return {"ok": False, "error": "RAG not initialized"}
+
+        status_path = Path(data.working_dir) / "kv_store_doc_status.json"
+        targets: list[str] = []
+        if status_path.exists():
+            try:
+                raw = json.loads(status_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    for did, payload in raw.items():
+                        if not isinstance(did, str) or not did.strip():
+                            continue
+                        st = ""
+                        if isinstance(payload, dict):
+                            st = str(payload.get("status") or "").strip().upper()
+                        if did.startswith("dup-") or st == "FAILED":
+                            targets.append(did)
+            except Exception as e:
+                return {"ok": False, "error": f"failed to read doc_status: {e}"}
+
+        deleted: list[str] = []
+        errors: list[dict] = []
+        for did in targets:
+            res = await self.delete_indexed_document(did, conversation_id)
+            if res.get("ok"):
+                deleted.append(did)
+            else:
+                errors.append({"id": did, "error": res.get("error")})
+        return {"ok": True, "deleted": deleted, "errors": errors, "deleted_count": len(deleted)}
+
     async def cleanup(self) -> None:
-        """Graceful shutdown hook for FastAPI lifespan."""
-        self.rag = None
-        self._initialized = False
+        self._default_data.rag = None
+        for data in self._conv_data.values():
+            data.rag = None

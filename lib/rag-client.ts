@@ -1,9 +1,14 @@
 import { resolveRagApiBaseUrl } from '@/lib/rag-api-url';
 
 /**
- * HTTP-клиент к rag-api (индексация /query). Используется из route и из инструмента RAG.
+ * HTTP-клиент к rag-api (/query). Используется из route и из инструмента RAG.
+ * conversationId — привязывает запрос к конкретному индексу диалога.
  */
-export async function fetchRagSnippet(question: string, mode: string): Promise<string> {
+export async function fetchRagSnippet(
+  question: string,
+  mode: string,
+  conversationId?: string | null,
+): Promise<string> {
   const base = resolveRagApiBaseUrl();
   if (!base || !question.trim()) return '';
 
@@ -11,13 +16,17 @@ export async function fetchRagSnippet(question: string, mode: string): Promise<s
 
   try {
     const url = `${base}/query`;
+    const body: Record<string, unknown> = {
+      question: question.slice(0, 8000),
+      mode: normalizedMode,
+    };
+    if (conversationId) {
+      body.conversation_id = conversationId;
+    }
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        question: question.slice(0, 8000),
-        mode: normalizedMode,
-      }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       console.warn('[fetchRagSnippet] RAG /query failed', res.status, await res.text().catch(() => ''));

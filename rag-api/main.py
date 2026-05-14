@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 class QueryRequest(BaseModel):
     question: str
     mode: Optional[str] = Field(default="hybrid", description="Режим поиска: hybrid, local, global")
+    conversation_id: Optional[str] = Field(default=None, description="ID диалога для изоляции контекста")
 
 class QueryResponse(BaseModel):
     answer: str
@@ -44,12 +45,9 @@ rag_service = RAGService()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Запуск: инициализация RAG
     print("RAG service initialization...")
     await rag_service.initialize()
-    print("RAG service ready")
     yield
-    # Завершение: очистка
     print("RAG service shutdown...")
     await rag_service.cleanup()
     print("RAG service stopped")
@@ -80,12 +78,22 @@ os.makedirs("output", exist_ok=True)
 async def root():
     return {"message": "RAG API Service is running", "status": "ok"}
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Заглушка: браузер запрашивает иконку при прямом открытии API. Возвращаем 204 без тела."""
+    from fastapi.responses import Response
+    return Response(status_code=204)
+
 @app.post("/upload", response_model=DocumentResponse)
 async def upload_document(
     file: UploadFile = File(...),
     wait: bool = Query(
         False,
         description="Дождаться окончания индексации (для внутренних вызовов из Next.js).",
+    ),
+    conversation_id: Optional[str] = Query(
+        None,
+        description="ID диалога для изоляции документа. Если не задан — глобальный индекс.",
     ),
 ):
     """
@@ -124,9 +132,13 @@ async def upload_document(
         content = await file.read()
         await out_file.write(content)
 
+    original_name = file.filename or os.path.basename(file_path)
+
     async def process_in_background(path_to_process: str):
         try:
-            result = await rag_service.process_document(path_to_process)
+            result = await rag_service.process_document(
+                path_to_process, original_filename=original_name, conversation_id=conversation_id
+            )
             if result.get("status") == "error":
                 print(f"[upload background] failed for {path_to_process}: {result.get('message')}")
             else:
@@ -134,13 +146,14 @@ async def upload_document(
         except Exception as background_error:
             print(f"[upload background] exception for {path_to_process}: {background_error}")
         finally:
-            # Очистка временного файла после фоновой обработки
             if os.path.exists(path_to_process):
                 os.remove(path_to_process)
 
     if wait:
         try:
-            result = await rag_service.process_document(file_path)
+            result = await rag_service.process_document(
+                file_path, original_filename=original_name, conversation_id=conversation_id
+            )
             if result.get("status") == "error":
                 raise HTTPException(
                     status_code=500,
@@ -171,13 +184,15 @@ async def upload_document(
 
 @app.get("/documents", response_model=list[IndexedDocumentItem])
 @app.get("/indexed-documents", response_model=list[IndexedDocumentItem])
-async def list_indexed_documents():
+async def list_indexed_documents(
+    conversation_id: Optional[str] = Query(None, description="ID диалога для фильтрации документов"),
+):
     """Документы, присутствующие в индексе LightRAG.
 
     Два пути: /documents и /indexed-documents — на случай прокси/старых образов, где один из путей отдаёт 404.
     """
     try:
-        items = rag_service.list_indexed_documents()
+        items = rag_service.list_indexed_documents(conversation_id=conversation_id)
         return [IndexedDocumentItem(**x) for x in items]
     except Exception as e:
         logger.exception("RAG list indexed documents failed")
@@ -186,6 +201,7 @@ async def list_indexed_documents():
 
 class DeleteByIdBody(BaseModel):
     id: str
+    conversation_id: Optional[str] = None
 
 
 @app.delete("/documents", response_model=DeleteDocumentResponse)
@@ -195,7 +211,7 @@ async def delete_indexed_document(body: DeleteByIdBody = Body(...)):
     doc_id = (body.id or "").strip()
     if not doc_id:
         raise HTTPException(status_code=400, detail="id required")
-    result = await rag_service.delete_indexed_document(doc_id)
+    result = await rag_service.delete_indexed_document(doc_id, conversation_id=body.conversation_id)
     if not result.get("ok"):
         raise HTTPException(
             status_code=400,
@@ -221,11 +237,13 @@ async def prune_failed_documents():
 
 @app.post("/query", response_model=QueryResponse)
 async def query_rag(request: QueryRequest):
-    """
-    Запрос к RAG системе
-    """
+    """Запрос к RAG системе."""
     try:
-        answer = await rag_service.query(request.question, request.mode)
+        answer = await rag_service.query(
+            request.question,
+            request.mode,
+            conversation_id=request.conversation_id,
+        )
         return QueryResponse(answer=answer)
     except Exception as e:
         logger.exception("RAG /query failed")

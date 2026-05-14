@@ -36,6 +36,8 @@ yarn-error.log*
 
 # Локальный override (например том chatbot_ollama_data): см. docker-compose.override.example.yml
 docker-compose.override.yml
+# Скрипт деплоя — серверный, не нужен в репо
+deploy.sh
 
 # vercel
 .vercel

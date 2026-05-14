@@ -71,6 +71,8 @@ export type RagToolFactoryContext = {
   messages: ModelMessage[];
   ragMode: string;
   abortSignal?: AbortSignal | null;
+  /** ID диалога для изоляции RAG-индекса (каждый диалог — свой индекс). */
+  conversationId?: string | null;
 };
 
 /** Одна строка запроса к hybrid RAG по промпту с 10 разделами протокола (общая логика с инструментом). */
@@ -124,7 +126,7 @@ export function createRetrieveFromIndexedDocumentsTool(ctx: RagToolFactoryContex
           };
         }
 
-        const excerpts = await fetchRagSnippet(searchQueryUsed, ctx.ragMode || "hybrid");
+        const excerpts = await fetchRagSnippet(searchQueryUsed, ctx.ragMode || "hybrid", ctx.conversationId);
         return {
           searchQueryUsed,
           excerpts: excerpts || "(RAG не вернул фрагментов по этому запросу.)",
