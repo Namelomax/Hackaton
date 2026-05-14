@@ -8,13 +8,21 @@ from pathlib import Path
 import re
 
 logger = logging.getLogger(__name__)
-from lightrag.llm.openai import openai_embed
+from lightrag.llm.openai import openai_embed, openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc
 from raganything import RAGAnything, RAGAnythingConfig
 
 BASE_URL = os.getenv("LOCAL_OPENAI_BASE_URL", "http://127.0.0.1:1234/v1")
 API_KEY = os.getenv("LOCAL_OPENAI_API_KEY", "lm-studio")
 EMBEDDING_MODEL = os.getenv("LOCAL_OPENAI_EMBEDDING_MODEL", "text-embedding-nomic")
+
+# Реальная LLM для индексации (entity/relation extraction в LightRAG). Без неё граф знаний пустой
+# и Raw search results=0 даже после загрузки документов. По умолчанию используем тот же Ollama-эндпоинт.
+LLM_BASE_URL = os.getenv("RAG_OLLAMA_BASE_URL", BASE_URL)
+LLM_API_KEY = os.getenv("RAG_OLLAMA_API_KEY", API_KEY)
+LLM_MODEL = os.getenv("RAG_OLLAMA_LLM_MODEL", "qwen3:14b")
+# Таймаут одного LLM-вызова: индексация делает много обращений, локальная Ollama медленнее облака.
+LLM_TIMEOUT = int(os.getenv("RAG_OLLAMA_LLM_TIMEOUT", "600"))
 
 
 def log_openai_compat_embedding_settings() -> None:
@@ -24,14 +32,21 @@ def log_openai_compat_embedding_settings() -> None:
         BASE_URL,
         EMBEDDING_MODEL,
     )
-    low = (BASE_URL or "").lower()
-    if "127.0.0.1" in low or "localhost" in low:
-        logger.warning(
-            "Embeddings URL указывает на localhost/127.0.0.1. Внутри контейнера rag-api это НЕ хост "
-            "и НЕ контейнер ollama — запросы к /embeddings дадут APIConnectionError. "
-            "Задайте LOCAL_OPENAI_BASE_URL=http://ollama:11434/v1 (имя сервиса из docker-compose) "
-            "или отдельную переменную для rag-api."
-        )
+    logger.info(
+        "OpenAI-compatible API for indexing LLM: base_url=%s model=%s timeout=%ss",
+        LLM_BASE_URL,
+        LLM_MODEL,
+        LLM_TIMEOUT,
+    )
+    for label, url in (("embeddings", BASE_URL), ("LLM", LLM_BASE_URL)):
+        low = (url or "").lower()
+        if "127.0.0.1" in low or "localhost" in low:
+            logger.warning(
+                "%s URL указывает на localhost/127.0.0.1. Внутри контейнера rag-api это НЕ хост "
+                "и НЕ контейнер ollama — запросы дадут APIConnectionError. "
+                "Задайте http://ollama:11434/v1 (имя сервиса из docker-compose).",
+                label,
+            )
 
 _STOPWORDS = {
     "the", "and", "for", "with", "from", "that", "this", "is", "are", "was", "were",
@@ -125,19 +140,34 @@ class RAGService:
             parser="mineru",
             # MinerU CLI поддерживает только: auto, txt, ocr
             parse_method="auto",
+            # Без vision-модели картинки/формулы превращаются в мусор в графе. Таблицы оставляем (текстовые).
+            enable_image_processing=False,
+            enable_table_processing=True,
+            enable_equation_processing=False,
         )
 
-        def extract_keywords(text: str) -> str:
-            words = _extract_meaningful_words(text, max_words=25)
-            if not words:
-                return "keywords"
-            return ", ".join(words)
-
         async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
+            """
+            LLM для LightRAG: при keyword_extraction отдаём детерминированный JSON (быстро, без вызова Ollama),
+            во всех остальных случаях — РЕАЛЬНЫЙ вызов Ollama. Без этого entity/relation extraction на этапе
+            индексации возвращает мусор (слова из самого промпта) и граф знаний остаётся пустым.
+            """
             prompt_text = prompt if isinstance(prompt, str) else str(prompt)
             if kwargs.get("keyword_extraction"):
                 return _keywords_json_for_lightrag(prompt_text)
-            return extract_keywords(prompt_text)
+            try:
+                return await openai_complete_if_cache(
+                    LLM_MODEL,
+                    prompt_text,
+                    system_prompt=system_prompt,
+                    history_messages=history_messages or [],
+                    api_key=LLM_API_KEY,
+                    base_url=LLM_BASE_URL,
+                    timeout=LLM_TIMEOUT,
+                )
+            except Exception as e:
+                logger.warning("LLM call failed (%s); returning empty completion", e)
+                return ""
 
         embedding_func = EmbeddingFunc(
             embedding_dim=768,
@@ -291,16 +321,25 @@ class RAGService:
             result = None
 
         text = _normalize_result(result).strip()
-        if len(text) < 80 and mode == "hybrid":
+        # Сигнал «нечего отдавать» из LightRAG: повторные вызовы local/global тоже вернут это.
+        looks_no_context = (
+            not text
+            or "[no-context]" in text.lower()
+            or "no-result" in text.lower()
+            or "i'm not able to provide an answer" in text.lower()
+        )
+        if not looks_no_context and len(text) < 80 and mode == "hybrid":
             for fb in ("local", "global"):
                 try:
                     r2 = await _run_once(fb)
                     t2 = _normalize_result(r2).strip()
-                    if len(t2) > len(text):
+                    if len(t2) > len(text) and "[no-context]" not in t2.lower():
                         text = t2
                         used_mode = fb
                 except Exception as e:
                     logger.debug("RAG /query fallback mode=%s: %s", fb, e)
+        if looks_no_context:
+            text = ""
 
         logger.info(
             "RAG /query response mode_used=%s context_len=%s preview=%r",

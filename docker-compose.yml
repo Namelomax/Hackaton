@@ -61,6 +61,12 @@ services:
       LOCAL_OPENAI_BASE_URL: ${RAG_LOCAL_OPENAI_BASE_URL:-http://ollama:11434/v1}
       LOCAL_OPENAI_API_KEY: ${OLLAMA_API_KEY:-ollama}
       LOCAL_OPENAI_EMBEDDING_MODEL: ${LOCAL_OPENAI_EMBEDDING_MODEL:-nomic-embed-text}
+      # Реальная LLM для LightRAG (entity/relation extraction при индексации). Без этого граф пустой
+      # и retrieval всегда возвращает 0 vector chunks. Модель должна быть скачана: docker compose exec ollama ollama pull qwen3:14b
+      RAG_OLLAMA_BASE_URL: ${RAG_OLLAMA_BASE_URL:-${RAG_LOCAL_OPENAI_BASE_URL:-http://ollama:11434/v1}}
+      RAG_OLLAMA_API_KEY: ${RAG_OLLAMA_API_KEY:-${OLLAMA_API_KEY:-ollama}}
+      RAG_OLLAMA_LLM_MODEL: ${RAG_OLLAMA_LLM_MODEL:-qwen3:14b}
+      RAG_OLLAMA_LLM_TIMEOUT: ${RAG_OLLAMA_LLM_TIMEOUT:-600}
       RAG_CORS_ORIGINS: ${RAG_CORS_ORIGINS:-http://localhost:3000}
     volumes:
       - rag-uploads:/app/uploads
