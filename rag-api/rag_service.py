@@ -1,3 +1,5 @@
+import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -125,10 +127,27 @@ def _safe_log_preview(text: str | None, limit: int = 400) -> str:
         return s
     return s[: limit - 1] + "…"
 
+def _hash_file_contents(file_path: str, chunk_size: int = 1 << 20) -> str:
+    """SHA1 содержимого файла (детерминированный id для дедупа повторных загрузок)."""
+    h = hashlib.sha1()
+    with open(file_path, "rb") as f:
+        while True:
+            block = f.read(chunk_size)
+            if not block:
+                break
+            h.update(block)
+    return h.hexdigest()
+
+
 class RAGService:
     def __init__(self):
         self.rag = None
         self._initialized = False
+        # Lock per content-hash: предотвращает параллельную обработку одного и того же файла,
+        # если фронт случайно дважды нажал на индексацию (React strict-mode / двойной клик).
+        self._hash_locks: dict[str, asyncio.Lock] = {}
+        # Хеши успешно проиндексированных файлов в текущей сессии: чтобы пропустить повторный full pipeline.
+        self._indexed_hashes: set[str] = set()
 
     async def initialize(self):
         """Инициализация RAG один раз при старте (как в вашем main)"""
@@ -236,48 +255,83 @@ class RAGService:
         return str(pdf_path)
 
     async def process_document(self, file_path: str) -> dict:
-        """Обработка документа — как у вас в main"""
+        """
+        Обработка документа. Дедуп по контент-хешу: если фронт случайно отправил тот же файл дважды
+        (другой UUID-префикс, но идентичное содержимое) — повторно гонять MinerU + LLM-индексацию
+        не нужно. Параллельные дубли блокируются per-hash asyncio-локом.
+        """
+        safe_name = os.path.basename(file_path) or file_path
+        if not os.path.exists(file_path):
+            logger.warning("process_document: source missing: %s", safe_name)
+            return {"status": "error", "message": "source file missing"}
+
         try:
-            safe_name = os.path.basename(file_path) or file_path
-            logger.info("Processing document: %s", safe_name)
-            extension = Path(file_path).suffix.lower()
-            source_for_processing = file_path
-            cleanup_pdf: str | None = None
+            content_hash = _hash_file_contents(file_path)
+        except Exception as hash_err:
+            logger.warning("process_document: hashing failed (%s), skipping dedup", hash_err)
+            content_hash = ""
 
-            if extension in {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp", ".rtf"}:
-                source_for_processing = self._convert_office_to_pdf(file_path)
-                cleanup_pdf = source_for_processing
-                logger.info("Converted to PDF: %s", os.path.basename(source_for_processing))
+        lock = None
+        if content_hash:
+            lock = self._hash_locks.setdefault(content_hash, asyncio.Lock())
 
-            # MinerU on Windows can fail with long/non-ASCII temp names.
-            # Normalize to a short ASCII filename before parsing.
-            normalized_ext = Path(source_for_processing).suffix.lower() or ".pdf"
-            normalized_name = f"rag_input_{uuid.uuid4().hex}{normalized_ext}"
-            normalized_path = str(Path("uploads") / normalized_name)
-            shutil.copy2(source_for_processing, normalized_path)
+        async def _do_process() -> dict:
+            if content_hash and content_hash in self._indexed_hashes:
+                logger.info(
+                    "process_document: same content already indexed in this session (sha1=%s) — skipping. file=%s",
+                    content_hash[:8],
+                    safe_name,
+                )
+                return {"status": "success", "message": "Документ уже в индексе (дубликат содержимого)"}
 
             try:
-                await self.rag.process_document_complete(
-                    file_path=normalized_path,
-                    output_dir="./output",
-                    backend="pipeline",
+                logger.info("Processing document: %s (sha1=%s)", safe_name, content_hash[:8] if content_hash else "n/a")
+                extension = Path(file_path).suffix.lower()
+                source_for_processing = file_path
+                cleanup_pdf: str | None = None
+
+                if extension in {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp", ".rtf"}:
+                    source_for_processing = self._convert_office_to_pdf(file_path)
+                    cleanup_pdf = source_for_processing
+                    logger.info("Converted to PDF: %s", os.path.basename(source_for_processing))
+
+                # MinerU on Windows can fail with long/non-ASCII temp names.
+                # Normalize to a short ASCII filename before parsing.
+                normalized_ext = Path(source_for_processing).suffix.lower() or ".pdf"
+                normalized_name = f"rag_input_{uuid.uuid4().hex}{normalized_ext}"
+                normalized_path = str(Path("uploads") / normalized_name)
+                shutil.copy2(source_for_processing, normalized_path)
+
+                try:
+                    await self.rag.process_document_complete(
+                        file_path=normalized_path,
+                        output_dir="./output",
+                        backend="pipeline",
+                    )
+                finally:
+                    if os.path.exists(normalized_path):
+                        os.remove(normalized_path)
+
+                if cleanup_pdf and os.path.exists(cleanup_pdf):
+                    os.remove(cleanup_pdf)
+
+                if content_hash:
+                    self._indexed_hashes.add(content_hash)
+
+                logger.info(
+                    "Ingest finished file=%s (normalized temp removed). "
+                    "Duplicate doc in LightRAG = chunks already in graph.",
+                    safe_name,
                 )
-            finally:
-                if os.path.exists(normalized_path):
-                    os.remove(normalized_path)
+                return {"status": "success", "message": "Документ обработан"}
+            except Exception as e:
+                logger.exception("Error while processing document: %s", safe_name)
+                return {"status": "error", "message": str(e)}
 
-            if cleanup_pdf and os.path.exists(cleanup_pdf):
-                os.remove(cleanup_pdf)
-
-            logger.info(
-                "Ingest finished file=%s (normalized temp removed). "
-                "Duplicate doc in LightRAG = chunks already in graph.",
-                safe_name,
-            )
-            return {"status": "success", "message": "Документ обработан"}
-        except Exception as e:
-            logger.exception("Error while processing document: %s", os.path.basename(file_path))
-            return {"status": "error", "message": str(e)}
+        if lock is None:
+            return await _do_process()
+        async with lock:
+            return await _do_process()
 
     async def query(self, question: str, mode: str = "hybrid") -> str:
         """Запрос к RAG — как у вас в основном коде"""
@@ -349,8 +403,23 @@ class RAGService:
         )
         return text
 
+    @staticmethod
+    def _is_visible_doc(doc_id: str, status: str) -> bool:
+        """В UI показываем только реальные записи: без dup-* и без FAILED-хвостов."""
+        if not isinstance(doc_id, str) or not doc_id.strip():
+            return False
+        if doc_id.startswith("dup-"):
+            return False
+        if (status or "").strip().upper() == "FAILED":
+            return False
+        return True
+
     def list_indexed_documents(self) -> list[dict]:
-        """Список документов в индексе LightRAG (по kv_store)."""
+        """Список документов в индексе LightRAG (по kv_store).
+
+        Скрываем `dup-…` (LightRAG создаёт их при повторной отправке с тем же контентом)
+        и записи со статусом FAILED — иначе пользователь видит «3 файла» вместо одного.
+        """
         base = Path("./rag_storage")
         by_id: dict[str, dict] = {}
         status_path = base / "kv_store_doc_status.json"
@@ -359,15 +428,15 @@ class RAGService:
                 data = json.loads(status_path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
                     for doc_id, payload in data.items():
-                        if not isinstance(doc_id, str) or not doc_id.strip():
-                            continue
-                        name = doc_id
+                        name = doc_id if isinstance(doc_id, str) else ""
                         st = ""
                         if isinstance(payload, dict):
                             st = str(payload.get("status") or "")
                             fp = payload.get("file_path") or payload.get("path")
                             if fp:
-                                name = os.path.basename(str(fp)) or doc_id
+                                name = os.path.basename(str(fp)) or name
+                        if not self._is_visible_doc(doc_id, st):
+                            continue
                         by_id[doc_id] = {"id": doc_id, "filename": name, "status": st}
             except Exception:
                 pass
@@ -380,10 +449,47 @@ class RAGService:
                     for doc_id in data.keys():
                         if not isinstance(doc_id, str) or doc_id in by_id:
                             continue
+                        if not self._is_visible_doc(doc_id, ""):
+                            continue
                         by_id[doc_id] = {"id": doc_id, "filename": doc_id, "status": ""}
             except Exception:
                 pass
         return sorted(by_id.values(), key=lambda x: x["id"])
+
+    async def prune_failed_documents(self) -> dict:
+        """
+        Удаляет из индекса записи со статусом FAILED и сиротские dup-* (как остатки прошлых попыток).
+        Возвращает количество удалённых записей.
+        """
+        if self.rag is None or getattr(self.rag, "lightrag", None) is None:
+            return {"ok": False, "error": "RAG not initialized"}
+
+        status_path = Path("./rag_storage") / "kv_store_doc_status.json"
+        targets: list[str] = []
+        if status_path.exists():
+            try:
+                data = json.loads(status_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    for doc_id, payload in data.items():
+                        if not isinstance(doc_id, str) or not doc_id.strip():
+                            continue
+                        st = ""
+                        if isinstance(payload, dict):
+                            st = str(payload.get("status") or "").strip().upper()
+                        if doc_id.startswith("dup-") or st == "FAILED":
+                            targets.append(doc_id)
+            except Exception as e:
+                return {"ok": False, "error": f"failed to read doc_status: {e}"}
+
+        deleted: list[str] = []
+        errors: list[dict] = []
+        for doc_id in targets:
+            res = await self.delete_indexed_document(doc_id)
+            if res.get("ok"):
+                deleted.append(doc_id)
+            else:
+                errors.append({"id": doc_id, "error": res.get("error")})
+        return {"ok": True, "deleted": deleted, "errors": errors, "deleted_count": len(deleted)}
 
     async def delete_indexed_document(self, doc_id: str) -> dict:
         """Удаление документа из индекса LightRAG по id."""

@@ -56,32 +56,14 @@ export async function PUT(req: Request) {
     
     // Сначала обновляем messages и/или documentContent
     if (hasMessages || hasDocument) {
-      console.log('[PUT] Updating conversation with:', {
-        conversationId,
-        hasMessages,
-        hasDocument,
-        documentContentLength: documentContent?.length,
-      });
       updated = await updateConversation(conversationId, messages || [], documentContent);
-      console.log('[PUT] updateConversation result:', {
-        id: updated?.id,
-        document_content: updated?.document_content?.slice(0, 100),
-      });
     }
     
-    // Затем обновляем title (если есть), но сохраняем documentContent
     if (hasTitle) {
-      console.log('[PUT] Renaming conversation:', { title });
       updated = await renameConversation(conversationId, title.trim());
-      // renameConversation может не вернуть document_content, поэтому явно добавляем его
       if (updated && hasDocument && documentContent) {
         updated.document_content = documentContent;
       }
-      console.log('[PUT] renameConversation result:', {
-        id: updated?.id,
-        title: updated?.title,
-        document_content: updated?.document_content?.slice(0, 100),
-      });
     }
     
     return new Response(JSON.stringify({ success: true, conversation: updated }), { status: 200 });

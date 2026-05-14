@@ -204,6 +204,21 @@ async def delete_indexed_document(body: DeleteByIdBody = Body(...)):
     return DeleteDocumentResponse(ok=True)
 
 
+@app.post("/prune-failed")
+async def prune_failed_documents():
+    """Удалить из индекса все записи со статусом FAILED и dup-* (хвосты повторных загрузок)."""
+    try:
+        result = await rag_service.prune_failed_documents()
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=str(result.get("error") or "prune failed"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("RAG prune-failed failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/query", response_model=QueryResponse)
 async def query_rag(request: QueryRequest):
     """

@@ -48,8 +48,14 @@ const RagIndexControl = ({
 }) => {
   const attachments = usePromptInputAttachments();
   const [busy, setBusy] = useState(false);
+  // useRef-лок проверяется СИНХРОННО до setState — иначе быстрый двойной клик и
+  // React strict-mode успевают отправить два запроса до того как busy=true применится.
+  const lockRef = useRef(false);
+  // URL-ы (blob:), которые уже успешно проиндексированы в текущей сессии — не отправляем повторно.
+  const indexedUrlsRef = useRef<Set<string>>(new Set());
 
   const handleClick = async () => {
+    if (lockRef.current) return;
     if (!authUser?.id) {
       onOpenAuthDialog?.();
       return;
@@ -60,14 +66,21 @@ const RagIndexControl = ({
       return;
     }
 
+    lockRef.current = true;
     setBusy(true);
     onNotify(null);
+    let anyIndexed = false;
     try {
       for (const f of files) {
         const url = String((f as any).url || '');
         const name = String((f as any).filename || 'upload.bin');
         const mt = (f as any).mediaType as string | undefined;
+        const id = String((f as any).id || '');
         if (!url) continue;
+        if (indexedUrlsRef.current.has(url)) {
+          if (id) attachments.remove(id);
+          continue;
+        }
         const fileObj = await blobUrlToFile(url, name, mt);
         const fd = new FormData();
         fd.append('file', fileObj);
@@ -82,13 +95,23 @@ const RagIndexControl = ({
                 : j?.error || res.statusText;
           throw new Error(detail || 'RAG upload failed');
         }
+        indexedUrlsRef.current.add(url);
+        anyIndexed = true;
+        // Убираем уже проиндексированный файл из аттачментов — это и предотвращает повтор по тому же blob,
+        // и сразу показывает пользователю, что файл ушёл в индекс (а не висит как «вложение к следующему чату»).
+        if (id) attachments.remove(id);
       }
-      onRagIndexed?.();
-      onNotify('Файлы проиндексированы в RAG. Можно включить «контекст из RAG» и задать вопрос.');
+      if (anyIndexed) {
+        onRagIndexed?.();
+        onNotify('Файлы проиндексированы в RAG. Можно включить «контекст из RAG» и задать вопрос.');
+      } else {
+        onNotify('Все выбранные файлы уже в индексе.');
+      }
     } catch (err) {
       onNotify(err instanceof Error ? err.message : 'Ошибка индексации RAG');
     } finally {
       setBusy(false);
+      lockRef.current = false;
     }
   };
 
@@ -98,7 +121,10 @@ const RagIndexControl = ({
       disabled={busy || status === 'submitted' || status === 'streaming'}
       className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-neutral-200 bg-white text-neutral-700 shadow-xs hover:bg-neutral-50 disabled:pointer-events-none disabled:opacity-40"
       title="Отправить вложения в RAG (индексация)"
-      onClick={() => void handleClick()}
+      onClick={(e) => {
+        e.preventDefault();
+        void handleClick();
+      }}
     >
       {busy ? <Loader2Icon className="size-4 animate-spin" /> : <DatabaseIcon className="size-4" />}
     </button>

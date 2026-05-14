@@ -416,14 +416,7 @@ export async function POST(req: Request) {
     req.headers.get('x-real-ip') ||
     'unknown';
 
-  console.log('📨 Request info:', {
-    messagesCount: messages.length,
-    userId: userId || 'anon',
-    sender,
-    clientIp,
-    conversationId: conversationId || 'none',
-    hasDocumentContent: !!documentContent,
-  });
+  console.log(`📨 chat req: msgs=${messages.length} user=${userId || 'anon'} conv=${conversationId || 'none'} doc=${!!documentContent}`);
 
   // 1. Handle System Prompt Updates
   if (newSystemPrompt) {
@@ -508,7 +501,7 @@ export async function POST(req: Request) {
     }
   }
 
-  console.log('📝 Base messages prepared:', baseMessages.length);
+  // base messages count — verbose log removed
 
   const normalizedMessages: any[] = baseMessages.map((m: any) => {
     const rawText = toPlainText(m);
@@ -568,7 +561,7 @@ export async function POST(req: Request) {
     console.warn('Filtered empty messages:', normalizedMessages.length - normalizedMessagesNonEmpty.length);
   }
 
-  console.log('✅ Normalized messages:', normalizedMessagesNonEmpty.length);
+  // normalized count — verbose log removed
 
   const ragOmitsAttachmentBodies = Boolean(useRagContext);
 
@@ -775,13 +768,7 @@ export async function POST(req: Request) {
         if (trimmedSnippet.length >= minRagContextChars) {
           ragAutoContext = trimmedSnippet;
         }
-        console.log('📚 RAG auto-retrieval:', {
-          usedGeneratedLine: Boolean(queryLine.trim()),
-          queryLen: snippetQuery.length,
-          preview: snippetQuery.slice(0, 120),
-          excerptLen: trimmedSnippet.length,
-          injected: Boolean(ragAutoContext),
-        });
+    console.log(`📚 RAG auto: q=${snippetQuery.slice(0, 80)} excerpt=${trimmedSnippet.length}c injected=${Boolean(ragAutoContext)}`);
       }
     } catch (e) {
       console.warn('📚 RAG auto-retrieval failed:', e);
@@ -801,30 +788,21 @@ export async function POST(req: Request) {
 
   if (ragRetrievalEnabled) {
     systemPrompt += RAG_TOOL_MODE_SYSTEM_APPENDIX;
-    console.log('📚 RAG: tool retrieveFromIndexedDocuments enabled; system prompt may include auto RAG block');
+    // RAG tool enabled log removed (verbose);
   }
 
-  console.log('📦 Messages prepared:', {
-    messagesWithHidden: messagesWithHidden.length,
-    normalizedMessages: normalizedMessagesNonEmpty.length,
-    hiddenDocEntries: hiddenDocEntries.length,
-  });
+  // messages-prepared verbose log removed
 
   // 5. Create Agent Context - with safety checks
   let coreMessages;
   try {
     const messagesToConvert = messagesWithHidden.length > 0 ? messagesWithHidden : normalizedMessagesNonEmpty;
-    console.log('🔄 Converting messages:', messagesToConvert.length);
-    
     if (!Array.isArray(messagesToConvert) || messagesToConvert.length === 0) {
       throw new Error('No valid messages to convert');
     }
-    
     coreMessages = convertToModelMessages(messagesToConvert);
-    console.log('✅ Messages converted successfully');
   } catch (error) {
     console.error('❌ Failed to convert messages:', error);
-    console.error('Messages data:', JSON.stringify({ messagesWithHidden, normalizedMessages: normalizedMessagesNonEmpty }, null, 2));
     // Fallback: try to preserve at least the last user message
     const lastMessage = normalizedMessagesNonEmpty[normalizedMessagesNonEmpty.length - 1];
     coreMessages = lastMessage ? [{

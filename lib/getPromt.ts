@@ -605,12 +605,7 @@ export async function updateConversation(conversationId: string, messages: any, 
   const recordObj = new RecordId('conversations', clean);
   const recordIdString = `conversations:${clean}`;
 
-  console.log('[updateConversation] Starting update:', {
-    conversationId: recordIdString,
-    hasMessages: Array.isArray(messages),
-    hasDocumentContent: documentContent !== undefined,
-    documentContentLength: documentContent?.length,
-  });
+  // verbose update log removed — was dumping full message content to stdout
 
   // Sanitize messages before update
   // console.log('updateConversation: incoming messages type=', typeof messages, 'isArray=', Array.isArray(messages), 'length=', Array.isArray(messages) ? messages.length : 'N/A');
@@ -690,11 +685,7 @@ export async function updateConversation(conversationId: string, messages: any, 
     mergedMessages = sanitizedClean;
   }
 
-  console.log('[updateConversation] Returning:', {
-    id: convData.id?.toString?.(),
-    hasDocumentContent: !!convData.document_content,
-    documentContentLength: convData.document_content?.length,
-  });
+  // verbose return log removed
 
   return {
     id: convData.id?.toString?.() ?? recordIdString,

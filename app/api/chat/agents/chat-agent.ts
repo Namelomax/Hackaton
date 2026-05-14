@@ -26,9 +26,20 @@ const PROTOCOL_TOOL_SYSTEM_APPENDIX = `
 function hasAttachedFiles(messages: any[]): boolean {
   const HIDDEN = /<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi;
   for (const msg of messages || []) {
+    // 1. UIMessage: явные file-части
     if (Array.isArray(msg?.parts) && msg.parts.some((p: any) => p?.type === "file")) {
       return true;
     }
+    // 2. Нормализованное UIMessage из route.ts: файлы переехали в metadata.attachments,
+    //    а parts стали [{type:'text', text: combined}] — нужно смотреть в metadata.
+    if (
+      msg?.role === "user" &&
+      Array.isArray(msg?.metadata?.attachments) &&
+      msg.metadata.attachments.length > 0
+    ) {
+      return true;
+    }
+    // 3. Строковый content (обогащённый messagesWithHidden или прямой UIMessage)
     if (typeof msg?.content === "string") {
       const c = msg.content;
       if (
@@ -44,6 +55,17 @@ function hasAttachedFiles(messages: any[]): boolean {
         return true;
       }
     }
+    // 4. ModelMessage после convertToModelMessages: content — массив частей
+    if (Array.isArray(msg?.content)) {
+      for (const part of msg.content as any[]) {
+        if (part?.type === "file") return true;
+        if (part?.type === "text" && typeof part.text === "string") {
+          const t = part.text;
+          if (t.includes("Вложенный файл") || t.includes("[Вложение «")) return true;
+        }
+      }
+    }
+    // 5. text-parts длинного сообщения (UIMessage)
     if (Array.isArray(msg?.parts)) {
       const textParts = msg.parts
         .filter((p: any) => p?.type === "text" && typeof p.text === "string")
@@ -71,15 +93,18 @@ function adaptSystemPrompt(
   ) {
     const adaptation = `АДАПТАЦИЯ: Расшифровка получена
 ════════════════════════════════════════════
+КРИТИЧЕСКИ ВАЖНО — ЗАПРЕТ НА ПРИВЕТСТВИЕ:
+Пользователь уже прикрепил файл или ведёт диалог. НИКОГДА не начинай ответ с «Здравствуйте», «Привет», «Я AI-ассистент» или любого вводного абзаца о том, кто ты. Любая фраза вроде «Рад помочь», «Я помогу вам» или «Давайте начнём» в начале ответа — ЗАПРЕЩЕНА.
+════════════════════════════════════════════
  ПРОПУСТИ ЭТАП 1 (приветствие)!
- Ты уже имеешь расшифровку встречи.
+ Ты уже имеешь расшифровку встречи (или её фрагмент через RAG).
  НЕМЕДЛЕННО ПЕРЕХОДИ К ЭТАПУ 2 (сбор информации): задавай ОДИН уточняющий вопрос за ответ (или одно короткое подтверждение без таблиц).
  Начни с самого важного пропуска (часто — участники, дата, номер протокола), а не с выгрузки всего документа.
- НЕ показывай приветствие "Привет! Я AI-агент..."
+ Если пользователь написал только «Привет» или другое короткое слово — это сигнал что он хочет начать работу с файлом. Немедленно задай первый уточняющий вопрос по содержимому файла, не объясняй что ты умеешь делать.
  В ЭТОМ ЧАТЕ ЗАПРЕЩЕНО выводить полный протокол из 10 разделов, все таблицы и весь текст «как в документе» за один ответ — используй инструмент publishInvestigationProtocol.
  ЗАПРЕЩЕНЫ заголовки как у финального документа: «Протокол встречи», «Номер протокола:», блоки с разделами 1–10 подряд — пользователь увидит это в правой панели после вызова инструмента.
  Если текст пользователя уже похож на протокол — не переписывай его целиком; продолжай уточнять по одному пункту.
- Пиши название компании «Форус». по продукту — только «протокол обследования».
+ Пиши название компании «Форус», по продукту — только «протокол обследования».
  Полный протокол формируется только вызовом инструмента publishInvestigationProtocol (правая панель).
 ════════════════════════════════════════════
 
