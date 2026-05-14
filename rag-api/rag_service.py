@@ -131,12 +131,6 @@ def _hash_file_contents(file_path: str, chunk_size: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
-def _lightrag_doc_id_from_file(file_path: str) -> str:
-    """LightRAG: doc-<md5(байты файла, как у нормализованного PDF)>."""
-    with open(file_path, "rb") as f:
-        return "doc-" + hashlib.md5(f.read()).hexdigest()
-
-
 def _read_kv_json(path: Path) -> dict:
     if not path.exists():
         return {}
@@ -381,7 +375,7 @@ class RAGService:
             embedding_func=embedding_func,
             lightrag_kwargs={
                 "llm_model_kwargs": {"timeout": 6000},
-                "llm_model_max_async": 3,
+                "llm_model_max_async": 5,
                 "chunk_token_size": 200,
                 "chunk_overlap_token_size": 80,
                 "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.1},
@@ -492,28 +486,6 @@ class RAGService:
                     cleanup_pdf = source_for_processing
                     logger.info("Converted to PDF: %s", os.path.basename(source_for_processing))
 
-                doc_id = _lightrag_doc_id_from_file(source_for_processing)
-                if _doc_index_looks_complete(data.working_dir, doc_id):
-                    logger.info(
-                        "process_document: skip duplicate MinerU — doc_id=%s already complete in %s",
-                        doc_id,
-                        data.working_dir,
-                    )
-                    if cleanup_pdf and os.path.exists(cleanup_pdf):
-                        os.remove(cleanup_pdf)
-                    if content_hash:
-                        data.indexed_hashes.add(content_hash)
-                    return {
-                        "status": "success",
-                        "message": "Документ уже в индексе (идентичное содержимое)",
-                        "deduplicated": True,
-                    }
-
-                # «Призрак» в графе/KV: сносим doc_id и пересобираем (иначе LightRAG: duplicate + 2 чанка).
-                await self._delete_doc_in_workspace(data, doc_id)
-                if content_hash:
-                    data.indexed_hashes.discard(content_hash)
-
                 normalized_ext = Path(source_for_processing).suffix.lower() or ".pdf"
                 normalized_name = f"rag_input_{uuid.uuid4().hex}{normalized_ext}"
                 normalized_path = str(Path("uploads") / normalized_name)
@@ -525,6 +497,46 @@ class RAGService:
 
                 stem = Path(normalized_path).stem
                 try:
+                    init_result = await data.rag._ensure_lightrag_initialized()
+                    if not init_result or not init_result.get("success"):
+                        raise RuntimeError(
+                            (init_result or {}).get("error", "LightRAG init failed")
+                        )
+
+                    # RAGAnything doc_id = hash от распарсенного content_list (см. ProcessorMixin),
+                    # а не MD5 байтов PDF — иначе adelete не попадает в запись и insert даёт duplicate + 2 чанка.
+                    _, doc_id = await data.rag.parse_document(
+                        normalized_path,
+                        output_dir="./output",
+                        display_stats=False,
+                        backend="pipeline",
+                    )
+                    logger.info(
+                        "process_document: content-based doc_id=%s (pre-ingest) file=%s",
+                        doc_id,
+                        normalized_name,
+                    )
+
+                    if _doc_index_looks_complete(data.working_dir, doc_id):
+                        logger.info(
+                            "process_document: skip re-ingest — doc_id=%s already complete in %s",
+                            doc_id,
+                            data.working_dir,
+                        )
+                        if content_hash:
+                            data.indexed_hashes.add(content_hash)
+                        if cleanup_pdf and os.path.exists(cleanup_pdf):
+                            os.remove(cleanup_pdf)
+                        return {
+                            "status": "success",
+                            "message": "Документ уже в индексе (идентичное содержимое)",
+                            "deduplicated": True,
+                        }
+
+                    await self._delete_doc_in_workspace(data, doc_id)
+                    if content_hash:
+                        data.indexed_hashes.discard(content_hash)
+
                     await data.rag.process_document_complete(
                         file_path=normalized_path,
                         output_dir="./output",
