@@ -131,6 +131,82 @@ def _hash_file_contents(file_path: str, chunk_size: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
+def _lightrag_doc_id_from_file(file_path: str) -> str:
+    """LightRAG: doc-<md5(байты файла, как у нормализованного PDF)>."""
+    with open(file_path, "rb") as f:
+        return "doc-" + hashlib.md5(f.read()).hexdigest()
+
+
+def _read_kv_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _doc_status_entry(working_dir: str, doc_id: str) -> dict | None:
+    raw = _read_kv_json(Path(working_dir) / "kv_store_doc_status.json")
+    v = raw.get(doc_id)
+    return v if isinstance(v, dict) else None
+
+
+def _chunks_list_len(payload: dict | None) -> int:
+    if not payload:
+        return 0
+    chunks = payload.get("chunks_list") or payload.get("chunks") or []
+    if isinstance(chunks, str):
+        try:
+            chunks = json.loads(chunks)
+        except Exception:
+            chunks = []
+    return len(chunks) if isinstance(chunks, list) else 0
+
+
+def _doc_index_looks_complete(working_dir: str, doc_id: str) -> bool:
+    """Уже полный индекс — повторный MinerU/LightRAG не запускаем (экономия диска/времени)."""
+    payload = _doc_status_entry(working_dir, doc_id)
+    if not payload:
+        return False
+    st = str(payload.get("status") or "").strip().upper()
+    n = _chunks_list_len(payload)
+    if n >= 50:
+        return True
+    good = st in ("PROCESSED", "PROCESSED_SUCCESS", "DONE", "SUCCESS", "FINISHED") or "PROCESS" in st
+    return good and n >= 25
+
+
+def _remove_doc_from_kv_full_docs(working_dir: str, doc_id: str) -> None:
+    p = Path(working_dir) / "kv_store_full_docs.json"
+    if not p.exists():
+        return
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict) or doc_id not in raw:
+            return
+        del raw[doc_id]
+        p.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("Removed %r from kv_store_full_docs.json", doc_id)
+    except Exception as e:
+        logger.warning("Could not patch kv_store_full_docs.json: %s", e)
+
+
+def _cleanup_mineru_output_dirs_for_stem(stem: str) -> None:
+    """Удаляет output/rag_input_<uuid>_* после MinerU (том rag-output не забивается)."""
+    out = Path("output")
+    if not out.is_dir():
+        return
+    for d in out.glob(f"{stem}_*"):
+        if d.is_dir():
+            try:
+                shutil.rmtree(d, ignore_errors=True)
+                logger.info("Removed MinerU output dir: %s", d)
+            except Exception as e:
+                logger.debug("MinerU output cleanup: %s", e)
+
+
 def _sanitize_conv_id(conversation_id: str | None) -> str | None:
     """Нормализует conversation_id для использования как имя директории.
     Возвращает None для дефолтного индекса.
@@ -399,7 +475,11 @@ class RAGService:
                     content_hash[:8],
                     safe_name,
                 )
-                return {"status": "success", "message": "Документ уже в индексе (дубликат содержимого)"}
+                return {
+                    "status": "success",
+                    "message": "Документ уже в индексе (дубликат содержимого)",
+                    "deduplicated": True,
+                }
 
             try:
                 logger.info("Processing document: %s (sha1=%s)", safe_name, content_hash[:8] if content_hash else "n/a")
@@ -412,6 +492,28 @@ class RAGService:
                     cleanup_pdf = source_for_processing
                     logger.info("Converted to PDF: %s", os.path.basename(source_for_processing))
 
+                doc_id = _lightrag_doc_id_from_file(source_for_processing)
+                if _doc_index_looks_complete(data.working_dir, doc_id):
+                    logger.info(
+                        "process_document: skip duplicate MinerU — doc_id=%s already complete in %s",
+                        doc_id,
+                        data.working_dir,
+                    )
+                    if cleanup_pdf and os.path.exists(cleanup_pdf):
+                        os.remove(cleanup_pdf)
+                    if content_hash:
+                        data.indexed_hashes.add(content_hash)
+                    return {
+                        "status": "success",
+                        "message": "Документ уже в индексе (идентичное содержимое)",
+                        "deduplicated": True,
+                    }
+
+                # «Призрак» в графе/KV: сносим doc_id и пересобираем (иначе LightRAG: duplicate + 2 чанка).
+                await self._delete_doc_in_workspace(data, doc_id)
+                if content_hash:
+                    data.indexed_hashes.discard(content_hash)
+
                 normalized_ext = Path(source_for_processing).suffix.lower() or ".pdf"
                 normalized_name = f"rag_input_{uuid.uuid4().hex}{normalized_ext}"
                 normalized_path = str(Path("uploads") / normalized_name)
@@ -421,6 +523,7 @@ class RAGService:
                 data.filename_map[normalized_name] = display_name
                 data.save_filename_map()
 
+                stem = Path(normalized_path).stem
                 try:
                     await data.rag.process_document_complete(
                         file_path=normalized_path,
@@ -430,6 +533,7 @@ class RAGService:
                 finally:
                     if os.path.exists(normalized_path):
                         os.remove(normalized_path)
+                    _cleanup_mineru_output_dirs_for_stem(stem)
 
                 if cleanup_pdf and os.path.exists(cleanup_pdf):
                     os.remove(cleanup_pdf)
@@ -441,7 +545,7 @@ class RAGService:
                     "Ingest finished file=%s (normalized temp removed).",
                     safe_name,
                 )
-                return {"status": "success", "message": "Документ обработан"}
+                return {"status": "success", "message": "Документ обработан", "deduplicated": False}
             except Exception as e:
                 logger.exception("Error while processing document: %s", safe_name)
                 return {"status": "error", "message": str(e)}
@@ -571,33 +675,30 @@ class RAGService:
 
         # Надёжный fallback: напрямую правим JSON-файл
         status_path = Path(data.working_dir) / "kv_store_doc_status.json"
-        if not status_path.exists():
-            return
-        try:
-            raw = json.loads(status_path.read_text(encoding="utf-8"))
-            if not isinstance(raw, dict):
-                return
-            changed = False
-            if doc_id in raw:
-                del raw[doc_id]
-                changed = True
-            # Dup-* записи — артефакты повторных загрузок, тоже блокируют re-insert
-            for key in list(raw.keys()):
-                if key.startswith("dup-"):
-                    del raw[key]
+        if status_path.exists():
+            try:
+                raw = json.loads(status_path.read_text(encoding="utf-8"))
+                if not isinstance(raw, dict):
+                    raw = {}
+                changed = False
+                if doc_id in raw:
+                    del raw[doc_id]
                     changed = True
-            if changed:
-                status_path.write_text(
-                    json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-                logger.info("Patched kv_store_doc_status.json: removed %r + dup-* entries", doc_id)
-        except Exception as e:
-            logger.warning("Could not patch kv_store_doc_status.json: %s", e)
+                for key in list(raw.keys()):
+                    if key.startswith("dup-"):
+                        del raw[key]
+                        changed = True
+                if changed:
+                    status_path.write_text(
+                        json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+                    logger.info("Patched kv_store_doc_status.json: removed %r + dup-* entries", doc_id)
+            except Exception as e:
+                logger.warning("Could not patch kv_store_doc_status.json: %s", e)
+        _remove_doc_from_kv_full_docs(data.working_dir, doc_id)
 
-    async def delete_indexed_document(
-        self, doc_id: str, conversation_id: str | None = None
-    ) -> dict:
-        data = await self._get_conv_data(conversation_id)
+    async def _delete_doc_in_workspace(self, data: _ConvData, doc_id: str) -> dict:
+        """Удаляет документ из индекса рабочей директории data (без сброса indexed_hashes)."""
         if not doc_id or not str(doc_id).strip():
             return {"ok": False, "error": "empty id"}
         if data.rag is None or getattr(data.rag, "lightrag", None) is None:
@@ -612,14 +713,24 @@ class RAGService:
                     await maybe
             else:
                 return {"ok": False, "error": "delete_by_doc_id not supported in this LightRAG version"}
+        except Exception as e:
+            logger.debug("delete_by_doc_id %s (may be absent): %s", doc_id, e)
+        await self._clear_from_doc_status(data, doc_id)
+        return {"ok": True}
 
-            # Чистим doc_status — ключевой шаг, без него тот же файл не пройдёт re-insert
-            await self._clear_from_doc_status(data, doc_id)
-
-            # Сбрасываем sha1-кэш сессии — разрешаем повторную загрузку того же контента
-            data.indexed_hashes.clear()
-
-            return {"ok": True}
+    async def delete_indexed_document(
+        self, doc_id: str, conversation_id: str | None = None
+    ) -> dict:
+        data = await self._get_conv_data(conversation_id)
+        if not doc_id or not str(doc_id).strip():
+            return {"ok": False, "error": "empty id"}
+        if data.rag is None or getattr(data.rag, "lightrag", None) is None:
+            return {"ok": False, "error": "RAG not initialized"}
+        try:
+            res = await self._delete_doc_in_workspace(data, doc_id)
+            if res.get("ok"):
+                data.indexed_hashes.clear()
+            return res
         except Exception as e:
             return {"ok": False, "error": str(e)}
 

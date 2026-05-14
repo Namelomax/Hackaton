@@ -28,6 +28,8 @@ class DocumentResponse(BaseModel):
     message: str
     filename: str
     status: str
+    # true = тот же файл уже был в индексе, MinerU/LightRAG повторно не гоняли
+    deduplicated: bool = False
 
 
 class IndexedDocumentItem(BaseModel):
@@ -165,10 +167,16 @@ async def upload_document(
                 result.get("status"),
                 result.get("message"),
             )
+            dedup = bool(result.get("deduplicated"))
             return DocumentResponse(
-                message=f"Документ {file.filename} проиндексирован",
+                message=(
+                    f"Документ {file.filename} уже был в индексе (то же содержимое)"
+                    if dedup
+                    else f"Документ {file.filename} проиндексирован"
+                ),
                 filename=file.filename,
                 status="indexed",
+                deduplicated=dedup,
             )
         finally:
             if os.path.exists(file_path):
