@@ -112,34 +112,28 @@ export default function ChatPage() {
     let newMessages;
     
     if (message.role === 'user') {
-      // If user message, keep it and remove everything after
       newMessages = messages.slice(0, index + 1);
     } else {
-      // If assistant message, remove it and everything after
       newMessages = messages.slice(0, index);
     }
     
     setMessages(newMessages);
-    // Force reload with the truncated history
-    regenerate({ body: { messages: newMessages } });
+    regenerate({ body: { ...chatBody, messages: newMessages } });
   };
 
   const handleEdit = (messageId: string, newContent: string) => {
     const index = messages.findIndex(m => m.id === messageId);
     if (index === -1) return;
     
-    // Create updated message with new content
     const updatedMessage = {
       ...messages[index],
       parts: [{ type: 'text' as const, text: newContent }],
     };
     
-    // Keep messages before this one, add the edited message, remove everything after
     const newMessages = [...messages.slice(0, index), updatedMessage];
     
     setMessages(newMessages as any);
-    // Trigger regeneration with the edited message
-    regenerate({ body: { messages: newMessages } });
+    regenerate({ body: { ...chatBody, messages: newMessages } });
   };
 
   // Custom fetch to inject userId and conversationId into every chat request body

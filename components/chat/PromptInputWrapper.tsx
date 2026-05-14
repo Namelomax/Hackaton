@@ -284,7 +284,7 @@ const SubmitButton = ({
   onStop?: () => void;
 }) => {
   const attachments = usePromptInputAttachments();
-  const canSend = status === 'ready' && (input.trim().length > 0 || attachments.files.length > 0);
+  const canSend = (status === 'ready' || status === 'error') && (input.trim().length > 0 || attachments.files.length > 0);
   const isStoppable = isLocked || status === 'submitted' || status === 'streaming';
 
   return (
@@ -431,9 +431,8 @@ export const PromptInputWrapper = ({
   ) => {
     event.preventDefault();
 
-    // Проверяем статус - разрешаем отправку только в 'ready'
-    // После ошибки useChat должен вернуть статус в 'ready'
-    if (status !== 'ready') return;
+    // Разрешаем отправку в 'ready' и 'error' — после ошибки SDK сам сбросит состояние при новом sendMessage
+    if (status !== 'ready' && status !== 'error') return;
     
     if (!authUser?.id) {
       setAuthWarningOpen(true);
