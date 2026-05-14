@@ -7,7 +7,7 @@ import crypto from 'crypto';
 import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation } from '@/lib/getPromt';
 import { parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
 import { fetchRagSnippet } from '@/lib/rag-client';
-import { hydratedChatTranscriptForRag } from '@/lib/rag-search-query';
+import { hydratedChatTranscriptForRag, stripTextForRagQuery } from '@/lib/rag-search-query';
 import { runMainAgent } from './agents/main-agent';
 import {
   generateRagSearchQueryLine,
@@ -736,7 +736,9 @@ export async function POST(req: Request) {
   for (let i = messagesWithHidden.length - 1; i >= 0 && i >= messagesWithHidden.length - 8; i--) {
     const m = messagesWithHidden[i];
     if (m?.role !== 'user') continue;
-    const t = typeof m?.content === 'string' ? m.content.trim() : '';
+    const t = stripTextForRagQuery(
+      typeof m?.content === 'string' ? m.content.trim() : '',
+    );
     if (t) {
       ragAutoQuery = ragAutoQuery ? `${t}\n\n${ragAutoQuery}` : t;
     }
@@ -744,6 +746,9 @@ export async function POST(req: Request) {
   ragAutoQuery = ragAutoQuery.replace(/\s+/g, ' ').trim().slice(0, 6000);
 
   const ragTranscript = hydratedChatTranscriptForRag(messagesWithHidden, 12000);
+
+  /** Не подставлять в системный промпт «пустой» RAG — модель начинает вести себя как без фактов из индекса. */
+  const minRagContextChars = 80;
 
   let ragAutoContext: string | undefined;
   if (ragRetrievalEnabled && ragTranscript.trim().length > 0) {
@@ -759,17 +764,23 @@ export async function POST(req: Request) {
       } catch (genErr) {
         console.warn('📚 RAG query-line generation failed, using fallback text:', genErr);
       }
-      const snippetQuery =
+      const snippetQuery = stripTextForRagQuery(
         queryLine.trim() ||
-        ragAutoQuery.trim() ||
-        ragTranscript.replace(/\s+/g, ' ').trim().slice(0, 6000);
+          ragAutoQuery.trim() ||
+          ragTranscript.replace(/\s+/g, ' ').trim().slice(0, 6000),
+      );
       if (snippetQuery) {
-        ragAutoContext = await fetchRagSnippet(snippetQuery, ragModeStr);
+        const rawSnippet = await fetchRagSnippet(snippetQuery, ragModeStr);
+        const trimmedSnippet = rawSnippet?.trim() ?? '';
+        if (trimmedSnippet.length >= minRagContextChars) {
+          ragAutoContext = trimmedSnippet;
+        }
         console.log('📚 RAG auto-retrieval:', {
           usedGeneratedLine: Boolean(queryLine.trim()),
           queryLen: snippetQuery.length,
           preview: snippetQuery.slice(0, 120),
-          excerptLen: (ragAutoContext || '').length,
+          excerptLen: trimmedSnippet.length,
+          injected: Boolean(ragAutoContext),
         });
       }
     } catch (e) {
