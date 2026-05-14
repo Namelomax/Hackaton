@@ -22,21 +22,40 @@ const PROTOCOL_TOOL_SYSTEM_APPENDIX = `
 `;
 
 function hasAttachedFiles(messages: any[]): boolean {
-  return messages.some((msg) => {
+  const HIDDEN = /<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi;
+  for (const msg of messages || []) {
+    if (Array.isArray(msg?.parts) && msg.parts.some((p: any) => p?.type === "file")) {
+      return true;
+    }
     if (typeof msg?.content === "string") {
       const c = msg.content;
-      return (
+      if (
         c.includes("AI-HIDDEN") ||
         c.includes("Вложенный файл") ||
         c.includes("[RAG]") ||
         c.includes("[Вложение «")
-      );
+      ) {
+        return true;
+      }
+      const visible = c.replace(HIDDEN, "").trim();
+      if (msg?.role === "user" && visible.length >= 400) {
+        return true;
+      }
     }
     if (Array.isArray(msg?.parts)) {
-      return msg.parts.some((p: any) => p?.type === "file");
+      const textParts = msg.parts
+        .filter((p: any) => p?.type === "text" && typeof p.text === "string")
+        .map((p: any) => p.text)
+        .join("\n");
+      const vis = String(textParts || "")
+        .replace(HIDDEN, "")
+        .trim();
+      if (msg?.role === "user" && vis.length >= 400) {
+        return true;
+      }
     }
-    return false;
-  });
+  }
+  return false;
 }
 
 function adaptSystemPrompt(
@@ -195,7 +214,7 @@ export async function runChatAgent(
 
     const adaptedSystemPrompt = adaptSystemPrompt(
       systemPrompt,
-      hasAttachedFiles(messages),
+      hasAttachedFiles(messages) || hasAttachedFiles(context.uiMessages ?? []),
       messages.length,
     );
 
@@ -244,7 +263,8 @@ export async function runChatAgent(
 
   messagesWithUserPrompt.push(...(messages as ModelMessage[]));
 
-  const hasFiles = hasAttachedFiles(messages);
+  const hasFiles =
+    hasAttachedFiles(messages) || hasAttachedFiles(context.uiMessages ?? []);
   const adaptedSystemPrompt =
     adaptSystemPrompt(systemPrompt, hasFiles, messages.length) +
     PROTOCOL_TOOL_SYSTEM_APPENDIX;

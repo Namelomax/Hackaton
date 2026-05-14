@@ -16,6 +16,83 @@ BASE_URL = os.getenv("LOCAL_OPENAI_BASE_URL", "http://127.0.0.1:1234/v1")
 API_KEY = os.getenv("LOCAL_OPENAI_API_KEY", "lm-studio")
 EMBEDDING_MODEL = os.getenv("LOCAL_OPENAI_EMBEDDING_MODEL", "text-embedding-nomic")
 
+_STOPWORDS = {
+    "the", "and", "for", "with", "from", "that", "this", "is", "are", "was", "were",
+    "be", "to", "of", "in", "on", "at", "as", "it", "by", "or", "not", "but", "we",
+    "you", "i", "they", "them",
+}
+
+
+def _extract_meaningful_words(text: str, max_words: int = 40) -> list[str]:
+    text_lower = (text or "").lower()
+    words = re.findall(r"[A-Za-zА-Яа-я0-9]{3,}", text_lower)
+    unique: list[str] = []
+    for word in words:
+        if word in _STOPWORDS or word in unique:
+            continue
+        unique.append(word)
+        if len(unique) >= max_words:
+            break
+    return unique
+
+
+def _extract_user_query_from_keyword_prompt(prompt_text: str) -> str:
+    m = re.search(r"User Query:\s*(.+?)(?=\n---Output---|\Z)", prompt_text, re.S | re.I)
+    if m:
+        return m.group(1).strip()
+    return (prompt_text or "").strip()
+
+
+def _keywords_json_for_lightrag(prompt_text: str) -> str:
+    """
+    LightRAG extract_keywords_only ожидает от llm_model_func валидный JSON с ключами
+    high_level_keywords / low_level_keywords (списки строк). Иначе — пустые keywords и пустой retrieval.
+    """
+    query_text = _extract_user_query_from_keyword_prompt(prompt_text)
+    trivial = {
+        "hello", "hi", "ok", "yes", "no", "thanks", "привет", "здравствуйте",
+        "давай", "спасибо", "ок", "хорошо",
+    }
+    qn = query_text.lower().strip()
+    if len(query_text) < 2 or qn in trivial:
+        return json.dumps(
+            {"high_level_keywords": [], "low_level_keywords": []},
+            ensure_ascii=False,
+        )
+
+    parts = _extract_meaningful_words(query_text, max_words=35)
+    if not parts:
+        return json.dumps(
+            {"high_level_keywords": [], "low_level_keywords": []},
+            ensure_ascii=False,
+        )
+
+    if len(parts) == 1:
+        high, low = [parts[0]], [parts[0]]
+    elif len(parts) == 2:
+        high, low = [parts[0]], [parts[1]]
+    else:
+        split = max(1, min(8, len(parts) // 3))
+        high = parts[:split]
+        low = parts[split:]
+
+    return json.dumps(
+        {
+            "high_level_keywords": high[:12],
+            "low_level_keywords": low[:25],
+        },
+        ensure_ascii=False,
+    )
+
+
+def _safe_log_preview(text: str | None, limit: int = 400) -> str:
+    if not text:
+        return ""
+    s = re.sub(r"\s+", " ", str(text)).strip()
+    if len(s) <= limit:
+        return s
+    return s[: limit - 1] + "…"
+
 class RAGService:
     def __init__(self):
         self.rag = None
@@ -33,58 +110,16 @@ class RAGService:
             parse_method="auto",
         )
 
-        stopwords = {
-            "the",
-            "and",
-            "for",
-            "with",
-            "from",
-            "that",
-            "this",
-            "is",
-            "are",
-            "was",
-            "were",
-            "be",
-            "to",
-            "of",
-            "in",
-            "on",
-            "at",
-            "as",
-            "it",
-            "by",
-            "or",
-            "not",
-            "but",
-            "we",
-            "you",
-            "i",
-            "they",
-            "them",
-        }
-
         def extract_keywords(text: str) -> str:
-            text_lower = text.lower()
-            words = re.findall(r"[A-Za-zА-Яа-я0-9]{3,}", text_lower)
-
-            unique: list[str] = []
-            for word in words:
-                if word in stopwords:
-                    continue
-                if word in unique:
-                    continue
-                unique.append(word)
-                if len(unique) >= 25:
-                    break
-
-            if len(unique) == 0:
+            words = _extract_meaningful_words(text, max_words=25)
+            if not words:
                 return "keywords"
-
-            return ", ".join(unique)
+            return ", ".join(words)
 
         async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
             prompt_text = prompt if isinstance(prompt, str) else str(prompt)
+            if kwargs.get("keyword_extraction"):
+                return _keywords_json_for_lightrag(prompt_text)
             return extract_keywords(prompt_text)
 
         embedding_func = EmbeddingFunc(
@@ -155,7 +190,8 @@ class RAGService:
     async def process_document(self, file_path: str) -> dict:
         """Обработка документа — как у вас в main"""
         try:
-            print(f"Processing document: {file_path}")
+            safe_name = os.path.basename(file_path) or file_path
+            logger.info("Processing document: %s", safe_name)
             extension = Path(file_path).suffix.lower()
             source_for_processing = file_path
             cleanup_pdf: str | None = None
@@ -163,7 +199,7 @@ class RAGService:
             if extension in {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp", ".rtf"}:
                 source_for_processing = self._convert_office_to_pdf(file_path)
                 cleanup_pdf = source_for_processing
-                print(f"Converted to PDF: {source_for_processing}")
+                logger.info("Converted to PDF: %s", os.path.basename(source_for_processing))
 
             # MinerU on Windows can fail with long/non-ASCII temp names.
             # Normalize to a short ASCII filename before parsing.
@@ -185,16 +221,14 @@ class RAGService:
             if cleanup_pdf and os.path.exists(cleanup_pdf):
                 os.remove(cleanup_pdf)
 
-            print("Document processed")
             logger.info(
-                "Ingest finished for source path=%s (normalized copy already removed). "
-                "If LightRAG logged «duplicate document», повторная вставка чанков не выполнялась — "
-                "запросы к /query всё равно используют уже существующий граф.",
-                file_path,
+                "Ingest finished file=%s (normalized temp removed). "
+                "Duplicate doc in LightRAG = chunks already in graph.",
+                safe_name,
             )
             return {"status": "success", "message": "Документ обработан"}
         except Exception as e:
-            print(f"Error while processing document: {e}")
+            logger.exception("Error while processing document: %s", os.path.basename(file_path))
             return {"status": "error", "message": str(e)}
 
     async def query(self, question: str, mode: str = "hybrid") -> str:
@@ -202,32 +236,61 @@ class RAGService:
         if self.rag is None:
             return ""
         if getattr(self.rag, "lightrag", None) is None:
-            print("WARNING: LightRAG missing; skipping RAG query")
+            logger.warning("LightRAG missing; skipping RAG query")
             return ""
 
-        # We only need retrieved context (Next.js will do final LLM generation).
         qprev = (question or "").replace("\n", " ").strip()
         if len(qprev) > 160:
             qprev = qprev[:160] + "…"
-        logger.info("RAG /query mode=%s len=%s preview=%r", mode, len(question or ""), qprev)
-        result = await self.rag.aquery(
-            question,
-            mode=mode,
-            enable_rerank=False,
-            top_k=20,
-            only_need_context=True,
-        )
-        print(f"Query raw result type: {type(result)}")
-        if result is None:
-            return ""
-        if isinstance(result, str):
-            return result
-        if isinstance(result, dict):
-            if "answer" in result and isinstance(result["answer"], str):
-                return result["answer"]
-            # Fallback: represent dict in a stable way
+        logger.info("RAG /query request mode=%s len=%s preview=%r", mode, len(question or ""), qprev)
+
+        def _normalize_result(result) -> str:
+            if result is None:
+                return ""
+            if isinstance(result, str):
+                return result
+            if isinstance(result, dict):
+                ans = result.get("answer")
+                if isinstance(ans, str):
+                    return ans
+                return str(result)
             return str(result)
-        return str(result)
+
+        async def _run_once(m: str):
+            return await self.rag.aquery(
+                question,
+                mode=m,
+                enable_rerank=False,
+                top_k=20,
+                only_need_context=True,
+            )
+
+        used_mode = mode
+        try:
+            result = await _run_once(mode)
+        except Exception as e:
+            logger.warning("RAG /query primary mode=%s error: %s", mode, e)
+            result = None
+
+        text = _normalize_result(result).strip()
+        if len(text) < 80 and mode == "hybrid":
+            for fb in ("local", "global"):
+                try:
+                    r2 = await _run_once(fb)
+                    t2 = _normalize_result(r2).strip()
+                    if len(t2) > len(text):
+                        text = t2
+                        used_mode = fb
+                except Exception as e:
+                    logger.debug("RAG /query fallback mode=%s: %s", fb, e)
+
+        logger.info(
+            "RAG /query response mode_used=%s context_len=%s preview=%r",
+            used_mode,
+            len(text),
+            _safe_log_preview(text, 450),
+        )
+        return text
 
     def list_indexed_documents(self) -> list[dict]:
         """Список документов в индексе LightRAG (по kv_store)."""
