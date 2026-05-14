@@ -174,11 +174,20 @@ class RAGService:
             prompt_text = prompt if isinstance(prompt, str) else str(prompt)
             if kwargs.get("keyword_extraction"):
                 return _keywords_json_for_lightrag(prompt_text)
+            # Принудительно русский язык для entity/relation extraction — иначе Qwen3
+            # думает по-английски и граф знаний заполняется английскими сущностями,
+            # что делает русские запросы к RAG нерелевантными.
+            russian_suffix = (
+                "\n\nОТВЕЧАЙ ТОЛЬКО НА РУССКОМ ЯЗЫКЕ. "
+                "Все названия сущностей (entity), описания и отношения — строго на русском. "
+                "Никаких английских названий сущностей."
+            )
+            effective_system = (system_prompt or "") + russian_suffix
             try:
                 return await openai_complete_if_cache(
                     LLM_MODEL,
                     prompt_text,
-                    system_prompt=system_prompt,
+                    system_prompt=effective_system,
                     history_messages=history_messages or [],
                     api_key=LLM_API_KEY,
                     base_url=LLM_BASE_URL,
