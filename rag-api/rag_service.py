@@ -16,6 +16,23 @@ BASE_URL = os.getenv("LOCAL_OPENAI_BASE_URL", "http://127.0.0.1:1234/v1")
 API_KEY = os.getenv("LOCAL_OPENAI_API_KEY", "lm-studio")
 EMBEDDING_MODEL = os.getenv("LOCAL_OPENAI_EMBEDDING_MODEL", "text-embedding-nomic")
 
+
+def log_openai_compat_embedding_settings() -> None:
+    """Один раз при старте: фактический URL для /embeddings (частая ошибка — 127.0.0.1 внутри Docker)."""
+    logger.info(
+        "OpenAI-compatible API for embeddings: base_url=%s model=%s",
+        BASE_URL,
+        EMBEDDING_MODEL,
+    )
+    low = (BASE_URL or "").lower()
+    if "127.0.0.1" in low or "localhost" in low:
+        logger.warning(
+            "Embeddings URL указывает на localhost/127.0.0.1. Внутри контейнера rag-api это НЕ хост "
+            "и НЕ контейнер ollama — запросы к /embeddings дадут APIConnectionError. "
+            "Задайте LOCAL_OPENAI_BASE_URL=http://ollama:11434/v1 (имя сервиса из docker-compose) "
+            "или отдельную переменную для rag-api."
+        )
+
 _STOPWORDS = {
     "the", "and", "for", "with", "from", "that", "this", "is", "are", "was", "were",
     "be", "to", "of", "in", "on", "at", "as", "it", "by", "or", "not", "but", "we",
@@ -161,6 +178,7 @@ class RAGService:
             print(f"WARNING: LightRAG bootstrap failed: {bootstrap.get('error')}")
         else:
             print("LightRAG storages ready")
+            log_openai_compat_embedding_settings()
 
     def _convert_office_to_pdf(self, file_path: str) -> str:
         source_path = Path(file_path).resolve()

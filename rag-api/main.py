@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import aiofiles
 
-from rag_service import RAGService
+from rag_service import RAGService, BASE_URL, EMBEDDING_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -218,8 +218,14 @@ async def query_rag(request: QueryRequest):
 
 @app.get("/health")
 async def health_check():
-    """Проверка работоспособности"""
-    return {"status": "healthy"}
+    """Проверка работоспособности и подсказка по URL эмбеддингов (без секретов)."""
+    low = (BASE_URL or "").lower()
+    return {
+        "status": "healthy",
+        "embedding_openai_base_url": BASE_URL,
+        "embedding_model": EMBEDDING_MODEL,
+        "embedding_url_looks_localhost": "127.0.0.1" in low or "localhost" in low,
+    }
 
 if __name__ == "__main__":
     import uvicorn

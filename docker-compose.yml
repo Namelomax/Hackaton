@@ -55,7 +55,10 @@ services:
     depends_on:
       - ollama
     environment:
-      LOCAL_OPENAI_BASE_URL: ${OLLAMA_OPENAI_BASE_URL:-http://ollama:11434/v1}
+      # Только URL, доступный ИЗ контейнера rag-api. По умолчанию сервис ollama в той же сети.
+      # Переопределение: RAG_LOCAL_OPENAI_BASE_URL=http://ollama:11434/v1
+      # Не используйте 127.0.0.1 — внутри контейнера это не хост с Ollama.
+      LOCAL_OPENAI_BASE_URL: ${RAG_LOCAL_OPENAI_BASE_URL:-http://ollama:11434/v1}
       LOCAL_OPENAI_API_KEY: ${OLLAMA_API_KEY:-ollama}
       LOCAL_OPENAI_EMBEDDING_MODEL: ${LOCAL_OPENAI_EMBEDDING_MODEL:-nomic-embed-text}
       RAG_CORS_ORIGINS: ${RAG_CORS_ORIGINS:-http://localhost:3000}
