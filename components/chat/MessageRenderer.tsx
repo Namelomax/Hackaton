@@ -251,7 +251,7 @@ export const MessageRenderer = ({
           </div>
         )}
 
-        {toolParts.length > 0 && <ToolsDisplay tools={toolParts} isStreaming={isToolsStreaming} />}
+        {/* ToolsDisplay скрыт: tool-вызовы не показываем пользователю */}
 
         {/* Edit mode for user messages */}
         {isEditing && message.role === 'user' && (

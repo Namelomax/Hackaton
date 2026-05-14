@@ -174,20 +174,11 @@ class RAGService:
             prompt_text = prompt if isinstance(prompt, str) else str(prompt)
             if kwargs.get("keyword_extraction"):
                 return _keywords_json_for_lightrag(prompt_text)
-            # Принудительно русский язык для entity/relation extraction — иначе Qwen3
-            # думает по-английски и граф знаний заполняется английскими сущностями,
-            # что делает русские запросы к RAG нерелевантными.
-            russian_suffix = (
-                "\n\nОТВЕЧАЙ ТОЛЬКО НА РУССКОМ ЯЗЫКЕ. "
-                "Все названия сущностей (entity), описания и отношения — строго на русском. "
-                "Никаких английских названий сущностей."
-            )
-            effective_system = (system_prompt or "") + russian_suffix
             try:
                 return await openai_complete_if_cache(
                     LLM_MODEL,
                     prompt_text,
-                    system_prompt=effective_system,
+                    system_prompt=system_prompt,
                     history_messages=history_messages or [],
                     api_key=LLM_API_KEY,
                     base_url=LLM_BASE_URL,
@@ -215,9 +206,19 @@ class RAGService:
             embedding_func=embedding_func,
             lightrag_kwargs={
                 "llm_model_kwargs": {"timeout": 6000},
-                "llm_model_max_async": 1,
-                "chunk_token_size": 2000,
-                "chunk_overlap_token_size": 150,
+                "llm_model_max_async": 3,
+                # Мелкие чанки (~300 слов) дают 15–25 кусков из типичной расшифровки.
+                # С chunk_token_size=2000 документ нарезался в 2 куска и семантический
+                # поиск возвращал 0 vector chunks — вся расшифровка размазывалась по одному
+                # огромному вектору и косинусное сходство с конкретным запросом не
+                # превышало порог 0.2. После смены на 400 поиск станет точечным.
+                "chunk_token_size": 200,
+                "chunk_overlap_token_size": 80,
+                # Снижаем порог косинусного сходства (default 0.2) чтобы находить чанки
+                # даже при частичном совпадении — особенно важно при небольшом индексе.
+                "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.1},
+                # Официальный способ задать язык entity/relation extraction в LightRAG.
+                "addon_params": {"language": "Russian"},
             },
         )
 
@@ -373,6 +374,7 @@ class RAGService:
                 mode=m,
                 enable_rerank=False,
                 top_k=20,
+                chunk_top_k=15,
                 only_need_context=True,
             )
 
