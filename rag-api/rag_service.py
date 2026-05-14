@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 from lightrag.llm.openai import openai_embed, openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc
 from raganything import RAGAnything, RAGAnythingConfig
+from raganything.utils import insert_text_content, separate_content
 
 BASE_URL = os.getenv("LOCAL_OPENAI_BASE_URL", "http://127.0.0.1:1234/v1")
 API_KEY = os.getenv("LOCAL_OPENAI_API_KEY", "lm-studio")
@@ -282,7 +283,17 @@ class _ConvData:
                         if not self.is_visible_doc(doc_id, st):
                             continue
                         display = self.resolve_display_name(doc_id, raw_name)
-                        by_id[doc_id] = {"id": doc_id, "filename": display, "status": st}
+                        n_chunks = None
+                        if isinstance(payload, dict):
+                            raw_n = payload.get("chunks_count")
+                            if isinstance(raw_n, int) and raw_n >= 0:
+                                n_chunks = raw_n
+                        by_id[doc_id] = {
+                            "id": doc_id,
+                            "filename": display,
+                            "status": st,
+                            "chunks_count": n_chunks,
+                        }
             except Exception:
                 pass
 
@@ -297,7 +308,12 @@ class _ConvData:
                         if not self.is_visible_doc(doc_id, ""):
                             continue
                         display = self.resolve_display_name(doc_id, doc_id)
-                        by_id[doc_id] = {"id": doc_id, "filename": display, "status": ""}
+                        by_id[doc_id] = {
+                            "id": doc_id,
+                            "filename": display,
+                            "status": "",
+                            "chunks_count": None,
+                        }
             except Exception:
                 pass
         return sorted(by_id.values(), key=lambda x: x["id"])
@@ -503,9 +519,8 @@ class RAGService:
                             (init_result or {}).get("error", "LightRAG init failed")
                         )
 
-                    # RAGAnything doc_id = hash от распарсенного content_list (см. ProcessorMixin),
-                    # а не MD5 байтов PDF — иначе adelete не попадает в запись и insert даёт duplicate + 2 чанка.
-                    _, doc_id = await data.rag.parse_document(
+                    # doc_id = hash от content_list (как в RAGAnything.parse_document).
+                    content_list, doc_id = await data.rag.parse_document(
                         normalized_path,
                         output_dir="./output",
                         display_stats=False,
@@ -537,11 +552,28 @@ class RAGService:
                     if content_hash:
                         data.indexed_hashes.discard(content_hash)
 
-                    await data.rag.process_document_complete(
-                        file_path=normalized_path,
-                        output_dir="./output",
-                        backend="pipeline",
-                    )
+                    # Не использовать process_document_complete: там _upsert_doc_status(HANDLING)
+                    # до ainsert; в LightRAG apipeline_enqueue_documents doc_id уже в doc_status
+                    # считается дубликатом (filter_keys), текст не попадает в очередь.
+                    file_ref = data.rag._get_file_reference(normalized_path)
+                    text_content, multimodal_items = separate_content(content_list)
+                    if multimodal_items:
+                        data.rag.set_content_source_for_context(
+                            content_list, data.rag.config.content_format
+                        )
+                    if text_content.strip():
+                        await insert_text_content(
+                            data.rag.lightrag,
+                            input=text_content,
+                            file_paths=file_ref,
+                            ids=doc_id,
+                        )
+                    if multimodal_items:
+                        await data.rag._process_multimodal_content(
+                            multimodal_items, file_ref, doc_id
+                        )
+                    else:
+                        await data.rag._mark_multimodal_processing_complete(doc_id)
                 finally:
                     if os.path.exists(normalized_path):
                         os.remove(normalized_path)

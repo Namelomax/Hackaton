@@ -36,6 +36,11 @@ class IndexedDocumentItem(BaseModel):
     id: str
     filename: str
     status: str = ""
+    # из kv_store_doc_status: сколько чанков у документа после индексации (текст + multimodal)
+    chunks_count: Optional[int] = Field(
+        default=None,
+        description="Число чанков в индексе для этого doc_id (если есть в doc_status)",
+    )
 
 
 class DeleteDocumentResponse(BaseModel):
