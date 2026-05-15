@@ -369,6 +369,7 @@ class RAGService:
                     api_key=LLM_API_KEY,
                     base_url=LLM_BASE_URL,
                     timeout=LLM_TIMEOUT,
+                    extra_body={"think": False},
                 )
             except Exception as e:
                 logger.warning("LLM call failed (%s); returning empty completion", e)
