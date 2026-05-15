@@ -392,7 +392,7 @@ class RAGService:
             lightrag_kwargs={
                 "llm_model_kwargs": {"timeout": 6000},
                 "llm_model_max_async": 1,
-                "chunk_token_size": 200,
+                "chunk_token_size": 400,
                 "chunk_overlap_token_size": 80,
                 "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.1},
                 "addon_params": {"language": "Russian"},
