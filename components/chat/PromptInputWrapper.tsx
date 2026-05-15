@@ -40,6 +40,9 @@ const RagIndexControl = ({
   onRagIndexed,
   onNotify,
   conversationId,
+  setConversationId,
+  setConversationsList,
+  prepareSend,
 }: {
   authUser: { id: string; username: string } | null;
   status: string;
@@ -47,6 +50,9 @@ const RagIndexControl = ({
   onRagIndexed?: () => void;
   onNotify: (message: string | null) => void;
   conversationId?: string | null;
+  setConversationId: Dispatch<SetStateAction<string | null>>;
+  setConversationsList: Dispatch<SetStateAction<any[]>>;
+  prepareSend?: () => Promise<string | null | undefined> | string | null | undefined;
 }) => {
   const attachments = usePromptInputAttachments();
   const [busy, setBusy] = useState(false);
@@ -73,6 +79,22 @@ const RagIndexControl = ({
     onNotify(null);
     let anyIndexed = false;
     try {
+      const base = prepareSend ? (await prepareSend()) ?? null : conversationId ?? null;
+      if (base === null) {
+        onNotify('Сейчас нельзя привязать RAG к чату (например, ответ в другом диалоге). Повторите позже.');
+        return;
+      }
+      const ragConversationId = await ensureConversationCreated(
+        authUser,
+        base,
+        setConversationsList,
+        setConversationId,
+      );
+      if (!ragConversationId || String(ragConversationId).startsWith('local-')) {
+        onNotify('Не удалось создать или сохранить чат для индекса RAG. Отправьте любое сообщение в чат и повторите.');
+        return;
+      }
+
       for (const f of files) {
         const url = String((f as any).url || '');
         const name = String((f as any).filename || 'upload.bin');
@@ -86,9 +108,7 @@ const RagIndexControl = ({
         const fileObj = await blobUrlToFile(url, name, mt);
         const fd = new FormData();
         fd.append('file', fileObj);
-        const uploadUrl = conversationId
-          ? `/api/rag/upload?conversation_id=${encodeURIComponent(conversationId)}`
-          : '/api/rag/upload';
+        const uploadUrl = `/api/rag/upload?conversation_id=${encodeURIComponent(ragConversationId)}`;
         const res = await fetch(uploadUrl, { method: 'POST', body: fd });
         const j = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -483,6 +503,25 @@ export const PromptInputWrapper = ({
       const hasPayload = Boolean(trimmedText) || preparedFiles.length > 0;
       if (!hasPayload) return;
 
+      // Сначала фиксируем id диалога (в т.ч. local- → серверный), чтобы индекс RAG совпадал с /query.
+      const baseConversationId = prepareSend ? (await prepareSend()) ?? null : conversationId;
+      if (baseConversationId === null) return;
+
+      const ensuredConversationId = await ensureConversationCreated(
+        authUser,
+        baseConversationId,
+        setConversationsList,
+        setConversationId,
+        abort.signal
+      );
+
+      if (cancelRequestedRef.current || abort.signal.aborted) return;
+
+      const ragUploadConversationId =
+        ensuredConversationId && !String(ensuredConversationId).startsWith('local-')
+          ? ensuredConversationId
+          : null;
+
       // Авто-роутинг: файлы крупнее AUTO_RAG_THRESHOLD_BYTES уходят в RAG-индекс,
       // остальные — как прямые вложения к сообщению.
       const filesToSend: FileUIPart[] = [];
@@ -498,14 +537,19 @@ export const PromptInputWrapper = ({
           const blobRes = await fetch(url);
           const blob = await blobRes.blob();
           if (blob.size > AUTO_RAG_THRESHOLD_BYTES) {
+            if (!ragUploadConversationId) {
+              setRagNotice(
+                'Большой файл не отправлен в RAG: нет сохранённого id чата. Отправьте сообщение в этом диалоге, затем снова прикрепите файл или используйте кнопку индексации RAG.',
+              );
+              filesToSend.push(f);
+              continue;
+            }
             const name = String((f as any).filename || 'upload.bin');
             const mt = (f as any).mediaType as string | undefined;
             const fileObj = new File([blob], name, { type: mt || blob.type });
             const fd = new FormData();
             fd.append('file', fileObj);
-            const autoUploadUrl = conversationId
-              ? `/api/rag/upload?conversation_id=${encodeURIComponent(conversationId)}`
-              : '/api/rag/upload';
+            const autoUploadUrl = `/api/rag/upload?conversation_id=${encodeURIComponent(ragUploadConversationId)}`;
             const uploadRes = await fetch(autoUploadUrl, { method: 'POST', body: fd });
             if (uploadRes.ok) {
               autoRaggedUrlsRef.current.add(url);
@@ -534,9 +578,6 @@ export const PromptInputWrapper = ({
       // Avoid blocking UI on client-side extraction; server performs extraction/injection.
       void finalFiles.map((f) => (f?.mediaType ? isTextExtractable(f.mediaType) : false));
 
-      const baseConversationId = prepareSend ? (await prepareSend()) ?? null : conversationId;
-      if (baseConversationId === null) return;
-
       const clientMessageId =
         (typeof crypto !== 'undefined' && (crypto as any).randomUUID)
           ? (crypto as any).randomUUID()
@@ -561,14 +602,6 @@ export const PromptInputWrapper = ({
           metadata: {},
         });
       }
-
-      const ensuredConversationId = await ensureConversationCreated(
-        authUser,
-        baseConversationId,
-        setConversationsList,
-        setConversationId,
-        abort.signal
-      );
 
       if (cancelRequestedRef.current || abort.signal.aborted) return;
 
@@ -646,6 +679,9 @@ return (
             }}
             onNotify={setRagNotice}
             conversationId={conversationId}
+            setConversationId={setConversationId}
+            setConversationsList={setConversationsList}
+            prepareSend={prepareSend}
           />
 
           <SubmitButton status={status} input={input} isLocked={isSubmitting} onStop={handleStop} />
