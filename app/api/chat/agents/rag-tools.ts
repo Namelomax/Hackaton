@@ -4,7 +4,7 @@ import { z } from "zod";
 import { fetchRagSnippet } from "@/lib/rag-client";
 import {
   buildRagHybridQueryPrompt,
-  fallbackRagQuestionFromTranscript,
+  fallbackRagQuestion,
   looksLikeKeywordSoupQuery,
   RAG_QUERY_MAX_CHARS,
   stripTextForRagQuery,
@@ -103,7 +103,7 @@ export async function generateRagSearchQueryLine(options: {
   cleaned = stripTextForRagQuery(cleaned).slice(0, RAG_QUERY_MAX_CHARS);
 
   if (!cleaned || looksLikeKeywordSoupQuery(cleaned)) {
-    const fallback = fallbackRagQuestionFromTranscript(options.transcript);
+    const fallback = fallbackRagQuestion();
     if (fallback) {
       console.info(
         "[RAG query] keyword-soup or empty LLM output; heuristic fallback:",
