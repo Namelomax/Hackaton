@@ -375,6 +375,8 @@ class RAGService:
                 logger.warning("LLM call failed (%s); returning empty completion", e)
                 return ""
 
+        # nomic-embed-text default context: 2048 tokens. Keep max_token_size well below
+        # to avoid "input length exceeds context length" on long entity-summary chunks.
         embedding_func = EmbeddingFunc(
             embedding_dim=768,
             max_token_size=2000,
@@ -393,7 +395,7 @@ class RAGService:
             lightrag_kwargs={
                 "llm_model_kwargs": {"timeout": 6000},
                 "llm_model_max_async": 2,
-                "chunk_token_size": 3000,
+                "chunk_token_size": 2000,
                 "chunk_overlap_token_size": 150,
                 "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.1},
                 "addon_params": {"language": "Russian"},
