@@ -399,7 +399,6 @@ type PromptInputWrapperProps = {
  * ~30KB ≈ 5–7 страниц A4 — при qwen3:14b (контекст 65K) можно поднять до 60_000,
  * при gemma3:27b (128K) — до 100_000.
  */
-const AUTO_RAG_THRESHOLD_BYTES = 30_000;
 
 export const PromptInputWrapper = ({
   input,
@@ -424,7 +423,6 @@ export const PromptInputWrapper = ({
   const submitLockRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   // URL-ы blob, уже ушедшие в RAG через авто-роутинг — не дублируем при повторной отправке
-  const autoRaggedUrlsRef = useRef<Set<string>>(new Set());
   const [authWarningOpen, setAuthWarningOpen] = useState(false);
   const [ragNotice, setRagNotice] = useState<string | null>(null);
   const [ragDocsNonce, setRagDocsNonce] = useState(0);
@@ -517,63 +515,8 @@ export const PromptInputWrapper = ({
 
       if (cancelRequestedRef.current || abort.signal.aborted) return;
 
-      const ragUploadConversationId =
-        ensuredConversationId && !String(ensuredConversationId).startsWith('local-')
-          ? ensuredConversationId
-          : null;
-
-      // Авто-роутинг: файлы крупнее AUTO_RAG_THRESHOLD_BYTES уходят в RAG-индекс,
-      // остальные — как прямые вложения к сообщению.
-      const filesToSend: FileUIPart[] = [];
-      let autoRaggedCount = 0;
-      for (const f of preparedFiles) {
-        const url = String((f as any).url || '');
-        if (!url) { filesToSend.push(f); continue; }
-        if (autoRaggedUrlsRef.current.has(url)) {
-          // Уже проиндексирован — не передаём как вложение
-          continue;
-        }
-        try {
-          const blobRes = await fetch(url);
-          const blob = await blobRes.blob();
-          if (blob.size > AUTO_RAG_THRESHOLD_BYTES) {
-            if (!ragUploadConversationId) {
-              setRagNotice(
-                'Большой файл не отправлен в RAG: нет сохранённого id чата. Отправьте сообщение в этом диалоге, затем снова прикрепите файл или используйте кнопку индексации RAG.',
-              );
-              filesToSend.push(f);
-              continue;
-            }
-            const name = String((f as any).filename || 'upload.bin');
-            const mt = (f as any).mediaType as string | undefined;
-            const fileObj = new File([blob], name, { type: mt || blob.type });
-            const fd = new FormData();
-            fd.append('file', fileObj);
-            const autoUploadUrl = `/api/rag/upload?conversation_id=${encodeURIComponent(ragUploadConversationId)}`;
-            const uploadRes = await fetch(autoUploadUrl, { method: 'POST', body: fd });
-            if (uploadRes.ok) {
-              autoRaggedUrlsRef.current.add(url);
-              autoRaggedCount++;
-              // Не добавляем в filesToSend — файл пошёл в индекс, не вложением
-              continue;
-            }
-          }
-        } catch {
-          // При ошибке авто-индексации оставляем как вложение
-        }
-        filesToSend.push(f);
-      }
-
-      if (autoRaggedCount > 0) {
-        onRagIndexed?.();
-        setRagDocsNonce((n) => n + 1);
-        setRagNotice(
-          `${autoRaggedCount > 1 ? `${autoRaggedCount} файла` : 'Файл'} автоматически отправлен в RAG-индекс (документ большой). Поиск по документу включён.`,
-        );
-      }
-
-      // Обновляем список файлов: без тех, что ушли в RAG
-      const finalFiles = filesToSend;
+      // Все файлы отправляются как прямые вложения. RAG-индексация только по явной кнопке.
+      const finalFiles = preparedFiles;
 
       // Avoid blocking UI on client-side extraction; server performs extraction/injection.
       void finalFiles.map((f) => (f?.mediaType ? isTextExtractable(f.mediaType) : false));
