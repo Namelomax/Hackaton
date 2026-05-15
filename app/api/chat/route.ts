@@ -66,6 +66,17 @@ function resolveLanguageModel(body: Record<string, unknown>) {
     const openai = createOpenAI({
       baseURL,
       apiKey: process.env.OLLAMA_API_KEY || 'ollama',
+      // Disable thinking mode for qwen3 — saves 300-800 tokens per response (~10-50s)
+      fetch: async (url, init) => {
+        if (init?.body && typeof init.body === 'string') {
+          try {
+            const parsed = JSON.parse(init.body);
+            parsed.think = false;
+            return fetch(url, { ...init, body: JSON.stringify(parsed) });
+          } catch { /* fallthrough */ }
+        }
+        return fetch(url, init ?? {});
+      },
     });
     return openai.chat(modelId);
   }
