@@ -376,10 +376,9 @@ class RAGService:
                 return ""
 
         # Embedding model context and dimension from env (override for different models):
-        #   nomic-embed-text:  RAG_EMBEDDING_DIM=768,  RAG_EMBEDDING_MAX_TOKENS=512  (context ~2048)
         #   qwen3-embedding:   RAG_EMBEDDING_DIM=4096, RAG_EMBEDDING_MAX_TOKENS=8000 (context 32k)
         # IMPORTANT: changing the model requires wiping rag_storage (incompatible vectors).
-        _emb_dim = int(os.getenv("RAG_EMBEDDING_DIM", "768"))
+        _emb_dim = int(os.getenv("RAG_EMBEDDING_DIM", "1024"))
         _emb_max_tokens = int(os.getenv("RAG_EMBEDDING_MAX_TOKENS", "512"))
         embedding_func = EmbeddingFunc(
             embedding_dim=_emb_dim,
