@@ -1,4 +1,5 @@
 import { createUser, getUserByUsername, authenticateUser, getConversations } from '@/lib/getPromt';
+import { normalizeUsername } from '@/lib/surreal-users';
 import crypto from 'crypto';
 
 async function hashPassword(password: string) {
@@ -6,7 +7,10 @@ async function hashPassword(password: string) {
 }
 
 export async function POST(req: Request) {
-  const { action, username, password } = await req.json();
+  const body = await req.json();
+  const action = body?.action;
+  const username = normalizeUsername(String(body?.username ?? ''));
+  const password = String(body?.password ?? '');
 
   if (!username || !password) {
     return new Response(JSON.stringify({ success: false, message: 'username and password required' }), { status: 400 });

@@ -1,3 +1,7 @@
+# Имя проекта задаёт префикс томов (<name>_surreal-data). Для общей БД с другим деплоем:
+# COMPOSE_PROJECT_NAME=forus в .env или: docker compose -p forus up -d
+name: ${COMPOSE_PROJECT_NAME:-forus-chatbot}
+
 services:
   surrealdb:
     # surrealdb npm ^1.x supports engine versions < 3.0.0 — do not use :latest (SurrealDB 3.x) until the JS SDK is upgraded.
@@ -13,7 +17,7 @@ services:
       - --user
       - root
       - --pass
-      - ${SURREAL_ROOT_PASSWORD:-root}
+      - ${SURREAL_ROOT_PASSWORD:-${SURREALDB_PASSWORD:-root}}
       - rocksdb:/data/database.db
     volumes:
       - surreal-data:/data
@@ -81,6 +85,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    env_file:
+      - path: .env
+        required: false
     depends_on:
       surrealdb:
         condition: service_started
@@ -93,7 +100,7 @@ services:
       SURREALDB_NAMESPACE: ${SURREALDB_NAMESPACE:-chatbot}
       SURREALDB_DATABASE: ${SURREALDB_DATABASE:-main}
       SURREALDB_USER: ${SURREALDB_USER:-root}
-      SURREALDB_PASSWORD: ${SURREALDB_PASSWORD:-root}
+      SURREALDB_PASSWORD: ${SURREALDB_PASSWORD:-${SURREAL_ROOT_PASSWORD:-root}}
       RAG_API_URL: ${RAG_API_URL:-http://rag-api:8000}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       OPENROUTER_MODEL_DEFAULT: ${OPENROUTER_MODEL_DEFAULT:-arcee-ai/trinity-large-preview:free}

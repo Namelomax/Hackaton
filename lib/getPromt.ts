@@ -7,6 +7,9 @@ import {
   readSurrealConnectionEnv,
   surrealEnvMissingMessage,
 } from '@/lib/surreal-env';
+import { surrealConnectionFingerprint } from '@/lib/surreal-connection-info';
+import { surrealQueryFirst, surrealQueryRows } from '@/lib/surreal-query';
+import { normalizeUsername, usernameLookupKey } from '@/lib/surreal-users';
 
 const db = new Surreal();
 const surrealState = (globalThis as any).__surrealState || ((globalThis as any).__surrealState = {
@@ -76,18 +79,27 @@ async function connectDB() {
   });
 
   surrealState.isConnected = true;
-  if (!surrealState.logged && process.env.SURREAL_LOG === '1') {
+  if (!surrealState.logged) {
     surrealState.logged = true;
-    console.log("✅ Connected to SurrealDB");
+    const fp = surrealConnectionFingerprint();
+    if (fp) {
+      console.log(
+        `[SurrealDB] connected ns=${fp.namespace} db=${fp.database} host=${fp.urlHost} (users persist only in this database)`,
+      );
+    } else if (process.env.SURREAL_LOG === '1') {
+      console.log('✅ Connected to SurrealDB');
+    }
   }
 
   try {
     await db.query(`
       DEFINE TABLE users SCHEMAFULL;
       DEFINE FIELD username ON users TYPE string;
+      DEFINE FIELD usernameLower ON users TYPE string;
       DEFINE FIELD passwordHash ON users TYPE string;
       DEFINE FIELD created ON users TYPE datetime DEFAULT time::now() READONLY;
       DEFINE FIELD selectedPrompt ON users TYPE option<record<prompts>>;
+      DEFINE INDEX idx_users_username_lower ON users FIELDS usernameLower UNIQUE;
 
       DEFINE TABLE prompts SCHEMAFULL;
       DEFINE FIELD title ON prompts TYPE string;
@@ -128,10 +140,31 @@ DEFINE FIELD created ON conversations TYPE datetime DEFAULT time::now() READONLY
 
     `);
   } catch (error: any) {
-    if (!error.message.includes("already exists")) {
+    if (!error.message?.includes?.('already exists')) {
       console.error("Error defining schema:", error);
     }
   }
+
+  try {
+    await db.query(`
+      UPDATE users
+      SET usernameLower = string::lowercase(username)
+      WHERE usernameLower IS NONE AND username IS NOT NONE;
+    `);
+  } catch {
+    /* optional backfill */
+  }
+}
+
+/** Для /api/health/db — гарантирует подключение и схему. */
+export async function connectDBForHealth(): Promise<void> {
+  await connectDB();
+}
+
+export async function countUsers(): Promise<number> {
+  await connectDB();
+  const result = await db.query(`SELECT * FROM users;`);
+  return surrealQueryRows(result).length;
 }
 
 // Вспомогательная функция — всегда возвращает корректный формат id
@@ -367,39 +400,70 @@ export function repairMessagesForApi(messages: unknown): any[] {
   });
 }
 
+function userFromRecord(rec: Record<string, unknown>): User {
+  const id = rec.id as { toString?: () => string };
+  return {
+    id: typeof id?.toString === 'function' ? id.toString() : String(rec.id),
+    username: String(rec.username ?? ''),
+    created: String(rec.created ?? ''),
+  };
+}
+
 // Create a new user
 export async function createUser(username: string, passwordHash: string): Promise<User> {
   await connectDB();
-  const [user] = await db.create('users', { username, passwordHash });
-  return {
-    id: user.id.toString(),
-    username: String((user as any).username),
-    created: String((user as any).created),
-  };
+  const displayName = normalizeUsername(username);
+  const usernameLower = usernameLookupKey(username);
+  if (!displayName || !usernameLower) {
+    throw new Error('username required');
+  }
+
+  const created = await db.create('users', {
+    username: displayName,
+    usernameLower,
+    passwordHash,
+  });
+  const user = Array.isArray(created) ? created[0] : created;
+  if (!user) {
+    throw new Error('Failed to create user record');
+  }
+  const row = userFromRecord(user as Record<string, unknown>);
+  console.log(`[auth] user created id=${row.id} username=${row.username} key=${usernameLower}`);
+  return row;
 }
 
 export async function getUserByUsername(username: string): Promise<User | null> {
   await connectDB();
-  const result = (await db.query(`SELECT * FROM users WHERE username = $username LIMIT 1;`, { username })) as [any[]];
-  const rec = (result?.[0] ?? [])[0];
+  const usernameLower = usernameLookupKey(username);
+  if (!usernameLower) return null;
+
+  const result = await db.query(
+    `SELECT * FROM users
+     WHERE usernameLower = $usernameLower
+        OR string::lowercase(username) = $usernameLower
+     LIMIT 1;`,
+    { usernameLower },
+  );
+  const rec = surrealQueryFirst(result);
   if (!rec) return null;
-  return {
-    id: rec.id.toString(),
-    username: String((rec as any).username),
-    created: String((rec as any).created),
-  };
+  return userFromRecord(rec);
 }
 
 export async function authenticateUser(username: string, passwordHash: string): Promise<User | null> {
   await connectDB();
-  const result = (await db.query(`SELECT * FROM users WHERE username = $username AND passwordHash = $passwordHash LIMIT 1;`, { username, passwordHash })) as [any[]];
-  const rec = (result?.[0] ?? [])[0];
+  const usernameLower = usernameLookupKey(username);
+  if (!usernameLower) return null;
+
+  const result = await db.query(
+    `SELECT * FROM users
+     WHERE (usernameLower = $usernameLower OR string::lowercase(username) = $usernameLower)
+       AND passwordHash = $passwordHash
+     LIMIT 1;`,
+    { usernameLower, passwordHash },
+  );
+  const rec = surrealQueryFirst(result);
   if (!rec) return null;
-  return {
-    id: rec.id.toString(),
-    username: String((rec as any).username),
-    created: String((rec as any).created),
-  };
+  return userFromRecord(rec);
 }
 
 // Create prompt owned by a user

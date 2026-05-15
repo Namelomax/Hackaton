@@ -7,7 +7,15 @@ import crypto from 'crypto';
 import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation } from '@/lib/getPromt';
 import { parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
 import { fetchRagSnippet } from '@/lib/rag-client';
-import { hydratedChatTranscriptForRag, stripTextForRagQuery } from '@/lib/rag-search-query';
+import {
+  buildUserProvidedSection1Appendix,
+  userProvidedSection1InTranscript,
+} from '@/lib/protocol-user-facts';
+import {
+  fallbackRagQuestion,
+  hydratedChatTranscriptForRag,
+  stripTextForRagQuery,
+} from '@/lib/rag-search-query';
 import { runMainAgent } from './agents/main-agent';
 import {
   generateRagSearchQueryLine,
@@ -724,21 +732,9 @@ export async function POST(req: Request) {
     );
   }
 
-  /** Fallback для RAG, если генерация поисковой строки через LLM недоступна. */
-  let ragAutoQuery = '';
-  for (let i = messagesWithHidden.length - 1; i >= 0 && i >= messagesWithHidden.length - 8; i--) {
-    const m = messagesWithHidden[i];
-    if (m?.role !== 'user') continue;
-    const t = stripTextForRagQuery(
-      typeof m?.content === 'string' ? m.content.trim() : '',
-    );
-    if (t) {
-      ragAutoQuery = ragAutoQuery ? `${t}\n\n${ragAutoQuery}` : t;
-    }
-  }
-  ragAutoQuery = ragAutoQuery.replace(/\s+/g, ' ').trim().slice(0, 6000);
-
   const ragTranscript = hydratedChatTranscriptForRag(messagesWithHidden, 12000);
+  /** Fallback: один вопрос по следующему разделу, не «суп» из всех реплик user. */
+  const ragAutoQueryFallback = fallbackRagQuestion();
 
   /** Не подставлять в системный промпт «пустой» RAG — модель начинает вести себя как без фактов из индекса. */
   const minRagContextChars = 80;
@@ -758,11 +754,14 @@ export async function POST(req: Request) {
         console.warn('📚 RAG query-line generation failed, using fallback text:', genErr);
       }
       const snippetQuery = stripTextForRagQuery(
-        queryLine.trim() ||
-          ragAutoQuery.trim() ||
-          ragTranscript.replace(/\s+/g, ' ').trim().slice(0, 6000),
+        queryLine.trim() || ragAutoQueryFallback,
       );
       if (snippetQuery) {
+        if (!conversationId) {
+          console.warn(
+            '📚 RAG auto: conversationId missing — запрос уйдёт в глобальный индекс (conv=default), не в индекс диалога',
+          );
+        }
         const rawSnippet = await fetchRagSnippet(snippetQuery, ragModeStr, conversationId);
         const trimmedSnippet = rawSnippet?.trim() ?? '';
         if (trimmedSnippet.length >= minRagContextChars) {
@@ -785,6 +784,11 @@ export async function POST(req: Request) {
   const lastTurn =
     messagesWithHidden.length > 0 ? messagesWithHidden[messagesWithHidden.length - 1] : null;
   systemPrompt += buildFileOnlyTurnAppendix(lastTurn);
+
+  const userSection1 = userProvidedSection1InTranscript(ragTranscript);
+  if (userSection1) {
+    systemPrompt += buildUserProvidedSection1Appendix(userSection1);
+  }
 
   if (ragRetrievalEnabled) {
     systemPrompt += RAG_TOOL_MODE_SYSTEM_APPENDIX;
