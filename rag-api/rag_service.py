@@ -375,11 +375,15 @@ class RAGService:
                 logger.warning("LLM call failed (%s); returning empty completion", e)
                 return ""
 
-        # nomic-embed-text default context: 2048 tokens. Keep max_token_size well below
-        # to avoid "input length exceeds context length" on long entity-summary chunks.
+        # Embedding model context and dimension from env (override for different models):
+        #   nomic-embed-text:  RAG_EMBEDDING_DIM=768,  RAG_EMBEDDING_MAX_TOKENS=512  (context ~2048)
+        #   qwen3-embedding:   RAG_EMBEDDING_DIM=4096, RAG_EMBEDDING_MAX_TOKENS=8000 (context 32k)
+        # IMPORTANT: changing the model requires wiping rag_storage (incompatible vectors).
+        _emb_dim = int(os.getenv("RAG_EMBEDDING_DIM", "768"))
+        _emb_max_tokens = int(os.getenv("RAG_EMBEDDING_MAX_TOKENS", "512"))
         embedding_func = EmbeddingFunc(
-            embedding_dim=768,
-            max_token_size=2000,
+            embedding_dim=_emb_dim,
+            max_token_size=_emb_max_tokens,
             func=lambda texts: openai_embed.func(
                 texts,
                 model=EMBEDDING_MODEL,
