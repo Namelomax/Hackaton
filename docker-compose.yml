@@ -39,11 +39,14 @@ services:
       # конкурируют за VRAM → eviction / зависание без новых строк в логе. 0 в Ollama = без лимита.
       OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-1}
       # RTX 3080 (10GB) + 3070 (8GB) = 18GB VRAM.
-      # qwen3:14b weights ~8.7GB + KV cache + compute graph must fit.
-      # 40960 ctx = 6.3GB KV → only ~2GB free → 500 OOM on inference.
-      # 16384 ctx = ~2.5GB KV → ~7GB free → stable inference.
-      # 16384 is enough for system prompt (~2k) + transcript (~8k) + history (~4k).
-      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-16384}
+      # qwen3:14b weights ~8.3GB + KV cache + compute graph must fit.
+      # KV cache с q8_0 quantization: 40960 ctx = ~3.2GB KV (вместо 6.3GB без кванта) → ~6GB свободно.
+      # Без q8_0 при 40960: 6.3GB KV → ~2GB свободно → OOM при инференсе (500 после 30s).
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-40960}
+      # q8_0 = KV-cache в 8-bit → в 2 раза меньше VRAM при незначительной потере качества
+      OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
+      # Flash Attention уменьшает пиковое потребление памяти при длинных контекстах
+      OLLAMA_FLASH_ATTENTION: ${OLLAMA_FLASH_ATTENTION:-1}
       # 0 = без лимита на «зависшую» загрузку весов (иначе дефолт 5m у Ollama).
       OLLAMA_LOAD_TIMEOUT: ${OLLAMA_LOAD_TIMEOUT:-0}
       # true — пишет тела запросов во временный каталог для отладки (см. логи при старте).
