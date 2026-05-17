@@ -38,8 +38,12 @@ services:
       # Одновременно держать только одну «большую» загрузку модели: иначе классификатор + чат + RAG/embeddings
       # конкурируют за VRAM → eviction / зависание без новых строк в логе. 0 в Ollama = без лимита.
       OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-1}
-      # См. DEPLOY.md: 200k+ на 3080/3070 → почти всё на CPU и ответ «висит»; в логах часто 500 ровно через 5 мин.
-      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-65384}
+      # RTX 3080 (10GB) + 3070 (8GB) = 18GB VRAM.
+      # qwen3:14b weights ~8.7GB + KV cache + compute graph must fit.
+      # 40960 ctx = 6.3GB KV → only ~2GB free → 500 OOM on inference.
+      # 16384 ctx = ~2.5GB KV → ~7GB free → stable inference.
+      # 16384 is enough for system prompt (~2k) + transcript (~8k) + history (~4k).
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-16384}
       # 0 = без лимита на «зависшую» загрузку весов (иначе дефолт 5m у Ollama).
       OLLAMA_LOAD_TIMEOUT: ${OLLAMA_LOAD_TIMEOUT:-0}
       # true — пишет тела запросов во временный каталог для отладки (см. логи при старте).
