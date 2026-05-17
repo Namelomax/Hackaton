@@ -268,7 +268,7 @@ INFO (информация — не требует исправления):
       compatibility: 'strict',
     });
 
-    const model = openrouter.chat('arcee-ai/trinity-large-preview:free');
+    const model = openrouter.chat('openrouter/owl-alpha');
 
     console.log('[review-agent] === НАЧАЛО ПРОВЕРКИ ДОКУМЕНТА ===');
     console.log('[review-agent] Длина документа:', normalizedDoc.length, 'символов');
