@@ -19,7 +19,7 @@ const openrouter = createOpenRouter({
   },
 });
 
-const model = openrouter.chat('arcee-ai/trinity-large-preview:free');
+const model = openrouter.chat('openrouter/owl-alpha');
 
 let cachedPrompt: string | null = null;
 
