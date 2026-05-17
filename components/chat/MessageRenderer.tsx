@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Message, MessageContent } from '@/components/ai-elements/message';
 import { Loader } from '@/components/ai-elements/loader';
+import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning';
 import { Response } from '@/components/ai-elements/response';
 import { Actions, Action } from '@/components/ai-elements/actions';
 import { RefreshCcw, Copy, Check, Wrench, Paperclip, FileText, Image as ImageIcon, Pencil, X, Send } from 'lucide-react';
@@ -102,6 +103,29 @@ const getAttachmentExtension = (att: Attachment): string => {
   return 'file';
 };
 
+const getReasoningDurationSeconds = (part: any): number | undefined => {
+  const metadata = part?.metadata ?? {};
+  const directSeconds = [
+    metadata.durationSeconds,
+    metadata.duration,
+    metadata.thinkingDurationSeconds,
+    metadata.reasoning_duration_seconds,
+  ].find((v) => typeof v === 'number' && Number.isFinite(v) && v > 0);
+  if (typeof directSeconds === 'number') return Math.round(directSeconds);
+  const durationMs = [
+    metadata.durationMs,
+    metadata.thinkingDurationMs,
+    metadata.reasoning_duration_ms,
+  ].find((v) => typeof v === 'number' && Number.isFinite(v) && v > 0);
+  if (typeof durationMs === 'number') return Math.max(1, Math.round(durationMs / 1000));
+  return undefined;
+};
+
+const persistReasoningDuration = (part: any, seconds: number) => {
+  if (!part || !Number.isFinite(seconds)) return;
+  part.metadata = { ...(part.metadata ?? {}), durationSeconds: Math.max(1, Math.round(seconds)) };
+};
+
 const renderAttachment = (att: Attachment, index: number) => {
   const isImage = att.mediaType?.startsWith('image/') && att.url;
   const fallbackName = att.name || 'attachment';
@@ -173,6 +197,7 @@ export const MessageRenderer = ({
   const textParts = rawParts.filter(
     (part: any): part is { type: 'text'; text: string } => part.type === 'text',
   );
+  const reasoningParts = rawParts.filter((part: any) => part.type === 'reasoning');
   const toolParts = rawParts.filter(
     (part: any) =>
       typeof part?.type === 'string' &&
@@ -205,6 +230,19 @@ export const MessageRenderer = ({
             </div>
           </div>
         )}
+
+        {reasoningParts.map((part: any, index: number) => (
+          <Reasoning
+            key={`reasoning-${index}`}
+            className="w-full"
+            isStreaming={status === 'streaming' && index === reasoningParts.length - 1 && isLastMessage}
+            duration={getReasoningDurationSeconds(part)}
+            onDurationMeasured={(seconds) => persistReasoningDuration(part, seconds)}
+          >
+            <ReasoningTrigger />
+            <ReasoningContent>{part.text}</ReasoningContent>
+          </Reasoning>
+        ))}
 
         {/* Рендеринг текста только если не редактируем; до первого токена — кружок, а не пустой пузырь */}
         {!isEditing && !assistantStreamingAwaitingText && textParts.map((part: any, index: number) => {

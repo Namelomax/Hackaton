@@ -66,12 +66,13 @@ function resolveLanguageModel(body: Record<string, unknown>) {
     const openai = createOpenAI({
       baseURL,
       apiKey: process.env.OLLAMA_API_KEY || 'ollama',
-      // Disable thinking mode for qwen3 — saves 300-800 tokens per response (~10-50s)
+      // Conditionally enable/disable thinking mode for qwen3.
+      // think=false saves 300-800 tokens per response (~10-50s); think=true enables reasoning display.
       fetch: async (url, init) => {
         if (init?.body && typeof init.body === 'string') {
           try {
             const parsed = JSON.parse(init.body);
-            parsed.think = false;
+            parsed.think = Boolean(body.useThinking);
             return fetch(url, { ...init, body: JSON.stringify(parsed) });
           } catch { /* fallthrough */ }
         }
@@ -412,7 +413,7 @@ async function extractPptxTextFromAttachment(att: any): Promise<string | null> {
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
-  let { messages, newSystemPrompt, userId, selectedPromptId, documentContent, useRagContext, ragMode } =
+  let { messages, newSystemPrompt, userId, selectedPromptId, documentContent, useRagContext, ragMode, useThinking } =
     body as any;
   let conversationId: string | null = null;
 

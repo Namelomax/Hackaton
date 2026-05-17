@@ -55,6 +55,7 @@ export default function ChatPage() {
   }, [chatProvider, localModels]);
 
   const [useRagContext, setUseRagContext] = useState(false);
+  const [useThinking, setUseThinking] = useState(false);
 
   const chatBody = useMemo(
     () => ({
@@ -62,8 +63,9 @@ export default function ChatPage() {
       chatModel,
       useRagContext,
       ragMode: 'hybrid' as const,
+      useThinking,
     }),
-    [chatProvider, chatModel, useRagContext],
+    [chatProvider, chatModel, useRagContext, useThinking],
   );
 
   const [authChecked, setAuthChecked] = useState(false);
@@ -1137,6 +1139,16 @@ export default function ChatPage() {
                     onChange={(e) => setUseRagContext(e.target.checked)}
                   />
                   Контекст из RAG
+                </label>
+
+                <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    className="rounded border-neutral-300"
+                    checked={useThinking}
+                    onChange={(e) => setUseThinking(e.target.checked)}
+                  />
+                  Thinking
                 </label>
               </div>
               <PromptInputWrapper
