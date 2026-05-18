@@ -253,6 +253,14 @@ export async function runChatAgent(
       conversationId,
     });
 
+  const msgCount = messagesWithUserPrompt.length;
+  const estimatedChars = messagesWithUserPrompt.reduce(
+    (sum, m) => sum + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length),
+    0
+  );
+  console.log(`🤖 streamText start: msgs=${msgCount} ~chars=${estimatedChars} (~${Math.round(estimatedChars / 4)} tokens) rag=${ragRetrievalEnabled}`);
+  const agentStartMs = Date.now();
+
   const stream = createUIMessageStream({
     originalMessages: safeOriginalUIMessages(context),
     execute: async ({ writer }) => {
@@ -274,12 +282,18 @@ export async function runChatAgent(
         tools,
         stopWhen: stepCountIs(ragRetrievalEnabled ? 14 : 8),
         ...(abortSignal ? { abortSignal } : {}),
+        onStepFinish: ({ usage, finishReason, toolCalls }) => {
+          const tools = toolCalls?.map((t: any) => t.toolName).join(', ') || 'none';
+          console.log(`  ↳ step done: reason=${finishReason} tools=[${tools}] tokens=${usage?.totalTokens ?? '?'}`);
+        },
       });
 
       writer.merge(result.toUIMessageStream());
       await result.usage;
     },
     onFinish: async ({ messages: finished }) => {
+      const elapsed = Date.now() - agentStartMs;
+      console.log(`✅ agent done: ${elapsed}ms total, protocol=${sink.markdown.length > 0 ? sink.markdown.length + ' chars' : 'none'}`);
       if (!userId) return;
       try {
         const doc =
