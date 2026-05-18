@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { Message, MessageContent } from '@/components/ai-elements/message';
 import { Loader } from '@/components/ai-elements/loader';
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning';
@@ -58,6 +58,23 @@ const sanitizeUserText = (text: string) => {
   const visible = text.replace(hiddenPattern, '').trim();
   return { visible, hadHidden };
 };
+
+/**
+ * Extracts <think>...</think> content from text into a separate reasoning string.
+ * Handles both complete tags and incomplete (streaming) open tags.
+ */
+function extractThinkingFromText(text: string): { thinking: string | null; isThinkingOpen: boolean; rest: string } {
+  // Complete: <think>...</think> at the start
+  const completeMatch = text.match(/^<think>([\s\S]*?)<\/think>\n?([\s\S]*)$/);
+  if (completeMatch) {
+    return { thinking: completeMatch[1].trim(), isThinkingOpen: false, rest: completeMatch[2] };
+  }
+  // Streaming: <think> without closing tag yet
+  if (text.startsWith('<think>')) {
+    return { thinking: text.slice('<think>'.length).trim(), isThinkingOpen: true, rest: '' };
+  }
+  return { thinking: null, isThinkingOpen: false, rest: text };
+}
 
 
 const renderTextResponse = (rawText: string, key: string) => {
@@ -246,13 +263,73 @@ export const MessageRenderer = ({
 
         {/* Рендеринг текста только если не редактируем; до первого токена — кружок, а не пустой пузырь */}
         {!isEditing && !assistantStreamingAwaitingText && textParts.map((part: any, index: number) => {
+          // For assistant messages, extract <think>...</think> from the raw text before JSON parsing
+          if (message.role === 'assistant') {
+            const { thinking, isThinkingOpen, rest } = extractThinkingFromText(part.text ?? '');
+            const isStreaming = status === 'streaming' && index === textParts.length - 1 && isLastMessage;
+
+            const thinkingBlock = thinking !== null ? (
+              <Reasoning
+                key={`${message.id}-thinking-${index}`}
+                className="w-full"
+                isStreaming={isStreaming && isThinkingOpen}
+                duration={isThinkingOpen ? undefined : undefined}
+              >
+                <ReasoningTrigger />
+                <ReasoningContent>{thinking}</ReasoningContent>
+              </Reasoning>
+            ) : null;
+
+            if (!rest.trim() && thinking !== null) {
+              return thinkingBlock;
+            }
+
+            const textToRender = rest || part.text;
+
+            let textBlock: React.ReactNode;
+            try {
+              const parsed = JSON.parse(textToRender);
+              if (parsed.text && !parsed.document && !parsed.results) {
+                textBlock = renderTextResponse(parsed.text, `${message.id}-text-${index}`);
+              } else if (parsed.results) {
+                textBlock = (
+                  <div key={`${message.id}-search-${index}`} className="space-y-2">
+                    {renderTextResponse(parsed.text || 'Результаты поиска:', `${message.id}-search-heading-${index}`)}
+                    <div className="mt-2 space-y-2 text-sm">
+                      {parsed.results.map((result: any, resultIndex: number) => (
+                        <div key={resultIndex} className="p-3 bg-muted/50 rounded-lg">
+                          <a href={result.link} target="_blank" rel="noopener noreferrer"
+                            className="font-medium text-blue-600 hover:underline">{result.title}</a>
+                          <p className="text-xs text-muted-foreground mt-1">{result.snippet}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              } else {
+                textBlock = renderTextResponse(textToRender, `${message.id}-text-${index}`);
+              }
+            } catch {
+              textBlock = renderTextResponse(textToRender, `${message.id}-text-${index}`);
+            }
+
+            if (thinkingBlock) {
+              return (
+                <div key={`${message.id}-block-${index}`} className="space-y-1">
+                  {thinkingBlock}
+                  {rest.trim() ? textBlock : null}
+                </div>
+              );
+            }
+            return textBlock;
+          }
+
+          // User messages — original logic
           try {
             const parsed = JSON.parse(part.text);
-
             if (parsed.text && !parsed.document && !parsed.results) {
               return renderTextResponse(parsed.text, `${message.id}-text-${index}`);
             }
-
             if (parsed.results) {
               return (
                 <div key={`${message.id}-search-${index}`} className="space-y-2">
@@ -260,14 +337,8 @@ export const MessageRenderer = ({
                   <div className="mt-2 space-y-2 text-sm">
                     {parsed.results.map((result: any, resultIndex: number) => (
                       <div key={resultIndex} className="p-3 bg-muted/50 rounded-lg">
-                        <a
-                          href={result.link}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-medium text-blue-600 hover:underline"
-                        >
-                          {result.title}
-                        </a>
+                        <a href={result.link} target="_blank" rel="noopener noreferrer"
+                          className="font-medium text-blue-600 hover:underline">{result.title}</a>
                         <p className="text-xs text-muted-foreground mt-1">{result.snippet}</p>
                       </div>
                     ))}
@@ -275,7 +346,6 @@ export const MessageRenderer = ({
                 </div>
               );
             }
-
             return renderTextResponse(part.text, `${message.id}-text-${index}`);
           } catch {
             return renderTextResponse(part.text, `${message.id}-text-${index}`);
