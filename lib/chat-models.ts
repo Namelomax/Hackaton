@@ -1,6 +1,15 @@
 /** Allowed local chat models (must match `ollama list` names). */
 export const DEFAULT_LOCAL_CHAT_MODELS = ['qwen3:14b', 'qwen3.6:27b'] as const;
 
+/** Available OpenRouter cloud models shown in the UI dropdown. */
+export const OPENROUTER_MODELS: { id: string; label: string }[] = [
+  { id: 'nvidia/nemotron-3-super-120b-a12b:free', label: 'Nemotron 120B (free)' },
+  { id: 'openrouter/owl-alpha', label: 'Owl Alpha' },
+  { id: 'google/gemini-2.5-pro-preview', label: 'Gemini 2.5 Pro' },
+  { id: 'anthropic/claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
+  { id: 'openai/gpt-4.1', label: 'GPT-4.1' },
+];
+
 export function parseModelsFromEnv(jsonEnv?: string): string[] {
   const raw = jsonEnv?.trim();
   if (!raw) return [...DEFAULT_LOCAL_CHAT_MODELS];

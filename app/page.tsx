@@ -17,7 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { parseModelsFromEnv, pickDefaultLocalChatModel } from '@/lib/chat-models';
+import { parseModelsFromEnv, pickDefaultLocalChatModel, OPENROUTER_MODELS } from '@/lib/chat-models';
 import { copyTextToClipboard } from '@/lib/copyToClipboard';
 import { resolveMessagesFromRecord } from '@/lib/conversationMessages';
 
@@ -1123,12 +1123,18 @@ export default function ChatPage() {
                     </SelectContent>
                   </Select>
                 ) : (
-                  <span
-                    className="rounded border px-2 py-1 bg-neutral-50 text-[11px] max-w-[240px] truncate"
-                    title={chatModel}
-                  >
-                    {chatModel}
-                  </span>
+                  <Select value={chatModel} onValueChange={setChatModel}>
+                    <SelectTrigger size="sm" className="h-8 min-w-[160px]">
+                      <SelectValue placeholder="Облачная модель" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {OPENROUTER_MODELS.map((m) => (
+                        <SelectItem key={m.id} value={m.id}>
+                          {m.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 )}
 
                 <label className="flex items-center gap-1.5 cursor-pointer select-none">
