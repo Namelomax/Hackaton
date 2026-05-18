@@ -16,8 +16,6 @@ import {
   X,
   Shield,
 } from 'lucide-react';
-import remarkBreaks from 'remark-breaks';
-
 import { Response } from '@/components/ai-elements/response';
 import { Button } from '@/components/ui/button';
 import { DocumentReviewPanel } from '@/components/document/DocumentReviewPanel';
@@ -512,7 +510,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
             />
           </div>
         ) : (
-          <Response className="prose prose-sm max-w-none dark:prose-invert" remarkPlugins={[remarkBreaks]}>
+          <Response className="prose prose-sm max-w-none dark:prose-invert">
             {formattedContent}
           </Response>
         )}
