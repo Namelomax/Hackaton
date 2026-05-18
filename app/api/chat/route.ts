@@ -651,7 +651,15 @@ export async function POST(req: Request) {
    * MAX_DOC_FRESHNESS_MSGS сообщениях. Иначе — краткая сноска «файл получен».
    * Это предотвращает переполнение контекста при длинных диалогах с большими документами.
    */
-  const MAX_DOC_FRESHNESS_MSGS = 8; // включать полный текст если файл не старше 8 сообщений
+  // 0 = документ сразу идёт в системный блок (не в историю сообщений).
+  // Это оптимально: история всегда компактна, документ всегда доступен модели.
+  const MAX_DOC_FRESHNESS_MSGS = 0;
+  /**
+   * Максимальный размер одного документа в промпте (символов).
+   * При 65 536 KV-cache и ~2.34 симв/токен для рус.: 150 000 симв ≈ 64 000 токенов — весь контекст.
+   * Лимит — страховка от экстремально больших файлов; обычные транскрипты (60–150k симв) проходят без обрезки.
+   */
+  const MAX_DOC_CHARS = 150_000;
   let lastUserWithAttachmentsIndex = -1;
   if (!ragOmitsAttachmentBodies) {
     const cutoff = normalizedMessagesNonEmpty.length - MAX_DOC_FRESHNESS_MSGS;
@@ -695,14 +703,22 @@ export async function POST(req: Request) {
         );
       } else {
         const isOldAttachment = msgIdx < (normalizedMessagesNonEmpty.length - MAX_DOC_FRESHNESS_MSGS);
+        // Обрезаем документ чтобы не превысить KV-cache (65536 токенов).
+        // 50 000 симв ≈ 21 400 рус. токенов — оставляет место для истории + ответа.
+        // Документ передаётся полностью; MAX_DOC_CHARS=150k — только страховка от гигантских файлов.
+        const docTruncated = cleaned.length > MAX_DOC_CHARS;
+        const docForContext = docTruncated
+          ? cleaned.slice(0, MAX_DOC_CHARS) +
+            `\n\n[⚠ Файл очень большой: в контекст передано первые ${MAX_DOC_CHARS.toLocaleString()} из ${cleaned.length.toLocaleString()} симв. Для работы с полным текстом используйте RAG-индексирование.]`
+          : cleaned;
         if (isOldAttachment) {
-          // Документ слишком старый для истории — сохраним полный текст в системный контекст
-          hiddenDocsFull.push(`\n\n---\nВложенный файл: ${attName || 'документ'}\n${cleaned}\n---`);
+          // Документ слишком старый для истории — сохраним текст в системный контекст
+          hiddenDocsFull.push(`\n\n---\nВложенный файл: ${attName || 'документ'}\n${docForContext}\n---`);
           fileContents.push(
-            `\n\n[Файл «${attName || 'документ'}» (${cleaned.length} симв.) приложен ранее; полный текст передан в системный блок «ВЛОЖЕНИЯ».]`
+            `\n\n[Файл «${attName || 'документ'}» (${cleaned.length} симв.${docTruncated ? ', обрезан до 50 000' : ''}) приложен ранее; текст передан в системный блок «ВЛОЖЕНИЯ».]`
           );
         } else {
-          fileContents.push(`\n\n---\nВложенный файл: ${attName || 'документ'}\n${cleaned}\n---`);
+          fileContents.push(`\n\n---\nВложенный файл: ${attName || 'документ'}\n${docForContext}\n---`);
         }
       }
     });
@@ -733,16 +749,76 @@ export async function POST(req: Request) {
         parts: [{ type: 'text' as const, text: enrichedContent }],
       });
     } else {
-      messagesWithHidden.push(msg);
+      // Qwen3 best practice: удалять <think>...</think> из истории ассистента.
+      // Теги занимают сотни токенов и ухудшают качество следующего ответа.
+      if (msg.role === 'assistant' && typeof msg.content === 'string' && msg.content.includes('<think>')) {
+        const stripped = msg.content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        messagesWithHidden.push({
+          ...msg,
+          content: stripped,
+          parts: [{ type: 'text' as const, text: stripped }],
+        });
+      } else {
+        messagesWithHidden.push(msg);
+      }
     }
   });
 
   // Системный блок: краткие сноски + полные тексты «устаревших» вложений (перемещённых из истории)
-  // Лимит ~120 000 симв (~40 000 рус. токенов) оставляет место для системного промта + истории
   const hiddenDocsContext = [
     ...hiddenDocEntries.map(e => e.slice(0, 1200)),
     ...hiddenDocsFull,
   ].join('\n\n').slice(0, 120_000);
+
+  /**
+   * Динамическая обрезка истории — гарантирует, что диалог любой длины не вызовет переполнения.
+   *
+   * Алгоритм:
+   *  1. Оцениваем сколько токенов займут системный промт (с документом) + текущая история.
+   *  2. Если сумма > бюджет, удаляем самые старые сообщения (не первое — оно чаще всего несёт вложение).
+   *  3. Добавляем системное уведомление об усечении, чтобы модель знала о пропущенном контексте.
+   *
+   * Документ ВСЕГДА остаётся в системном блоке — не обрезается.
+   */
+  const CONTEXT_TOKENS_LIMIT = Number(process.env.OLLAMA_CONTEXT_LENGTH ?? 65536);
+  const CHARS_PER_TOKEN = 2.34; // для русского текста; EN ≈ 4
+  const RESERVE_RESPONSE_TOKENS = 6000;  // минимальный запас для ответа модели
+  const RESERVE_SYSTEM_BASE_TOKENS = 3000; // системный промт без документа
+  const docCharsTotal = hiddenDocsFull.reduce((s, d) => s + d.length, 0);
+  const docTokensEstimate = Math.ceil(docCharsTotal / CHARS_PER_TOKEN);
+  const availableForHistoryTokens =
+    CONTEXT_TOKENS_LIMIT - RESERVE_RESPONSE_TOKENS - RESERVE_SYSTEM_BASE_TOKENS - docTokensEstimate;
+  const availableForHistoryChars = Math.max(availableForHistoryTokens * CHARS_PER_TOKEN, 8000);
+
+  function msgChars(m: any): number {
+    if (typeof m?.content === 'string') return m.content.length;
+    return JSON.stringify(m?.content ?? '').length;
+  }
+
+  let finalMessages = messagesWithHidden;
+  const totalHistoryChars = finalMessages.reduce((s, m) => s + msgChars(m), 0);
+
+  if (totalHistoryChars > availableForHistoryChars && finalMessages.length > 2) {
+    // Удаляем сообщения с начала, пока не влезем в бюджет (минимум оставляем 2 сообщения)
+    let trimCount = 0;
+    while (
+      finalMessages.length > 2 &&
+      finalMessages.reduce((s, m) => s + msgChars(m), 0) > availableForHistoryChars
+    ) {
+      finalMessages = finalMessages.slice(1);
+      trimCount++;
+    }
+    // Вставляем в начало системное уведомление об усечении
+    const notice = {
+      role: 'system' as const,
+      content: `[Контекст: ${trimCount} ранних сообщений диалога удалены для предотвращения переполнения окна. Документ и текущий раздел протокола сохранены в системном блоке.]`,
+      id: '__trim_notice__',
+      parts: [{ type: 'text' as const, text: '' }],
+    };
+    finalMessages = [notice, ...finalMessages];
+    const usedChars = finalMessages.reduce((s, m) => s + msgChars(m), 0);
+    console.log(`✂️  history trimmed: removed ${trimCount} msgs, doc≈${docTokensEstimate}tok, history≈${Math.round(usedChars/CHARS_PER_TOKEN)}tok, budget=${availableForHistoryTokens}tok`);
+  }
 
   const ragRetrievalEnabled =
     Boolean(useRagContext) && Boolean(process.env.RAG_API_URL?.trim());
@@ -764,7 +840,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const ragTranscript = hydratedChatTranscriptForRag(messagesWithHidden, 12000);
+  const ragTranscript = hydratedChatTranscriptForRag(finalMessages, 12000);
   /** Fallback: один вопрос по следующему разделу, не «суп» из всех реплик user. */
   const ragAutoQueryFallback = fallbackRagQuestion();
 
@@ -814,7 +890,7 @@ export async function POST(req: Request) {
   );
 
   const lastTurn =
-    messagesWithHidden.length > 0 ? messagesWithHidden[messagesWithHidden.length - 1] : null;
+    finalMessages.length > 0 ? finalMessages[finalMessages.length - 1] : null;
   systemPrompt += buildFileOnlyTurnAppendix(lastTurn);
 
   const userSection1 = userProvidedSection1InTranscript(ragTranscript);
@@ -832,7 +908,7 @@ export async function POST(req: Request) {
   // 5. Create Agent Context - with safety checks
   let coreMessages;
   try {
-    const messagesToConvert = messagesWithHidden.length > 0 ? messagesWithHidden : normalizedMessagesNonEmpty;
+    const messagesToConvert = finalMessages.length > 0 ? finalMessages : normalizedMessagesNonEmpty;
     if (!Array.isArray(messagesToConvert) || messagesToConvert.length === 0) {
       throw new Error('No valid messages to convert');
     }

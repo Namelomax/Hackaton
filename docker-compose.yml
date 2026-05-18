@@ -40,9 +40,9 @@ services:
       OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-1}
       # RTX 3080 (10GB) + 3070 (8GB) = 18GB VRAM.
       # qwen3:14b weights ~8.3GB + KV cache + compute graph must fit.
-      # KV cache с q8_0 quantization: 40960 ctx = ~3.2GB KV (вместо 6.3GB без кванта) → ~6GB свободно.
-      # Без q8_0 при 40960: 6.3GB KV → ~2GB свободно → OOM при инференсе (500 после 30s).
-      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-40960}
+      # KV cache с q8_0 quantization: 65536 ctx = ~5.3GB KV → ~4GB свободно (18GB - 8.3 - 5.3 - 0.9).
+      # 71k-симв. документ = ~30k токенов + история (~8k) + ответ (~5k) = ~43k → вписывается в 65536.
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-65536}
       # q8_0 = KV-cache в 8-bit → в 2 раза меньше VRAM при незначительной потере качества
       OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
       # Flash Attention уменьшает пиковое потребление памяти при длинных контекстах

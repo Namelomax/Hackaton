@@ -258,7 +258,8 @@ export async function runChatAgent(
     (sum, m) => sum + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length),
     0
   );
-  console.log(`🤖 streamText start: msgs=${msgCount} ~chars=${estimatedChars} (~${Math.round(estimatedChars / 4)} tokens) rag=${ragRetrievalEnabled}`);
+  // Рус. текст ≈ 2.34 симв/токен (не 4 как для EN). Уточнённая оценка.
+  console.log(`🤖 streamText start: msgs=${msgCount} ~chars=${estimatedChars} (~${Math.round(estimatedChars / 2.3)} tokens) rag=${ragRetrievalEnabled}`);
   const agentStartMs = Date.now();
 
   const stream = createUIMessageStream({
@@ -276,7 +277,12 @@ export async function runChatAgent(
 
       const result = streamText({
         model,
-        temperature: 0,
+        // Qwen3 non-thinking: temperature=0.7, topP=0.8, topK=20 (официальные рекомендации HuggingFace).
+        // presencePenalty=1.5 подавляет повторения в квантованных моделях.
+        temperature: 0.7,
+        topP: 0.8,
+        topK: 20,
+        presencePenalty: 1.5,
         messages: messagesWithUserPrompt,
         system: adaptedSystemPrompt,
         tools,
