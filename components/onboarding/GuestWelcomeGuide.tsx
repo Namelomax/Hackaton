@@ -77,6 +77,13 @@ export function GuestWelcomeGuide({ open, modelIds }: GuestWelcomeGuideProps) {
           </section>
 
           <section>
+            <h3 className="font-semibold text-neutral-900 mb-1">Если модель долго думает или тупит</h3>
+            <p>
+              пока модель формирует ответ вместо кнопки отправки сообщения, будет кнопка "Отмена" которая позволит вам отменить отправку сообщения. Пока вы видете эту кнопку, ии еще что-то делает, даже если этого не видно.
+            </p>
+          </section>
+
+          <section>
             <h3 className="font-semibold text-neutral-900 mb-1">Как устроен интерфейс</h3>
             <ul className="list-disc pl-5 space-y-1">
               <li>
