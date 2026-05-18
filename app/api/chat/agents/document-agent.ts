@@ -12,6 +12,11 @@ import {
 import { generateProtocolDocx } from '@/lib/docx-generator';
 import { SGR_DOCUMENT_AGENT_PROMPT } from '@/lib/prompts/sgr-prompts';
 import { ollamaProtocolMaxOutputTokens } from '@/lib/ollama-limits';
+import {
+  buildProtocolDraftFromChat,
+  formatChatDraftForPrompt,
+  mergeProtocolWithChatDraft,
+} from '@/lib/protocol-chat-extract';
 
 function extractMessageText(msg: any): string {
   if (!msg) return '';
@@ -162,10 +167,22 @@ export async function generateFinalDocument(
     delta: '📝 Формирование протокола обследования\n',
   });
 
+  const chatDraft = buildProtocolDraftFromChat(uiMessages);
+  const agreedChatContext = formatChatDraftForPrompt(chatDraft);
+  if (Object.keys(chatDraft).length > 0) {
+    console.log(
+      `[generateFinalDocument] chat draft: terms=${chatDraft.termsAndDefinitions?.length ?? 0} abbr=${chatDraft.abbreviations?.length ?? 0} topics=${chatDraft.meetingContent?.topics?.length ?? 0} qa=${chatDraft.questionsAndAnswers?.length ?? 0} decisions=${chatDraft.decisions?.length ?? 0} open=${chatDraft.openQuestions?.length ?? 0}`,
+    );
+  }
+
   // Use SGR-enhanced document generation prompt
-  const protocolPrompt = SGR_DOCUMENT_AGENT_PROMPT
-    .replace('{{CONVERSATION_CONTEXT}}', conversationContext)
-    .replace('{{EXISTING_DOCUMENT_CONTEXT}}', existingDocumentContext);
+  const protocolPrompt = SGR_DOCUMENT_AGENT_PROMPT.replace('{{CONVERSATION_CONTEXT}}', conversationContext)
+    .replace('{{EXISTING_DOCUMENT_CONTEXT}}', existingDocumentContext)
+    .replace(
+      '{{AGREED_CHAT_CONTEXT}}',
+      agreedChatContext ||
+        '(Отдельный блок согласованных разделов не выделен — используйте подтверждённые пользователем формулировки из истории диалога.)',
+    );
 
   let markdownContent = '';
 
@@ -185,7 +202,7 @@ export async function generateFinalDocument(
     let lastTitle = '';
 
     for await (const partial of streamResult.partialObjectStream) {
-      const safeProtocol = coerceProtocolPartial(partial);
+      const safeProtocol = mergeProtocolWithChatDraft(coerceProtocolPartial(partial), chatDraft);
 
       let nextMarkdown = '';
       try {
@@ -230,6 +247,8 @@ export async function generateFinalDocument(
         'Итоговый протокол не прошёл проверку структуры (protocol-schema). Сформируйте документ повторно или дополните расшифровку.',
       );
     }
+
+    validated = mergeProtocolWithChatDraft(validated, chatDraft);
 
     const finalMarkdown = protocolToMarkdown(validated);
     markdownContent = finalMarkdown;
@@ -279,7 +298,10 @@ function protocolToMarkdown(protocol: Protocol): string {
   md += '\n\n';
 
   md += `3.\tУчастники:\n\n`;
-  md += `**Со стороны Заказчика ${protocol.participants.customer.organizationName}:**\n\n`;
+  const custOrg = protocol.participants.customer.organizationName.trim();
+  const custLabel =
+    custOrg && !/^заказчик$/i.test(custOrg) ? custOrg : 'группы компаний Форус';
+  md += `**Со стороны Заказчика (${custLabel}):**\n\n`;
   md += '| ФИО | Должность |\n';
   md += '| --- | --- |\n';
   protocol.participants.customer.people.forEach((p) => {
@@ -287,7 +309,10 @@ function protocolToMarkdown(protocol: Protocol): string {
   });
 
   md += '\n\n';
-  md += `**Со стороны Исполнителя ${protocol.participants.executor.organizationName}:**\n\n`;
+  const execOrg = protocol.participants.executor.organizationName.trim();
+  const execLabel =
+    execOrg && !/^исполнитель$/i.test(execOrg) ? execOrg : 'команды разработчиков';
+  md += `**Со стороны Исполнителя (${execLabel}):**\n\n`;
   md += '| ФИО | Должность/роль |\n';
   md += '| --- | --- |\n';
   protocol.participants.executor.people.forEach((p) => {
