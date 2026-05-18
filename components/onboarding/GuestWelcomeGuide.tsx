@@ -79,6 +79,7 @@ export function GuestWelcomeGuide({ open, modelIds }: GuestWelcomeGuideProps) {
                   {f.note ? ` — ${f.note}` : ''}
                 </li>
               ))}
+              Можете попробовать загрузить и любой другой формат, если он будет недоступен система об этом вам сообщит.
             </ul>
           </section>
 
