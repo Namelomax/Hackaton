@@ -5,6 +5,8 @@ import {
   ProtocolSchema,
   coerceProtocolPartial,
   parseProtocolStrict,
+  extractNoObjectGeneratedText,
+  parseLooseJsonObject,
   type Protocol,
 } from '@/lib/schemas/protocol-schema';
 import { generateProtocolDocx } from '@/lib/docx-generator';
@@ -210,8 +212,18 @@ export async function generateFinalDocument(
     }
 
     let validated: Protocol;
+    let rawFinal: unknown;
     try {
-      validated = parseProtocolStrict(await streamResult.object);
+      rawFinal = await streamResult.object;
+    } catch (objErr) {
+      const fallbackText = extractNoObjectGeneratedText(objErr);
+      const recovered = fallbackText ? parseLooseJsonObject(fallbackText) : null;
+      if (!recovered) throw objErr;
+      rawFinal = recovered;
+      console.warn('[generateFinalDocument] recovered JSON from fenced / non-schema LLM output');
+    }
+    try {
+      validated = parseProtocolStrict(rawFinal);
     } catch (validationErr) {
       console.error('[generateFinalDocument] Protocol schema validation failed:', validationErr);
       throw new Error(
