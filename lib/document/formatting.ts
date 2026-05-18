@@ -1,3 +1,17 @@
+/**
+ * Убирает лишние маркеры ненумерованного списка перед нумерованными блоками
+ * (типичный артефакт генерации: «•», пустая строка, затем 1. 2. 3.).
+ */
+export function normalizeDocumentPanelMarkdown(raw: string): string {
+  if (!raw) return '';
+  let s = raw.replace(/\r\n?/g, '\n');
+  // Строка только из маркера списка без текста
+  s = s.replace(/(^|\n)[ \t]*(?:[-*•])[ \t]*(?=\n)/g, '$1');
+  // Маркер списка с пустой строкой перед нумерованным списком
+  s = s.replace(/(^|\n)[ \t]*(?:[-*•])[ \t]*\n+(?=\s*\d+\.\s)/g, '$1\n');
+  return s;
+}
+
 export function formatDocumentContent(raw: string) {
   if (!raw) return '';
   const normalized = raw.replace(/\r\n?/g, '\n');

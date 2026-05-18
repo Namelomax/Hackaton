@@ -23,6 +23,7 @@ export type ChatTransportBodyExtras = {
   chatModel: string;
   useRagContext: boolean;
   ragMode: string;
+  useThinking?: boolean;
 };
 
 async function blobUrlToFile(url: string, filename: string, mediaType?: string): Promise<File> {
@@ -396,8 +397,7 @@ type PromptInputWrapperProps = {
 
 /**
  * Файлы крупнее этого порога автоматически уходят в RAG-индекс вместо прямого вложения.
- * ~30KB ≈ 5–7 страниц A4 — при qwen3:14b (контекст 65K) можно поднять до 60_000,
- * при gemma3:27b (128K) — до 100_000.
+ * ~30KB ≈ 5–7 страниц A4 — порог можно поднять при большом KV-cache контекста модели.
  */
 
 export const PromptInputWrapper = ({

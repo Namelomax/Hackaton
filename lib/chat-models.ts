@@ -1,7 +1,13 @@
 /** Allowed local chat models (must match `ollama list` names). */
-export const DEFAULT_LOCAL_CHAT_MODELS = ['qwen3:14b', 'qwen3.6:27b'] as const;
+export const DEFAULT_LOCAL_CHAT_MODELS = ['qwen3:14b', 'qwen3.5:9b'] as const;
 
-/** Available OpenRouter cloud models shown in the UI dropdown. */
+/** Короткие подписи для селектора моделей в UI */
+export const LOCAL_MODEL_LABELS: Record<string, string> = {
+  'qwen3:14b': 'Qwen3 14B',
+  'qwen3.5:9b': 'Qwen3.5 9B',
+};
+
+/** Available OpenRouter cloud models (optional admin UI / env). */
 export const OPENROUTER_MODELS: { id: string; label: string }[] = [
   { id: 'nvidia/nemotron-3-super-120b-a12b:free', label: 'Nemotron 120B (free)' },
   { id: 'openrouter/owl-alpha', label: 'Owl Alpha' },

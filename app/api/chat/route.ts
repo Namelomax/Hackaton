@@ -72,7 +72,7 @@ function resolveLanguageModel(body: Record<string, unknown>) {
         if (init?.body && typeof init.body === 'string') {
           try {
             const parsed = JSON.parse(init.body);
-            parsed.think = Boolean(body.useThinking);
+            parsed.think = true;
             return fetch(url, { ...init, body: JSON.stringify(parsed) });
           } catch { /* fallthrough */ }
         }
@@ -413,7 +413,7 @@ async function extractPptxTextFromAttachment(att: any): Promise<string | null> {
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
-  let { messages, newSystemPrompt, userId, selectedPromptId, documentContent, useRagContext, ragMode, useThinking } =
+  let { messages, newSystemPrompt, userId, selectedPromptId, documentContent, useRagContext, ragMode } =
     body as any;
   let conversationId: string | null = null;
 

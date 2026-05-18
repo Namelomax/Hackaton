@@ -17,11 +17,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { parseModelsFromEnv, pickDefaultLocalChatModel, OPENROUTER_MODELS } from '@/lib/chat-models';
+import { parseModelsFromEnv, pickDefaultLocalChatModel, LOCAL_MODEL_LABELS } from '@/lib/chat-models';
 import { copyTextToClipboard } from '@/lib/copyToClipboard';
+import { toast } from 'sonner';
 import { resolveMessagesFromRecord } from '@/lib/conversationMessages';
-
-const DEFAULT_OPENROUTER_MODEL = 'nvidia/nemotron-3-super-120b-a12b:free';
 
 /** Не передавать пустой documentContent в PUT — иначе БД перезапишет документ пустой строкой */
 function buildPersistPutBody(
@@ -39,34 +38,28 @@ function buildPersistPutBody(
 export default function ChatPage() {
   const localModels = useMemo(() => parseModelsFromEnv(process.env.NEXT_PUBLIC_LOCAL_MODELS), []);
 
-  const [chatProvider, setChatProvider] = useState<'openrouter' | 'ollama'>('ollama');
   const [chatModel, setChatModel] = useState<string>(() =>
     pickDefaultLocalChatModel(process.env.NEXT_PUBLIC_LOCAL_MODELS),
   );
 
-  useEffect(() => {
-    if (chatProvider === 'ollama') {
-      setChatModel((prev) =>
-        localModels.includes(prev) ? prev : pickDefaultLocalChatModel(process.env.NEXT_PUBLIC_LOCAL_MODELS),
-      );
-    } else {
-      setChatModel(DEFAULT_OPENROUTER_MODEL);
-    }
-  }, [chatProvider, localModels]);
-
   const [useRagContext, setUseRagContext] = useState(false);
-  const [useThinking, setUseThinking] = useState(false);
 
   const chatBody = useMemo(
     () => ({
-      chatProvider,
+      chatProvider: 'ollama' as const,
       chatModel,
       useRagContext,
       ragMode: 'hybrid' as const,
-      useThinking,
+      useThinking: true,
     }),
-    [chatProvider, chatModel, useRagContext, useThinking],
+    [chatModel, useRagContext],
   );
+
+  useEffect(() => {
+    setChatModel((prev) =>
+      localModels.includes(prev) ? prev : pickDefaultLocalChatModel(process.env.NEXT_PUBLIC_LOCAL_MODELS),
+    );
+  }, [localModels]);
 
   const [authChecked, setAuthChecked] = useState(false);
   const [conversationsLoaded, setConversationsLoaded] = useState(false);
@@ -469,7 +462,7 @@ export default function ChatPage() {
 
     // If another chat is still streaming, block sending to avoid mixing contexts.
     if (status !== 'ready') {
-      alert('Сейчас ИИ отвечает в другом чате. Дождитесь завершения ответа, прежде чем отправлять сообщение здесь.');
+      toast.warning('ИИ ещё отвечает', { description: 'Дождитесь завершения ответа в текущем чате.' });
       return null;
     }
 
@@ -723,11 +716,11 @@ export default function ChatPage() {
             }
         }
       } else {
-        alert(json?.message || 'Auth failed');
+        toast.error('Ошибка входа', { description: json?.message || 'Неверный логин или пароль.' });
       }
     } catch (err) {
       console.error(err);
-      alert('Request failed');
+      toast.error('Ошибка сети', { description: 'Не удалось выполнить запрос. Проверьте соединение.' });
     }
   };
 
@@ -825,34 +818,37 @@ export default function ChatPage() {
 
   const handleDeleteConversation = async (conv: any) => {
     if (!conv?.id) return;
-    const confirmed = window.confirm('Удалить этот чат?');
-    if (!confirmed) return;
 
-    if (String(conv.id).startsWith('local-')) {
-      removeConversationFromState(conv.id);
-      return;
-    }
-
-    if (!authUser?.id) {
-      alert('Необходимо войти, чтобы удалить сохранённый чат');
-      return;
-    }
-
-    try {
-      const resp = await fetch('/api/conversations', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversationId: conv.id, userId: authUser.id }),
-      });
-      const j = await resp.json().catch(() => ({}));
-      if (!resp.ok || !j?.success) {
-        throw new Error(j?.message || 'delete failed');
+    const doDelete = async () => {
+      if (String(conv.id).startsWith('local-')) {
+        removeConversationFromState(conv.id);
+        return;
       }
-      removeConversationFromState(conv.id);
-    } catch (err) {
-      console.error('Failed to delete conversation', err);
-      alert('Не удалось удалить чат');
-    }
+      if (!authUser?.id) {
+        toast.warning('Необходима авторизация', { description: 'Войдите, чтобы удалять сохранённые чаты.' });
+        return;
+      }
+      try {
+        const resp = await fetch('/api/conversations', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversationId: conv.id, userId: authUser.id }),
+        });
+        const j = await resp.json().catch(() => ({}));
+        if (!resp.ok || !j?.success) throw new Error(j?.message || 'delete failed');
+        removeConversationFromState(conv.id);
+        toast.success('Чат удалён');
+      } catch (err) {
+        console.error('Failed to delete conversation', err);
+        toast.error('Не удалось удалить чат', { description: 'Попробуйте ещё раз.' });
+      }
+    };
+
+    toast('Удалить этот чат?', {
+      description: conv.title ? `«${conv.title}»` : undefined,
+      action: { label: 'Удалить', onClick: doDelete },
+      cancel: { label: 'Отмена', onClick: () => {} },
+    });
   };
 
   const handleCopy = async (text: string, id: string) => {
@@ -862,7 +858,7 @@ export default function ChatPage() {
       setTimeout(() => setCopiedId(null), 2000);
     } else {
       console.error('Clipboard: не удалось скопировать');
-      alert('Копирование недоступно в этом браузере (нужен HTTPS или разрешение на буфер).');
+      toast.error('Копирование недоступно', { description: 'Нужен HTTPS или разрешение браузера на буфер обмена.' });
     }
   };
 
@@ -1096,66 +1092,18 @@ export default function ChatPage() {
           <div className="border-t px-4 py-2 min-h-[104px]">
             <div className="max-w-3xl mx-auto space-y-2">
               <div className="flex flex-wrap gap-2 items-center text-xs text-neutral-700 pb-1">
-                <Select
-                  value={chatProvider}
-                  onValueChange={(v) => setChatProvider(v as 'openrouter' | 'ollama')}
-                >
-                  <SelectTrigger size="sm" className="h-8 min-w-[160px]">
-                    <SelectValue placeholder="Провайдер LLM" />
+                <Select value={chatModel} onValueChange={setChatModel}>
+                  <SelectTrigger size="sm" className="h-8 min-w-[180px]">
+                    <SelectValue placeholder="Модель" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="openrouter">Облако (OpenRouter)</SelectItem>
-                    <SelectItem value="ollama">Локально (Ollama)</SelectItem>
+                    {localModels.map((m) => (
+                      <SelectItem key={m} value={m}>
+                        {LOCAL_MODEL_LABELS[m] ?? m}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
-
-                {chatProvider === 'ollama' ? (
-                  <Select value={chatModel} onValueChange={setChatModel}>
-                    <SelectTrigger size="sm" className="h-8 min-w-[140px]">
-                      <SelectValue placeholder="Модель" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {localModels.map((m) => (
-                        <SelectItem key={m} value={m}>
-                          {m}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <Select value={chatModel} onValueChange={setChatModel}>
-                    <SelectTrigger size="sm" className="h-8 min-w-[160px]">
-                      <SelectValue placeholder="Облачная модель" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {OPENROUTER_MODELS.map((m) => (
-                        <SelectItem key={m.id} value={m.id}>
-                          {m.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-
-                <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    className="rounded border-neutral-300"
-                    checked={useRagContext}
-                    onChange={(e) => setUseRagContext(e.target.checked)}
-                  />
-                  Контекст из RAG
-                </label>
-
-                <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    className="rounded border-neutral-300"
-                    checked={useThinking}
-                    onChange={(e) => setUseThinking(e.target.checked)}
-                  />
-                  Thinking
-                </label>
               </div>
               <PromptInputWrapper
                 className="w-full"

@@ -9,9 +9,10 @@ import remarkGfm from "remark-gfm";
 type ResponseProps = ComponentProps<typeof Streamdown>;
 
 export const Response = memo(
-  ({ className, ...props }: ResponseProps) => (
+  ({ className, remarkPlugins, controls, ...props }: ResponseProps) => (
     <Streamdown
-      remarkPlugins={[remarkGfm, remarkBreaks]}
+      remarkPlugins={remarkPlugins ?? [remarkGfm, remarkBreaks]}
+      controls={controls}
       className={cn(
         "size-full leading-relaxed [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
         "[&_a]:font-semibold [&_a]:underline-offset-4 [&_a:hover]:underline",
@@ -31,7 +32,11 @@ export const Response = memo(
       {...props}
     />
   ),
-  (prevProps, nextProps) => prevProps.children === nextProps.children
+    (prevProps, nextProps) =>
+      prevProps.children === nextProps.children &&
+      prevProps.controls === nextProps.controls &&
+      prevProps.remarkPlugins === nextProps.remarkPlugins &&
+      prevProps.className === nextProps.className
 );
 
 Response.displayName = "Response";

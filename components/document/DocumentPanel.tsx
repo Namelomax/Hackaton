@@ -16,12 +16,13 @@ import {
   X,
   Shield,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { Response } from '@/components/ai-elements/response';
 import { Button } from '@/components/ui/button';
 import { DocumentReviewPanel } from '@/components/document/DocumentReviewPanel';
 import type { DocumentReview } from '@/app/api/chat/agents/review-agent';
 import type { Attachment, DocumentState } from '@/lib/document/types';
-import { buildDocxMarkdown, extractTitleFromMarkdown, formatDocumentContent, sanitizeFilename } from '@/lib/document/formatting';
+import { buildDocxMarkdown, extractTitleFromMarkdown, formatDocumentContent, normalizeDocumentPanelMarkdown, sanitizeFilename } from '@/lib/document/formatting';
 import { copyTextToClipboard } from '@/lib/copyToClipboard';
 
 type DocumentPanelProps = {
@@ -150,7 +151,10 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
   })();
 
   const viewContent = isEmpty ? 'Описание: пример описания.' : localDoc.content;
-  const formattedContent = useMemo(() => formatDocumentContent(viewContent), [viewContent]);
+  const formattedContent = useMemo(() => {
+    const normalized = normalizeDocumentPanelMarkdown(viewContent);
+    return formatDocumentContent(normalized);
+  }, [viewContent]);
 
   const handleCopy = async () => {
     const formatted = `# ${displayTitle}\n\n${viewContent}`;
@@ -162,13 +166,13 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
       setTimeout(() => setCopied(false), 2000);
     } else {
       console.error('Ошибка при копировании: буфер недоступен');
-      alert('Копирование недоступно (HTTPS или разрешение браузера).');
+      toast.error('Копирование недоступно', { description: 'Требуется HTTPS или разрешение браузера на буфер обмена.' });
     }
   };
 
   const handleReview = async () => {
     if (!localDoc.content.trim()) {
-      alert('Невозможно проверить пустой документ');
+      toast.warning('Документ пуст', { description: 'Сначала сформируйте протокол, затем проверьте его.' });
       return;
     }
 
@@ -189,7 +193,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
       setIsReviewPanelOpen(true);
     } catch (error) {
       console.error('Review error:', error);
-      alert('Ошибка при проверке документа: ' + String(error));
+      toast.error('Ошибка проверки документа', { description: String(error) });
     } finally {
       setIsReviewing(false);
     }
@@ -510,7 +514,10 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
             />
           </div>
         ) : (
-          <Response className="prose prose-sm max-w-none dark:prose-invert">
+          <Response
+            className="document-panel-markdown prose prose-sm max-w-none dark:prose-invert"
+            controls={{ table: false }}
+          >
             {formattedContent}
           </Response>
         )}
