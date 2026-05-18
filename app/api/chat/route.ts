@@ -646,22 +646,30 @@ export async function POST(req: Request) {
   // 4. Prepare Context for Agents
   const userPrompt = await resolveSystemPrompt(userId, selectedPromptId);
 
-  /** Полное тело вложения только в последнем user-сообщении с файлами (без RAG), чтобы не раздувать контекст. */
+  /**
+   * Полное тело вложения — только если сообщение с файлом находится в последних
+   * MAX_DOC_FRESHNESS_MSGS сообщениях. Иначе — краткая сноска «файл получен».
+   * Это предотвращает переполнение контекста при длинных диалогах с большими документами.
+   */
+  const MAX_DOC_FRESHNESS_MSGS = 8; // включать полный текст если файл не старше 8 сообщений
   let lastUserWithAttachmentsIndex = -1;
   if (!ragOmitsAttachmentBodies) {
+    const cutoff = normalizedMessagesNonEmpty.length - MAX_DOC_FRESHNESS_MSGS;
     for (let i = normalizedMessagesNonEmpty.length - 1; i >= 0; i--) {
       const m = normalizedMessagesNonEmpty[i];
       if (m?.role !== 'user') continue;
       const ht = Array.isArray((m as any)?.metadata?.hiddenTexts) ? (m as any).metadata.hiddenTexts : [];
       if (ht.length > 0) {
-        lastUserWithAttachmentsIndex = i;
+        // Если вложение слишком старое — не включать полный текст (только ссылку)
+        lastUserWithAttachmentsIndex = i >= cutoff ? i : -1;
         break;
       }
     }
   }
 
   // Prepare hidden docs context and enrich messages with file content
-  const hiddenDocEntries: string[] = [];
+  const hiddenDocEntries: string[] = [];  // краткие сноски для системного блока
+  const hiddenDocsFull: string[] = [];    // полные тексты «устаревших» вложений для системного блока
   const messagesWithHidden: any[] = [];
 
   normalizedMessagesNonEmpty.forEach((msg, msgIdx) => {
@@ -686,7 +694,16 @@ export async function POST(req: Request) {
           `\n\n[Вложение «${attName || 'документ'}» — только имя; полный текст в промпт не передаётся (включён контекст из RAG).]`
         );
       } else {
-        fileContents.push(`\n\n---\nВложенный файл: ${attName || 'документ'}\n${cleaned}\n---`);
+        const isOldAttachment = msgIdx < (normalizedMessagesNonEmpty.length - MAX_DOC_FRESHNESS_MSGS);
+        if (isOldAttachment) {
+          // Документ слишком старый для истории — сохраним полный текст в системный контекст
+          hiddenDocsFull.push(`\n\n---\nВложенный файл: ${attName || 'документ'}\n${cleaned}\n---`);
+          fileContents.push(
+            `\n\n[Файл «${attName || 'документ'}» (${cleaned.length} симв.) приложен ранее; полный текст передан в системный блок «ВЛОЖЕНИЯ».]`
+          );
+        } else {
+          fileContents.push(`\n\n---\nВложенный файл: ${attName || 'документ'}\n${cleaned}\n---`);
+        }
       }
     });
 
@@ -720,9 +737,12 @@ export async function POST(req: Request) {
     }
   });
 
-  const hiddenDocsContext = hiddenDocEntries.length
-    ? hiddenDocEntries.join('\n\n').slice(0, 4000)
-    : '';
+  // Системный блок: краткие сноски + полные тексты «устаревших» вложений (перемещённых из истории)
+  // Лимит ~120 000 симв (~40 000 рус. токенов) оставляет место для системного промта + истории
+  const hiddenDocsContext = [
+    ...hiddenDocEntries.map(e => e.slice(0, 1200)),
+    ...hiddenDocsFull,
+  ].join('\n\n').slice(0, 120_000);
 
   const ragRetrievalEnabled =
     Boolean(useRagContext) && Boolean(process.env.RAG_API_URL?.trim());
