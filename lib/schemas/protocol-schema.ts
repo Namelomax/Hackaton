@@ -109,6 +109,44 @@ export type Protocol = z.infer<typeof ProtocolSchema>;
 const toStr = (value: unknown) => (value == null ? '' : String(value));
 const toArr = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
 
+const isBlankStr = (v: unknown) => toStr(v).trim().length === 0;
+
+/** Нет массива, length 0 или каждая строка «пустая» — типичный скелет от streamObject/schema. */
+function isVacuousArray(arr: unknown, rowIsEmpty: (row: unknown) => boolean): boolean {
+  if (!Array.isArray(arr) || arr.length === 0) return true;
+  return arr.every(rowIsEmpty);
+}
+
+function termsRowEmpty(row: unknown): boolean {
+  const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+  return isBlankStr(r.term ?? r.термин) && isBlankStr(r.definition ?? r.определение);
+}
+
+function abbrRowEmpty(row: unknown): boolean {
+  const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+  return isBlankStr(r.abbreviation ?? r.сокращение) && isBlankStr(r.fullForm ?? r.full_form ?? r.расшифровка);
+}
+
+function qaRowEmpty(row: unknown): boolean {
+  const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+  return isBlankStr(r.question ?? r.вопрос) && isBlankStr(r.answer ?? r.ответ);
+}
+
+function decisionRowEmpty(row: unknown): boolean {
+  const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+  return isBlankStr(r.decision ?? r.решение) && isBlankStr(r.responsible ?? r.ответственный);
+}
+
+function meetingTopicsVacuous(mc: unknown): boolean {
+  if (!mc || typeof mc !== 'object' || Array.isArray(mc)) return true;
+  const topics = (mc as Record<string, unknown>).topics;
+  if (!Array.isArray(topics) || topics.length === 0) return true;
+  return topics.every((row) => {
+    const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+    return isBlankStr(r.title ?? r.тема) && isBlankStr(r.content ?? r.суть);
+  });
+}
+
 /** Убирает ```json … ``` вокруг ответа модели (Ollama часто так отдаёт structured output). */
 export function stripMarkdownCodeFence(raw: string): string {
   let s = raw.trim();
@@ -327,16 +365,16 @@ function preprocessLlmProtocolShape(input: unknown): Record<string, unknown> {
     };
   }
 
-  if (!out.termsAndDefinitions && Array.isArray(p.terms)) {
+  if (isVacuousArray(out.termsAndDefinitions, termsRowEmpty) && Array.isArray(p.terms)) {
     out.termsAndDefinitions = p.terms;
   }
 
-  if (Array.isArray(p.abbreviations)) {
+  if (Array.isArray(p.abbreviations) && p.abbreviations.length > 0) {
     out.abbreviations = (p.abbreviations as unknown[]).map((item) => {
       const r = item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
       return {
-        abbreviation: toStr(r.abbreviation),
-        fullForm: toStr(r.fullForm ?? r.full_form),
+        abbreviation: toStr(r.abbreviation ?? r.сокращение),
+        fullForm: toStr(r.fullForm ?? r.full_form ?? r.расшифровка),
       };
     });
   }
@@ -370,16 +408,18 @@ function preprocessLlmProtocolShape(input: unknown): Record<string, unknown> {
   }
 
   const mc = out.meetingContent as Record<string, unknown> | undefined;
-  const topicsEmpty =
-    !mc ||
-    typeof mc !== 'object' ||
-    !Array.isArray(mc.topics) ||
-    (mc.topics as unknown[]).length === 0;
+  const topicsEmpty = meetingTopicsVacuous(out.meetingContent);
   if (topicsEmpty && typeof p.content === 'string') {
-    out.meetingContent = { introduction: p.content, topics: [] };
-  } else if (topicsEmpty && Array.isArray(p.content)) {
+    const prevIntro = mc && mc.introduction !== undefined ? toStr(mc.introduction).trim() : '';
+    const body = String(p.content);
     out.meetingContent = {
-      introduction: '',
+      introduction: prevIntro ? `${prevIntro}\n\n${body}` : body,
+      topics: [],
+    };
+  } else if (topicsEmpty && Array.isArray(p.content)) {
+    const prevIntro = mc && mc.introduction !== undefined ? toStr(mc.introduction) : '';
+    out.meetingContent = {
+      introduction: prevIntro,
       topics: (p.content as unknown[]).map((t) => {
         const row = t && typeof t === 'object' ? (t as Record<string, unknown>) : {};
         return {
@@ -390,7 +430,7 @@ function preprocessLlmProtocolShape(input: unknown): Record<string, unknown> {
     };
   }
 
-  if (!out.questionsAndAnswers) {
+  if (isVacuousArray(out.questionsAndAnswers, qaRowEmpty)) {
     const qa = (p.qa ?? p.questions_answers) as unknown;
     if (Array.isArray(qa)) {
       out.questionsAndAnswers = (qa as unknown[]).map((row) => {
@@ -403,32 +443,91 @@ function preprocessLlmProtocolShape(input: unknown): Record<string, unknown> {
     }
   }
 
-  if (!out.decisions && Array.isArray(p['8_решения'])) {
-    out.decisions = (p['8_решения'] as unknown[]).map((row) => {
-      const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
-      return {
-        decision: toStr(r.decision ?? r.решение),
-        responsible: toStr(r.responsible ?? r.ответственный),
-      };
-    });
+  if (isVacuousArray(out.decisions, decisionRowEmpty)) {
+    if (Array.isArray(p['8_решения'])) {
+      out.decisions = (p['8_решения'] as unknown[]).map((row) => {
+        const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+        return {
+          decision: toStr(r.decision ?? r.решение),
+          responsible: toStr(r.responsible ?? r.ответственный),
+        };
+      });
+    } else if (Array.isArray(p.decisions)) {
+      out.decisions = p.decisions as unknown[];
+    }
   }
 
   if (!out.approval && p.signatures && typeof p.signatures === 'object') {
     const sig = p.signatures as Record<string, unknown>;
     const exec = Array.isArray(sig.executor) ? sig.executor : [];
     const cli = Array.isArray(sig.client) ? sig.client : [];
-    const e0 = exec[0] && typeof exec[0] === 'object' ? (exec[0] as Record<string, unknown>) : undefined;
-    const c0 = cli[0] && typeof cli[0] === 'object' ? (cli[0] as Record<string, unknown>) : undefined;
+    const pickRep = (rows: unknown[]) => {
+      for (const row of rows) {
+        const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+        const name = toStr(r.name ?? r.fullName ?? r.фамилия_имя);
+        if (name.trim()) return name;
+      }
+      const r0 = rows[0] && typeof rows[0] === 'object' ? (rows[0] as Record<string, unknown>) : undefined;
+      return toStr(r0?.name ?? r0?.fullName ?? r0?.фамилия_имя ?? '');
+    };
     out.approval = {
       executorSignature: {
         organization: 'Исполнитель',
-        representative: toStr(e0?.name ?? e0?.fullName ?? e0?.фамилия_имя ?? ''),
+        representative: pickRep(exec),
       },
       customerSignature: {
         organization: 'Заказчик',
-        representative: toStr(c0?.name ?? c0?.fullName ?? c0?.фамилия_имя ?? ''),
+        representative: pickRep(cli),
       },
     };
+  }
+
+  /** Пустые подписи в `approval` — подставить ФИО и организации из участников (после merge client→customer). */
+  if (out.approval && typeof out.approval === 'object' && out.participants && typeof out.participants === 'object') {
+    const appr = out.approval as Record<string, unknown>;
+    const par = out.participants as Record<string, unknown>;
+    const pickFirstNamed = (rows: unknown[]) => {
+      for (const row of rows) {
+        const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+        const name = toStr(r.fullName ?? r.name ?? r.фамилия_имя);
+        if (name.trim()) return name;
+      }
+      return '';
+    };
+    const fillSide = (sigKey: string, grpKey: string, rawFallback: string) => {
+      const sig = appr[sigKey] as Record<string, unknown> | undefined;
+      if (!sig) return;
+      const grp = par[grpKey] as Record<string, unknown> | undefined;
+      let people: unknown[] = [];
+      if (grp && typeof grp === 'object' && !Array.isArray(grp) && Array.isArray(grp.people)) {
+        people = grp.people as unknown[];
+      } else if (Array.isArray(par[rawFallback])) {
+        people = par[rawFallback] as unknown[];
+      }
+      if (isBlankStr(sig.representative) && people.length) sig.representative = pickFirstNamed(people);
+      if (isBlankStr(sig.organization)) {
+        const orgFromGrp =
+          grp && typeof grp === 'object' && !Array.isArray(grp) ? toStr(grp.organizationName) : '';
+        sig.organization =
+          orgFromGrp.trim() ||
+          (sigKey === 'executorSignature' ? 'Исполнитель' : 'Заказчик');
+      }
+    };
+    fillSide('executorSignature', 'executor', 'executor');
+    fillSide('customerSignature', 'customer', 'client');
+  }
+
+  if (Array.isArray(out.termsAndDefinitions)) {
+    out.termsAndDefinitions = (out.termsAndDefinitions as unknown[]).filter((row) => !termsRowEmpty(row));
+  }
+  if (Array.isArray(out.abbreviations)) {
+    out.abbreviations = (out.abbreviations as unknown[]).filter((row) => !abbrRowEmpty(row));
+  }
+  if (Array.isArray(out.questionsAndAnswers)) {
+    out.questionsAndAnswers = (out.questionsAndAnswers as unknown[]).filter((row) => !qaRowEmpty(row));
+  }
+  if (Array.isArray(out.decisions)) {
+    out.decisions = (out.decisions as unknown[]).filter((row) => !decisionRowEmpty(row));
   }
 
   return out;
