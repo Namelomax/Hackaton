@@ -8,6 +8,20 @@ import { LOCAL_MODEL_LABELS } from '@/lib/chat-models';
 
 const STORAGE_KEY = 'guestWelcomeDismissed';
 
+/** Разделы протокола обследования (как в промптах и правой панели). */
+const PROTOCOL_SECTION_TITLES = [
+  'Номер протокола и дата встречи',
+  'Повестка',
+  'Участники',
+  'Термины и определения',
+  'Сокращения и обозначения',
+  'Содержание встречи',
+  'Вопросы и ответы',
+  'Решения и ответственные',
+  'Открытые вопросы',
+  'Согласовано',
+] as const;
+
 type GuestWelcomeGuideProps = {
   open: boolean;
   modelIds: string[];
@@ -114,6 +128,19 @@ export function GuestWelcomeGuide({ open, modelIds }: GuestWelcomeGuideProps) {
               Сейчас доступны {modelLabels.length > 0 ? modelLabels.join(' и ') : 'локальные модели'} — можно
               пробовать обе и сравнить качество на ваших материалах.
             </p>
+          </section>
+
+          <section>
+            <h3 className="font-semibold text-neutral-900 mb-1">Структура протокола</h3>
+            <p className="mb-2">
+              Итоговый протокол в правой панели собирается по заданной структуре.
+              При необходимости её легко заменить — через редактирование промпта.
+            </p>
+            <ol className="list-decimal pl-5 space-y-0.5 text-neutral-800">
+              {PROTOCOL_SECTION_TITLES.map((title) => (
+                <li key={title}>{title}</li>
+              ))}
+            </ol>
           </section>
         </div>
 
