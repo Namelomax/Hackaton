@@ -1,4 +1,5 @@
 import type { Protocol } from '@/lib/schemas/protocol-schema';
+import { isValidParticipantRow } from '@/lib/protocol-markdown-format';
 import { cleanProtocolText, isProtocolBoilerplateLine } from '@/lib/protocol-markdown-format';
 
 type ChatTurn = { role: string; text: string };
@@ -248,7 +249,10 @@ function parseParticipantsFromBlocks(blocks: string[]): Protocol['participants']
           .map((c) => c.trim())
           .filter(Boolean);
         if (cells.length < 2 || /фио|должность/i.test(cells[0])) continue;
-        rows.push({ fullName: stripTimecodes(cells[0]), position: stripTimecodes(cells[1]) });
+        const fullName = stripTimecodes(cells[0]);
+        const position = stripTimecodes(cells[1]);
+        if (!isValidParticipantRow(fullName, position)) continue;
+        rows.push({ fullName, position });
       }
       if (rows.length) {
         if (side === 'customer') customerPeople = rows;

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isValidParticipantRow } from '@/lib/protocol-markdown-format';
 
 // Участник (для таблиц)
 export const ParticipantSchema = z.object({
@@ -539,13 +540,15 @@ export function coerceProtocolPartial(partial: unknown): Protocol {
   const p = pre && typeof pre === 'object' && !Array.isArray(pre) ? pre : {};
 
   const toPeople = (value: unknown) =>
-    toArr(value).map((row: unknown) => {
-      const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
-      return {
-        fullName: toStr(r.fullName ?? r.name ?? r.фамилия_имя),
-        position: toStr(r.position ?? r.role),
-      };
-    });
+    toArr(value)
+      .map((row: unknown) => {
+        const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+        return {
+          fullName: toStr(r.fullName ?? r.name ?? r.фамилия_имя),
+          position: toStr(r.position ?? r.role),
+        };
+      })
+      .filter((p) => isValidParticipantRow(p.fullName, p.position));
 
   const meetingContentRaw =
     p.meetingContent && typeof p.meetingContent === 'object' && !Array.isArray(p.meetingContent)

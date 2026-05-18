@@ -21,6 +21,7 @@ import {
   cleanProtocolText,
   formatNumberedLine,
   formatProtocolSectionHeading,
+  isValidParticipantRow,
 } from '@/lib/protocol-markdown-format';
 
 function extractMessageText(msg: any): string {
@@ -294,7 +295,9 @@ function protocolToMarkdown(protocol: Protocol): string {
 
   md += formatProtocolSectionHeading(1, `Дата встречи: ${protocol.meetingDate}`);
 
-  md += formatProtocolSectionHeading(2, `Повестка: ${protocol.agenda.title}`);
+  md += formatProtocolSectionHeading(2, 'Повестка:');
+  const agendaTitle = cleanProtocolText(protocol.agenda.title);
+  if (agendaTitle) md += `${agendaTitle}\n\n`;
   if (protocol.agenda.items.length > 0) {
     protocol.agenda.items.forEach((item) => {
       md += `- ${item}\n`;
@@ -309,9 +312,11 @@ function protocolToMarkdown(protocol: Protocol): string {
   md += `**Со стороны Заказчика (${custLabel}):**\n\n`;
   md += '| ФИО | Должность |\n';
   md += '| --- | --- |\n';
-  protocol.participants.customer.people.forEach((p) => {
-    md += `| ${p.fullName} | ${p.position} |\n`;
-  });
+  protocol.participants.customer.people
+    .filter((p) => isValidParticipantRow(p.fullName, p.position))
+    .forEach((p) => {
+      md += `| ${p.fullName} | ${p.position} |\n`;
+    });
 
   md += '\n\n';
   const execOrg = protocol.participants.executor.organizationName.trim();
@@ -320,9 +325,11 @@ function protocolToMarkdown(protocol: Protocol): string {
   md += `**Со стороны Исполнителя (${execLabel}):**\n\n`;
   md += '| ФИО | Должность/роль |\n';
   md += '| --- | --- |\n';
-  protocol.participants.executor.people.forEach((p) => {
-    md += `| ${p.fullName} | ${p.position} |\n`;
-  });
+  protocol.participants.executor.people
+    .filter((p) => isValidParticipantRow(p.fullName, p.position))
+    .forEach((p) => {
+      md += `| ${p.fullName} | ${p.position} |\n`;
+    });
 
   md += '\n\n';
 

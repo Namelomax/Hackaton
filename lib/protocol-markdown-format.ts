@@ -58,6 +58,20 @@ export function formatProtocolSectionHeading(sectionNum: number, title: string):
   return `## ${sectionNum}. ${body}\n\n`;
 }
 
+/** Строка markdown-таблицы вида | --- | --- | или | ----- | ---------- | */
+export function isMarkdownTableSeparatorRow(cells: string[]): boolean {
+  if (cells.length < 2) return false;
+  return cells.every((c) => /^:?-{2,}:?$/.test(c.trim()) || /^[-–—:\s|]+$/i.test(c.trim()));
+}
+
+export function isValidParticipantRow(fullName: string, position: string): boolean {
+  const fn = fullName.trim();
+  const pos = position.trim();
+  if (!fn && !pos) return false;
+  if (/^(фио|должность|роль)$/i.test(fn)) return false;
+  return !isMarkdownTableSeparatorRow([fn, pos]);
+}
+
 const PROTOCOL_SECTION_HEADING_RX =
   /^(\d{1,2})\.\s+(Дата встречи|Повестка|Участники|Термины и определения|Сокращения и обозначения|Содержание встречи|Вопросы|Решения|Открытые вопросы|Согласовано)\b(.*)$/i;
 
@@ -65,13 +79,50 @@ const PROTOCOL_SECTION_HEADING_RX =
  * Старые протоколы: «4. Термины…» + «1. ФЗ…» рендерились как один список 4–7.
  * Превращаем строки разделов в markdown-заголовки.
  */
-export function fixProtocolSectionHeadingsInMarkdown(raw: string): string {
+/** Повестка — только «## 2. Повестка:», текст темы отдельным абзацем. */
+export function fixAgendaHeadingInMarkdown(raw: string): string {
   return raw.replace(/\r\n?/g, '\n').split('\n').map((line) => {
     const trimmed = line.trimStart();
-    if (/^#{1,6}\s+\d{1,2}\./.test(trimmed)) return line;
-    const m = trimmed.match(PROTOCOL_SECTION_HEADING_RX);
-    if (!m) return line;
+    const m = trimmed.match(/^(#{1,6}\s+)?2\.\s+Повестка:\s*(.+)$/i);
+    if (!m?.[2]?.trim()) return line;
     const indent = line.slice(0, line.length - trimmed.length);
-    return `${indent}## ${m[1]}. ${m[2]}${m[3]}`;
+    return `${indent}## 2. Повестка:\n\n${indent}${m[2].trim()}`;
   }).join('\n');
+}
+
+/** Убирает дублирующую строку | ----- | после стандартного | --- | --- |. */
+export function stripDuplicateMarkdownTableSeparators(raw: string): string {
+  const lines = raw.replace(/\r\n?/g, '\n').split('\n');
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (/^\|/.test(trimmed)) {
+      const cells = trimmed.split('|').map((c) => c.trim()).filter(Boolean);
+      if (isMarkdownTableSeparatorRow(cells) && out.length > 0) {
+        const prev = out[out.length - 1]?.trim() ?? '';
+        const prevCells = prev.split('|').map((c) => c.trim()).filter(Boolean);
+        if (isMarkdownTableSeparatorRow(prevCells)) continue;
+      }
+    }
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
+export function fixProtocolSectionHeadingsInMarkdown(raw: string): string {
+  let s = raw.replace(/\r\n?/g, '\n');
+  s = s
+    .split('\n')
+    .map((line) => {
+      const trimmed = line.trimStart();
+      if (/^#{1,6}\s+\d{1,2}\./.test(trimmed)) return line;
+      const m = trimmed.match(PROTOCOL_SECTION_HEADING_RX);
+      if (!m) return line;
+      const indent = line.slice(0, line.length - trimmed.length);
+      return `${indent}## ${m[1]}. ${m[2]}${m[3]}`;
+    })
+    .join('\n');
+  s = fixAgendaHeadingInMarkdown(s);
+  return stripDuplicateMarkdownTableSeparators(s);
 }
