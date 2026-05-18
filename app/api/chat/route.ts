@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation } from '@/lib/getPromt';
 import { parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
 import { applyOllamaOpenAiCompatOptions, ollamaChatMaxOutputTokens } from '@/lib/ollama-limits';
+import { PROTOCOL_CHAT_TIMECODE_APPENDIX } from '@/lib/protocol-timecodes';
 import { fetchRagSnippet } from '@/lib/rag-client';
 import {
   buildUserProvidedSection1Appendix,
@@ -127,7 +128,7 @@ ${hiddenDocsContext}
         ? '\n4. Режим RAG: ниже могут быть только имена файлов без полного текста — опирайся на блок RAG выше.'
         : ''
     }
-${ragOmitsAttachmentBodies ? '5.' : '4.'} Если ниже есть полный текст расшифровки с таймкодами — диалог уже начался: не представляйся и не пиши вступление «я агент Форус»; сразу переходи к разделу 1 протокола (номер и дата).
+${ragOmitsAttachmentBodies ? '5.' : '4.'} Если ниже полная расшифровка (строки «Спикер N:» и «ЧЧ:ММ:СС — текст») — диалог уже начался: не представляйся; сразу раздел 1; в чате у каждого факта — [ТС: ЧЧ:ММ:СС] из соответствующей строки расшифровки.
 ===== КОНЕЦ ВЛОЖЕНИЙ =====`;
 }
 
@@ -960,7 +961,10 @@ export async function POST(req: Request) {
 
   if (ragRetrievalEnabled) {
     systemPrompt += RAG_TOOL_MODE_SYSTEM_APPENDIX;
-    // RAG tool enabled log removed (verbose);
+  }
+
+  if (hasInlineTranscript) {
+    systemPrompt += PROTOCOL_CHAT_TIMECODE_APPENDIX;
   }
 
   // messages-prepared verbose log removed

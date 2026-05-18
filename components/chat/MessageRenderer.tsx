@@ -233,23 +233,6 @@ export const MessageRenderer = ({
 
   const isToolsStreaming = status === 'streaming' && isLastMessage && toolParts.length > 0;
 
-  const [streamElapsedSec, setStreamElapsedSec] = useState(0);
-  useEffect(() => {
-    const streamingThisMessage =
-      message.role === 'assistant' &&
-      isLastMessage &&
-      status === 'streaming';
-    if (!streamingThisMessage) {
-      setStreamElapsedSec(0);
-      return;
-    }
-    const started = Date.now();
-    const id = setInterval(() => {
-      setStreamElapsedSec(Math.floor((Date.now() - started) / 1000));
-    }, 1000);
-    return () => clearInterval(id);
-  }, [message.role, isLastMessage, status]);
-
   return (
     <Message from={message.role}>
       <MessageContent>
@@ -372,13 +355,6 @@ export const MessageRenderer = ({
         {assistantStreamingAwaitingText && (
           <div className="flex items-center gap-2 py-1 text-muted-foreground" aria-live="polite">
             <Loader size={18} />
-            <span className="text-xs">
-              Генерация ответа…
-              {streamElapsedSec > 0 ? ` ${streamElapsedSec} с` : ''}
-              {streamElapsedSec >= 45
-                ? ' (большая расшифровка — может занять несколько минут)'
-                : ''}
-            </span>
           </div>
         )}
 
@@ -391,8 +367,7 @@ export const MessageRenderer = ({
             (isLastMessage && textParts.length === 0)) && (
             <Response className="text-muted-foreground text-sm">
               Ответ не удалось сформировать (модель исчерпала лимит или остановилась после
-              инструментов). Отключите «контекст из RAG», если файл уже прикреплён, и отправьте
-              сообщение снова — или нажмите «Повторить».
+              инструментов). Отправьте сообщение снова или нажмите «Повторить».
             </Response>
           )}
 

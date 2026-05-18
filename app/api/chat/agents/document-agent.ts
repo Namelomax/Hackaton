@@ -34,6 +34,7 @@ function stripTimecodeMarkers(text: string): string {
   if (!text) return '';
   return text
     .replace(/\{\{ТС:\s*\d{1,2}:\d{2}(?::\d{2})?\}\}/gi, '')
+    .replace(/\[ТС:\s*\d{1,2}:\d{2}(?::\d{2})?\]/gi, '')
     .replace(/\[TC:\s*\d{1,2}:\d{2}(?::\d{2})?\]/gi, '')
     .replace(/\s{2,}/g, ' ')
     .trim();

@@ -11,6 +11,7 @@ import {
   createPublishInvestigationProtocolTool,
   type ProtocolGenerationSink,
 } from "./protocol-tools";
+import { PROTOCOL_TIMECODE_ADAPTATION_LINE } from "@/lib/protocol-timecodes";
 import { createRetrieveFromIndexedDocumentsTool } from "./rag-tools";
 import {
   ollamaStreamHeartbeatMs,
@@ -109,7 +110,9 @@ function adaptSystemPrompt(
 
     const adaptation = `АДАПТАЦИЯ: Расшифровка получена
 ОДИН РАЗДЕЛ ПРОТОКОЛА ЗА ОДНО СООБЩЕНИЕ:
-Не объединяй в одном ответе разделы 6–10 или любые два номера раздела подряд. После «Верно» пользователя — в следующем сообщении только следующий раздел. У каждого факта из расшифровки — свой тайм-код [ТС: ЧЧ:ММ:СС]; диапазоны «от — до» запрещены.
+Не объединяй в одном ответе разделы 6–10 или любые два номера раздела подряд. После «Верно» пользователя — в следующем сообщении только следующий раздел.
+
+ТАЙМ-КОДЫ: ${PROTOCOL_TIMECODE_ADAPTATION_LINE} Пример: строка «00:02:47 — … Никита Касьянов, представитель Форус» → «…Форус [ТС: 00:02:47].» Таблица участников — [ТС: …] в каждой ячейке с фактом. Без [ТС: …] в ответе по расшифровке — недопустимо.
 ════════════════════════════════════════════
  ПРОПУСТИ ЭТАП 1 (приветствие)!
  Расшифровка встречи уже доступна — в системном блоке «ВЛОЖЕНИЯ»${useRagTool ? " и/или в RAG-индексе" : ""}.
@@ -304,30 +307,9 @@ export async function runChatAgent(
   let streamedReasoningChars = 0;
   let streamPhase: "prefill" | "generating" = "prefill";
 
-  const emitOllamaProgress = (
-    writer: Parameters<Parameters<typeof createUIMessageStream>[0]["execute"]>[0]["writer"],
-    phase: "prefill" | "generating",
-  ) => {
-    const elapsedSec = Math.round((Date.now() - agentStartMs) / 1000);
-    writer.write({
-      type: "data-ollama-progress",
-      transient: true,
-      data: {
-        phase,
-        elapsedSec,
-        outChars: streamedTextChars,
-        reasoningChars: streamedReasoningChars,
-        inlineDoc: inlineTranscript,
-        maxOut: maxOutputTokens,
-      },
-    } as Parameters<typeof writer.write>[0]);
-  };
-
   const stream = createUIMessageStream({
     originalMessages: safeOriginalUIMessages(context),
     execute: async ({ writer }) => {
-      emitOllamaProgress(writer, "prefill");
-
       const publishInvestigationProtocol =
         createPublishInvestigationProtocolTool(writer, context, sink);
 
@@ -363,7 +345,6 @@ export async function runChatAgent(
           const now = Date.now();
           if (now - lastHeartbeatAt >= heartbeatMs) {
             lastHeartbeatAt = now;
-            emitOllamaProgress(writer, streamPhase);
             console.log(
               `  ⏳ stream: ${Math.round((now - agentStartMs) / 1000)}s phase=${streamPhase} out≈${streamedTextChars} think≈${streamedReasoningChars}`,
             );
