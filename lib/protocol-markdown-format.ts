@@ -51,3 +51,27 @@ export function formatNumberedLine(index: number, text: string): string {
   if (!body) return '';
   return `${index + 1}.\t${body}`;
 }
+
+/** Заголовок раздела протокола (##), чтобы markdown не склеивал «4.» и вложенный «1. 2. 3.». */
+export function formatProtocolSectionHeading(sectionNum: number, title: string): string {
+  const body = title.trim();
+  return `## ${sectionNum}. ${body}\n\n`;
+}
+
+const PROTOCOL_SECTION_HEADING_RX =
+  /^(\d{1,2})\.\s+(Дата встречи|Повестка|Участники|Термины и определения|Сокращения и обозначения|Содержание встречи|Вопросы|Решения|Открытые вопросы|Согласовано)\b(.*)$/i;
+
+/**
+ * Старые протоколы: «4. Термины…» + «1. ФЗ…» рендерились как один список 4–7.
+ * Превращаем строки разделов в markdown-заголовки.
+ */
+export function fixProtocolSectionHeadingsInMarkdown(raw: string): string {
+  return raw.replace(/\r\n?/g, '\n').split('\n').map((line) => {
+    const trimmed = line.trimStart();
+    if (/^#{1,6}\s+\d{1,2}\./.test(trimmed)) return line;
+    const m = trimmed.match(PROTOCOL_SECTION_HEADING_RX);
+    if (!m) return line;
+    const indent = line.slice(0, line.length - trimmed.length);
+    return `${indent}## ${m[1]}. ${m[2]}${m[3]}`;
+  }).join('\n');
+}

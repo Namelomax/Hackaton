@@ -17,7 +17,11 @@ import {
   formatChatDraftForPrompt,
   mergeProtocolWithChatDraft,
 } from '@/lib/protocol-chat-extract';
-import { cleanProtocolText, formatNumberedLine } from '@/lib/protocol-markdown-format';
+import {
+  cleanProtocolText,
+  formatNumberedLine,
+  formatProtocolSectionHeading,
+} from '@/lib/protocol-markdown-format';
 
 function extractMessageText(msg: any): string {
   if (!msg) return '';
@@ -288,9 +292,9 @@ function protocolToMarkdown(protocol: Protocol): string {
     : `№${String(protocol.protocolNumber || '').trim()}`;
   let md = `ПРОТОКОЛ ОБСЛЕДОВАНИЯ ${normalizedNumber}\n\n`;
 
-  md += `1.\tДата встречи: ${protocol.meetingDate}\n\n`;
+  md += formatProtocolSectionHeading(1, `Дата встречи: ${protocol.meetingDate}`);
 
-  md += `2.\tПовестка: ${protocol.agenda.title}\n`;
+  md += formatProtocolSectionHeading(2, `Повестка: ${protocol.agenda.title}`);
   if (protocol.agenda.items.length > 0) {
     protocol.agenda.items.forEach((item) => {
       md += `- ${item}\n`;
@@ -298,7 +302,7 @@ function protocolToMarkdown(protocol: Protocol): string {
   }
   md += '\n\n';
 
-  md += `3.\tУчастники:\n\n`;
+  md += formatProtocolSectionHeading(3, 'Участники:');
   const custOrg = protocol.participants.customer.organizationName.trim();
   const custLabel =
     custOrg && !/^заказчик$/i.test(custOrg) ? custOrg : 'группы компаний Форус';
@@ -322,7 +326,7 @@ function protocolToMarkdown(protocol: Protocol): string {
 
   md += '\n\n';
 
-  md += `4.\tТермины и определения:\n\n`;
+  md += formatProtocolSectionHeading(4, 'Термины и определения:');
   protocol.termsAndDefinitions.forEach((term, i) => {
     const t = cleanProtocolText(term.term);
     const d = cleanProtocolText(term.definition);
@@ -332,7 +336,7 @@ function protocolToMarkdown(protocol: Protocol): string {
 
   md += '\n\n';
 
-  md += `5.\tСокращения и обозначения:\n\n`;
+  md += formatProtocolSectionHeading(5, 'Сокращения и обозначения:');
   protocol.abbreviations.forEach((abbr, i) => {
     const a = cleanProtocolText(abbr.abbreviation);
     const f = cleanProtocolText(abbr.fullForm);
@@ -342,7 +346,7 @@ function protocolToMarkdown(protocol: Protocol): string {
 
   md += '\n\n';
 
-  md += `6.\tСодержание встречи:\n\n`;
+  md += formatProtocolSectionHeading(6, 'Содержание встречи:');
   md += 'В ходе встречи обсуждались следующие вопросы:\n\n';
   if (protocol.meetingContent.introduction) {
     md += `${protocol.meetingContent.introduction}\n\n`;
@@ -371,7 +375,7 @@ function protocolToMarkdown(protocol: Protocol): string {
 
   md += '\n\n';
 
-  md += `7.\tВопросы:\n\n`;
+  md += formatProtocolSectionHeading(7, 'Вопросы:');
   protocol.questionsAndAnswers.forEach((qa, i) => {
     const line = formatNumberedLine(i, qa.question);
     if (line) md += `${line}\n`;
@@ -386,7 +390,7 @@ function protocolToMarkdown(protocol: Protocol): string {
 
   md += '\n\n\n';
 
-  md += `8.\tРешения:\n\n`;
+  md += formatProtocolSectionHeading(8, 'Решения:');
   protocol.decisions.forEach((decision, i) => {
     const line = formatNumberedLine(i, decision.decision);
     if (!line) return;
@@ -397,7 +401,7 @@ function protocolToMarkdown(protocol: Protocol): string {
 
   md += '\n\n\n';
 
-  md += `9.\tОткрытые вопросы:\n\n`;
+  md += formatProtocolSectionHeading(9, 'Открытые вопросы:');
   protocol.openQuestions.forEach((q, i) => {
     const line = formatNumberedLine(i, q);
     if (line) md += `${line}\n`;
@@ -405,7 +409,7 @@ function protocolToMarkdown(protocol: Protocol): string {
 
   md += '\n\n\n';
 
-  md += '10.\tСогласовано:\n\n';
+  md += formatProtocolSectionHeading(10, 'Согласовано:');
   md += '| Со стороны Исполнителя | Со стороны Заказчика |\n';
   md += '| --- | --- |\n';
   md += `| ${protocol.approval.executorSignature.organization} | ${protocol.approval.customerSignature.organization} |\n`;
