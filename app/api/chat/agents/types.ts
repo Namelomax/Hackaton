@@ -16,6 +16,8 @@ export interface AgentContext {
   ragRetrievalEnabled?: boolean;
   /** Полный текст расшифровки уже в системном блоке «ВЛОЖЕНИЯ» (не только RAG). */
   hasInlineTranscript?: boolean;
+  /** Qwen think=true — токены уходят в reasoning, чат может казаться «пустым». */
+  useThinking?: boolean;
   ragMode?: string;
 }
 

@@ -9,6 +9,7 @@ import {
 } from '@/lib/schemas/protocol-schema';
 import { generateProtocolDocx } from '@/lib/docx-generator';
 import { SGR_DOCUMENT_AGENT_PROMPT } from '@/lib/prompts/sgr-prompts';
+import { ollamaProtocolMaxOutputTokens } from '@/lib/ollama-limits';
 
 function extractMessageText(msg: any): string {
   if (!msg) return '';
@@ -166,9 +167,12 @@ export async function generateFinalDocument(
   let markdownContent = '';
 
   try {
+    const maxOutputTokens = ollamaProtocolMaxOutputTokens();
+    console.log(`[generateFinalDocument] maxOutputTokens=${maxOutputTokens}`);
     const streamResult = streamObject({
       model,
       temperature,
+      maxOutputTokens,
       schema: ProtocolSchema,
       prompt: protocolPrompt,
       ...(abortSignal ? { abortSignal } : {}),

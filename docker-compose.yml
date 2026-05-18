@@ -38,11 +38,10 @@ services:
       # Одновременно держать только одну «большую» загрузку модели: иначе классификатор + чат + RAG/embeddings
       # конкурируют за VRAM → eviction / зависание без новых строк в логе. 0 в Ollama = без лимита.
       OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-1}
-      # RTX 3080 (10GB) + 3070 (8GB) = 18GB VRAM.
-      # qwen3:14b weights ~8.3GB + KV cache + compute graph must fit.
-      # KV cache с q8_0 quantization: 65536 ctx = ~5.3GB KV → ~4GB свободно (18GB - 8.3 - 5.3 - 0.9).
-      # 71k-симв. документ = ~30k токенов + история (~8k) + ответ (~5k) = ~43k → вписывается в 65536.
-      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-65536}
+      # RTX 3080 (10GB) + 3070 (8GB). qwen3.5:9b заявляет до 128k контекста (см. карточку модели).
+      # 131072 + OLLAMA_KV_CACHE_TYPE=q8_0: больше VRAM на KV, ответы медленнее, но без обрезки ~30k-ток. расшифровки.
+      # qwen3:14b в Ollama часто режется до n_ctx_train≈40960 — для 128k используйте qwen3.5:9b в чате.
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-131072}
       # q8_0 = KV-cache в 8-bit → в 2 раза меньше VRAM при незначительной потере качества
       OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
       # Flash Attention уменьшает пиковое потребление памяти при длинных контекстах
@@ -117,6 +116,12 @@ services:
       OPENROUTER_MODEL_DEFAULT: ${OPENROUTER_MODEL_DEFAULT:-arcee-ai/trinity-large-preview:free}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434/v1}
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-ollama}
+      # Тот же лимит, что у ollama — для расчёта обрезки истории в app/api/chat/route.ts
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-131072}
+      OLLAMA_MAX_OUTPUT_TOKENS: ${OLLAMA_MAX_OUTPUT_TOKENS:-32768}
+      OLLAMA_FILE_TURN_MAX_OUTPUT_TOKENS: ${OLLAMA_FILE_TURN_MAX_OUTPUT_TOKENS:-2048}
+      OLLAMA_PROTOCOL_MAX_OUTPUT_TOKENS: ${OLLAMA_PROTOCOL_MAX_OUTPUT_TOKENS:-32768}
+      OLLAMA_STREAM_HEARTBEAT_MS: ${OLLAMA_STREAM_HEARTBEAT_MS:-15000}
       ALLOWED_OLLAMA_MODELS: ${ALLOWED_OLLAMA_MODELS:-}
       NEXT_PUBLIC_LOCAL_MODELS: ${NEXT_PUBLIC_LOCAL_MODELS:-}
       GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY:-}

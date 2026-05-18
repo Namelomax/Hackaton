@@ -12,6 +12,10 @@ import {
   type ProtocolGenerationSink,
 } from "./protocol-tools";
 import { createRetrieveFromIndexedDocumentsTool } from "./rag-tools";
+import {
+  ollamaStreamHeartbeatMs,
+  pickChatMaxOutputTokens,
+} from "@/lib/ollama-limits";
 
 const PROTOCOL_TOOL_SYSTEM_APPENDIX = `
 
@@ -123,6 +127,7 @@ function adaptSystemPrompt(
  → Не повторяй приветствие. Сразу первый уточняющий вопрос по расшифровке (раздел 1).
 
  Задавай СТРОГО ОДИН уточняющий вопрос за ответ — никаких списков, никаких «необходимо уточнить следующее:». Если хочется спросить несколько вещей — выбери САМУЮ важную и спроси только её.
+ ПЕРВЫЙ ОТВЕТ после файла без текста: максимум 6–10 предложений — подтверждение получения файла и один вопрос по разделу 1. Запрещено пересказывать расшифровку и перечислять разделы 2–10.
  В ЭТОМ ЧАТЕ ЗАПРЕЩЕНО выводить полный протокол из 10 разделов — используй инструмент publishInvestigationProtocol.
  ЗАПРЕЩЕНЫ заголовки как у финального документа: «Протокол встречи», блоки с разделами 1–10 подряд — пользователь увидит это в правой панели.
  Пиши название компании «Форус», по продукту — только «протокол обследования».
@@ -199,6 +204,7 @@ export async function runChatAgent(
     abortSignal,
     ragRetrievalEnabled,
     hasInlineTranscript,
+    useThinking,
     ragMode,
   } = context;
   const messagesWithUserPrompt: ModelMessage[] = [];
@@ -247,6 +253,9 @@ export async function runChatAgent(
       ragRetrievalEnabled: Boolean(ragRetrievalEnabled),
       hasInlineTranscript: inlineTranscript,
     }) + PROTOCOL_TOOL_SYSTEM_APPENDIX;
+  if (!useThinking && !adaptedSystemPrompt.startsWith("/no_think")) {
+    adaptedSystemPrompt = "/no_think\n\n" + adaptedSystemPrompt;
+  }
   if (hasFixRequest) {
     const issuesMatch = lastUserText.match(
       /ЗАМЕЧАНИЯ[,:][\s\S]*$|замечания[,:][\s\S]*$/i,
@@ -268,19 +277,57 @@ export async function runChatAgent(
     });
 
   const msgCount = messagesWithUserPrompt.length;
-  const estimatedChars = messagesWithUserPrompt.reduce(
-    (sum, m) => sum + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length),
+  const dialogMessageCount = messages.length;
+  const messagesChars = messagesWithUserPrompt.reduce(
+    (sum, m) =>
+      sum +
+      (typeof m.content === "string"
+        ? m.content.length
+        : JSON.stringify(m.content).length),
     0
   );
-  // Рус. текст ≈ 2.34 симв/токен (не 4 как для EN). Уточнённая оценка.
+  const systemChars = adaptedSystemPrompt.length;
+  const estimatedInputTokens = Math.round(
+    (messagesChars + systemChars) / 2.34,
+  );
+  const maxOutputTokens = pickChatMaxOutputTokens({
+    hasInlineTranscript: inlineTranscript,
+    dialogMessageCount,
+  });
   console.log(
-    `🤖 streamText start: msgs=${msgCount} ~chars=${estimatedChars} (~${Math.round(estimatedChars / 2.3)} tokens) rag=${Boolean(ragRetrievalEnabled)} inlineDoc=${inlineTranscript}`,
+    `🤖 streamText start: msgs=${msgCount} dialog=${dialogMessageCount} input≈${estimatedInputTokens}tok (sys=${systemChars}c) maxOut=${maxOutputTokens} rag=${Boolean(ragRetrievalEnabled)} inlineDoc=${inlineTranscript}`,
   );
   const agentStartMs = Date.now();
+  const heartbeatMs = ollamaStreamHeartbeatMs(inlineTranscript);
+  let lastHeartbeatAt = agentStartMs;
+  let streamedTextChars = 0;
+  let streamedReasoningChars = 0;
+  let streamPhase: "prefill" | "generating" = "prefill";
+
+  const emitOllamaProgress = (
+    writer: Parameters<Parameters<typeof createUIMessageStream>[0]["execute"]>[0]["writer"],
+    phase: "prefill" | "generating",
+  ) => {
+    const elapsedSec = Math.round((Date.now() - agentStartMs) / 1000);
+    writer.write({
+      type: "data-ollama-progress",
+      transient: true,
+      data: {
+        phase,
+        elapsedSec,
+        outChars: streamedTextChars,
+        reasoningChars: streamedReasoningChars,
+        inlineDoc: inlineTranscript,
+        maxOut: maxOutputTokens,
+      },
+    } as Parameters<typeof writer.write>[0]);
+  };
 
   const stream = createUIMessageStream({
     originalMessages: safeOriginalUIMessages(context),
     execute: async ({ writer }) => {
+      emitOllamaProgress(writer, "prefill");
+
       const publishInvestigationProtocol =
         createPublishInvestigationProtocolTool(writer, context, sink);
 
@@ -298,15 +345,41 @@ export async function runChatAgent(
         temperature: 0.7,
         topP: 0.8,
         presencePenalty: 1.5,
-        maxOutputTokens: Number(process.env.OLLAMA_MAX_OUTPUT_TOKENS ?? 8192),
+        maxOutputTokens,
         messages: messagesWithUserPrompt,
         system: adaptedSystemPrompt,
         tools,
         stopWhen: stepCountIs(ragRetrievalEnabled ? 14 : 8),
         ...(abortSignal ? { abortSignal } : {}),
-        onStepFinish: ({ usage, finishReason, toolCalls }) => {
+        onChunk: ({ chunk }) => {
+          if (chunk.type === "text-delta" && "text" in chunk && chunk.text) {
+            streamedTextChars += chunk.text.length;
+            streamPhase = "generating";
+          }
+          if (chunk.type === "reasoning-delta" && "text" in chunk && chunk.text) {
+            streamedReasoningChars += chunk.text.length;
+            streamPhase = "generating";
+          }
+          const now = Date.now();
+          if (now - lastHeartbeatAt >= heartbeatMs) {
+            lastHeartbeatAt = now;
+            emitOllamaProgress(writer, streamPhase);
+            console.log(
+              `  ⏳ stream: ${Math.round((now - agentStartMs) / 1000)}s phase=${streamPhase} out≈${streamedTextChars} think≈${streamedReasoningChars}`,
+            );
+          }
+        },
+        onStepFinish: ({ usage, finishReason, toolCalls, text }) => {
           const tools = toolCalls?.map((t: any) => t.toolName).join(', ') || 'none';
-          console.log(`  ↳ step done: reason=${finishReason} tools=[${tools}] tokens=${usage?.totalTokens ?? '?'}`);
+          const outChars = typeof text === 'string' ? text.length : streamedTextChars;
+          console.log(
+            `  ↳ step done: reason=${finishReason} tools=[${tools}] tokens=${usage?.totalTokens ?? '?'} outChars=${outChars} maxOut=${maxOutputTokens}`,
+          );
+          if (finishReason === 'length') {
+            console.warn(
+              '  ⚠️ length: контекст или лимит ответа исчерпан — укоротите историю или увеличьте OLLAMA_CONTEXT_LENGTH / проверьте maxOut',
+            );
+          }
         },
         onError: ({ error }) => {
           console.error('  ↳ streamText error:', error);
@@ -314,7 +387,26 @@ export async function runChatAgent(
       });
 
       writer.merge(result.toUIMessageStream());
-      await result.usage;
+      const [usage, finishReason, text] = await Promise.all([
+        result.usage,
+        result.finishReason,
+        result.text,
+      ]);
+      const finalText = String(text ?? "").trim();
+      if (finishReason === 'length' && !finalText) {
+        const warnId = `length-warn-${Date.now()}`;
+        writer.write({
+          type: "text-start",
+          id: warnId,
+        });
+        writer.write({
+          type: "text-delta",
+          id: warnId,
+          delta:
+            "⚠️ Ответ обрезан: исчерпан лимит контекста или max_tokens. Попробуйте новый чат или уменьшите объём расшифровки в одном запросе.",
+        });
+        writer.write({ type: "text-end", id: warnId });
+      }
     },
     onFinish: async ({ messages: finished }) => {
       const elapsed = Date.now() - agentStartMs;

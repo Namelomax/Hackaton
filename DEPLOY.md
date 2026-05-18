@@ -62,7 +62,9 @@ docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml run --r
 
 ### Длина контекста (`OLLAMA_CONTEXT_LENGTH`)
 
-В [`docker-compose.yml`](docker-compose.yml) по умолчанию **16384**. Значения вроде **260000** на двух потребительских GPU заставляют Ollama вынести большинство слоёв и KV на **CPU** — ответ может не появляться долго, в логах **`POST /v1/chat/completions` → `500` ровно через `5m0s`**.
+В [`docker-compose.yml`](docker-compose.yml) по умолчанию **131072 (128k)** — под **qwen3.5:9b** с полной расшифровкой в промпте. Ответы **медленнее**, зато реже `reason=length` и пустые сообщения.
+
+**qwen3:14b** в Ollama обычно ограничен **~40960** (`n_ctx_train`); для 128k в чате выбирайте **qwen3.5:9b**. После смены `.env`: `docker compose up -d --force-recreate ollama web`.
 
 ### Почему `docker compose logs ollama -f` «не меняется» после правки `.env`
 

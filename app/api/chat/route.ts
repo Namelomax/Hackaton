@@ -6,6 +6,7 @@ import {
 import crypto from 'crypto';
 import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation } from '@/lib/getPromt';
 import { parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
+import { ollamaChatMaxOutputTokens } from '@/lib/ollama-limits';
 import { fetchRagSnippet } from '@/lib/rag-client';
 import {
   buildUserProvidedSection1Appendix,
@@ -74,11 +75,15 @@ function resolveLanguageModel(body: Record<string, unknown>) {
             const parsed = JSON.parse(init.body);
             const think = Boolean(body.useThinking);
             parsed.think = think;
-            // Лимит ответа: без него thinking-модели могут крутиться до исчерпания контекста.
-            const cap = Number(process.env.OLLAMA_MAX_OUTPUT_TOKENS ?? 8192);
-            if (!parsed.max_tokens || parsed.max_tokens > cap) {
-              parsed.max_tokens = cap;
+            if (!think) {
+              // Qwen3.5: без think ответ в content, а не только в reasoning (см. curl без think:false).
+              parsed.think = false;
             }
+            // Лимит ответа: без него thinking-модели могут крутиться до исчерпания контекста.
+            const cap = ollamaChatMaxOutputTokens();
+            const requested =
+              typeof parsed.max_tokens === 'number' ? parsed.max_tokens : cap;
+            parsed.max_tokens = Math.min(requested, cap);
             return fetch(url, { ...init, body: JSON.stringify(parsed) });
           } catch { /* fallthrough */ }
         }
@@ -430,6 +435,23 @@ async function extractPptxTextFromAttachment(att: any): Promise<string | null> {
   return bestEffortBinaryText(buf);
 }
 
+/** Дефолт 128k (как у qwen3.5:9b на ollama.com). */
+const DEFAULT_OLLAMA_CONTEXT_TOKENS = 131072;
+
+/** qwen3:14b в GGUF часто n_ctx_train≈40960 — Ollama не поднимет 128k. */
+function effectiveOllamaContextTokens(modelId: string): number {
+  const configured = Number(
+    process.env.OLLAMA_CONTEXT_LENGTH ?? DEFAULT_OLLAMA_CONTEXT_TOKENS,
+  );
+  if (!modelId) return configured;
+  const id = modelId.toLowerCase();
+  if (id.includes('qwen3.5:9b') || id.includes('qwen3.5-9b')) return configured;
+  if (id.includes('14b') && id.includes('qwen')) {
+    return Math.min(configured, 40960);
+  }
+  return configured;
+}
+
 // === MAIN HANDLER ===
 
 export async function POST(req: Request) {
@@ -724,7 +746,7 @@ export async function POST(req: Request) {
         );
       } else {
         const isOldAttachment = msgIdx < (normalizedMessagesNonEmpty.length - MAX_DOC_FRESHNESS_MSGS);
-        // Обрезаем документ чтобы не превысить KV-cache (65536 токенов).
+        // Обрезаем документ чтобы не превысить KV-cache (см. OLLAMA_CONTEXT_LENGTH, по умолчанию 128k).
         // 50 000 симв ≈ 21 400 рус. токенов — оставляет место для истории + ответа.
         // Документ передаётся полностью; MAX_DOC_CHARS=150k — только страховка от гигантских файлов.
         const docTruncated = cleaned.length > MAX_DOC_CHARS;
@@ -785,11 +807,20 @@ export async function POST(req: Request) {
     }
   });
 
+  const chatModelId =
+    typeof body.chatModel === 'string' ? body.chatModel.trim() : '';
+  const contextTokensLimit = effectiveOllamaContextTokens(chatModelId);
+  // До ~55% окна под полный текст расшифровки в системном блоке (рус. ≈2.34 симв/токен).
+  const maxHiddenDocsChars = Math.min(
+    320_000,
+    Math.floor(contextTokensLimit * 2.34 * 0.55),
+  );
+
   // Системный блок: краткие сноски + полные тексты «устаревших» вложений (перемещённых из истории)
   const hiddenDocsContext = [
     ...hiddenDocEntries.map(e => e.slice(0, 1200)),
     ...hiddenDocsFull,
-  ].join('\n\n').slice(0, 120_000);
+  ].join('\n\n').slice(0, maxHiddenDocsChars);
 
   /**
    * Динамическая обрезка истории — гарантирует, что диалог любой длины не вызовет переполнения.
@@ -801,11 +832,11 @@ export async function POST(req: Request) {
    *
    * Документ ВСЕГДА остаётся в системном блоке — не обрезается.
    */
-  const CONTEXT_TOKENS_LIMIT = Number(process.env.OLLAMA_CONTEXT_LENGTH ?? 65536);
+  const CONTEXT_TOKENS_LIMIT = contextTokensLimit;
   const CHARS_PER_TOKEN = 2.34; // для русского текста; EN ≈ 4
   const RESERVE_RESPONSE_TOKENS = 6000;  // минимальный запас для ответа модели
   const RESERVE_SYSTEM_BASE_TOKENS = 3000; // системный промт без документа
-  const docCharsTotal = hiddenDocsFull.reduce((s, d) => s + d.length, 0);
+  const docCharsTotal = hiddenDocsContext.length;
   const docTokensEstimate = Math.ceil(docCharsTotal / CHARS_PER_TOKEN);
   const availableForHistoryTokens =
     CONTEXT_TOKENS_LIMIT - RESERVE_RESPONSE_TOKENS - RESERVE_SYSTEM_BASE_TOKENS - docTokensEstimate;
@@ -972,8 +1003,14 @@ export async function POST(req: Request) {
     abortSignal: req.signal,
     ragRetrievalEnabled,
     hasInlineTranscript,
+    useThinking: Boolean(body.useThinking),
     ragMode: ragModeStr,
   };
+
+  const systemPromptTokensEst = Math.ceil(systemPrompt.length / 2.34);
+  console.log(
+    `📐 context: system≈${systemPromptTokensEst}tok doc≈${docTokensEstimate}tok inline=${hasInlineTranscript} msgs=${finalMessages.length}`,
+  );
 
   // 6. Run Main Agent
   return runMainAgent(agentContext, systemPrompt, userPrompt);

@@ -68,6 +68,13 @@ export default function ChatPage() {
   const bootCompletedRef = useRef(false);
 
   const [input, setInput] = useState('');
+  const [ollamaProgress, setOllamaProgress] = useState<{
+    phase: 'prefill' | 'generating';
+    elapsedSec: number;
+    outChars: number;
+    reasoningChars: number;
+    inlineDoc?: boolean;
+  } | null>(null);
   const [authUser, setAuthUser] = useState<{ id: string; username: string } | null>(null);
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
@@ -418,8 +425,28 @@ export default function ChatPage() {
           docxData: normalized.data,
         }));
       }
+
+      const progress =
+        normalized.type === 'data-ollama-progress'
+          ? normalized.data
+          : normalized.type === 'ollama-progress'
+            ? normalized
+            : null;
+      if (progress) {
+        setOllamaProgress({
+          phase: progress.phase === 'generating' ? 'generating' : 'prefill',
+          elapsedSec: Number(progress.elapsedSec ?? 0),
+          outChars: Number(progress.outChars ?? 0),
+          reasoningChars: Number(progress.reasoningChars ?? 0),
+          inlineDoc: Boolean(progress.inlineDoc),
+        });
+      }
     },
   });
+
+  useEffect(() => {
+    if (status === 'ready') setOllamaProgress(null);
+  }, [status]);
 
   const createLocalConversation = useCallback(() => {
     if (!authUser?.id) return null;
@@ -1106,6 +1133,31 @@ export default function ChatPage() {
                   </SelectContent>
                 </Select>
               </div>
+              {ollamaProgress && status !== 'ready' && (
+                <div
+                  className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950"
+                  aria-live="polite"
+                >
+                  {ollamaProgress.phase === 'prefill' && ollamaProgress.inlineDoc ? (
+                    <p>
+                      <strong>Загрузка расшифровки в GPU</strong> (prefill) —{' '}
+                      {ollamaProgress.elapsedSec} с. Текст в чате появится после
+                      обработки документа; при большом .docx это часто 30–120 с, в
+                      логах Ollama тишина до первого токена.
+                    </p>
+                  ) : (
+                    <p>
+                      <strong>Генерация</strong> — {ollamaProgress.elapsedSec} с
+                      {ollamaProgress.outChars > 0
+                        ? `, текст: ${ollamaProgress.outChars} симв.`
+                        : ''}
+                      {ollamaProgress.reasoningChars > 0 && ollamaProgress.outChars === 0
+                        ? `, «размышление» модели: ${ollamaProgress.reasoningChars} симв. (если долго — think=false; пересоберите web)`
+                        : ''}
+                    </p>
+                  )}
+                </div>
+              )}
               <PromptInputWrapper
                 className="w-full"
                 input={input}
