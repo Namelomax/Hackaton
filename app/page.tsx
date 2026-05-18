@@ -1152,7 +1152,7 @@ export default function ChatPage() {
                         ? `, текст: ${ollamaProgress.outChars} симв.`
                         : ''}
                       {ollamaProgress.reasoningChars > 0 && ollamaProgress.outChars === 0
-                        ? `, «размышление» модели: ${ollamaProgress.reasoningChars} симв. (если долго — think=false; пересоберите web)`
+                        ? `, «размышление» модели: ${ollamaProgress.reasoningChars} симв. (нужен reasoning_effort:none — пересоберите web)`
                         : ''}
                     </p>
                   )}

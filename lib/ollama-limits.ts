@@ -1,3 +1,21 @@
+/**
+ * Параметры thinking для OpenAI-совместимого `/v1/chat/completions` Ollama.
+ * `think: false` на этом эндпоинте часто не отключает reasoning (весь ответ в `reasoning`, content пустой).
+ * Рабочий вариант: `reasoning_effort: "none"` (см. docs.ollama.com/api/openai-compatibility).
+ */
+export function applyOllamaOpenAiCompatOptions(
+  body: Record<string, unknown>,
+  useThinking: boolean,
+): void {
+  if (useThinking) {
+    body.think = true;
+    body.reasoning_effort = "medium";
+  } else {
+    body.think = false;
+    body.reasoning_effort = "none";
+  }
+}
+
 /** Лимит токенов ответа чата (streamText → max_tokens в Ollama). */
 export function ollamaChatMaxOutputTokens(): number {
   const n = Number(process.env.OLLAMA_MAX_OUTPUT_TOKENS);

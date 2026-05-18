@@ -6,7 +6,7 @@ import {
 import crypto from 'crypto';
 import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation } from '@/lib/getPromt';
 import { parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
-import { ollamaChatMaxOutputTokens } from '@/lib/ollama-limits';
+import { applyOllamaOpenAiCompatOptions, ollamaChatMaxOutputTokens } from '@/lib/ollama-limits';
 import { fetchRagSnippet } from '@/lib/rag-client';
 import {
   buildUserProvidedSection1Appendix,
@@ -67,18 +67,12 @@ function resolveLanguageModel(body: Record<string, unknown>) {
     const openai = createOpenAI({
       baseURL,
       apiKey: process.env.OLLAMA_API_KEY || 'ollama',
-      // Conditionally enable/disable thinking mode for qwen3.
-      // think=false saves 300-800 tokens per response (~10-50s); think=true enables reasoning display.
+      // Qwen3.5 на /v1/chat/completions: think=false не всегда работает — нужен reasoning_effort.
       fetch: async (url, init) => {
         if (init?.body && typeof init.body === 'string') {
           try {
-            const parsed = JSON.parse(init.body);
-            const think = Boolean(body.useThinking);
-            parsed.think = think;
-            if (!think) {
-              // Qwen3.5: без think ответ в content, а не только в reasoning (см. curl без think:false).
-              parsed.think = false;
-            }
+            const parsed = JSON.parse(init.body) as Record<string, unknown>;
+            applyOllamaOpenAiCompatOptions(parsed, Boolean(body.useThinking));
             // Лимит ответа: без него thinking-модели могут крутиться до исчерпания контекста.
             const cap = ollamaChatMaxOutputTokens();
             const requested =
