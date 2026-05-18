@@ -14,6 +14,8 @@ export interface AgentContext {
   abortSignal?: AbortSignal | null;
   /** RAG через инструмент retrieveFromIndexedDocuments (без пре-инъекции в системный промпт). */
   ragRetrievalEnabled?: boolean;
+  /** Полный текст расшифровки уже в системном блоке «ВЛОЖЕНИЯ» (не только RAG). */
+  hasInlineTranscript?: boolean;
   ragMode?: string;
 }
 

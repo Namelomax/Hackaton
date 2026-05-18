@@ -1123,7 +1123,6 @@ export default function ChatPage() {
                 prepareSend={prepareSend}
                 onUserMessageQueued={undefined}
                 chatBody={chatBody}
-                onRagIndexed={() => setUseRagContext(true)}
                 onOpenAuthDialog={() => {
                   setAuthMode('login');
                   setAuthHintFromPrompt(true);

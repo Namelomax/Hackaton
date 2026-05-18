@@ -86,30 +86,41 @@ function adaptSystemPrompt(
   systemPrompt: string,
   hasFiles: boolean,
   messageCount: number,
+  options: { ragRetrievalEnabled: boolean; hasInlineTranscript: boolean },
 ): string {
   if (
     (hasFiles || messageCount > 1) &&
     !systemPrompt.includes("АДАПТАЦИЯ: Расшифровка получена")
   ) {
+    const useRagTool =
+      options.ragRetrievalEnabled && !options.hasInlineTranscript;
+    const section1FromTranscript = useRagTool
+      ? `→ Вызови retrieveFromIndexedDocuments с вопросом «какой номер протокола, дата и название встречи упоминались в расшифровке?» для раздела 1.
+ → Предложи найденное из excerpts; если excerpts пусты — спроси номер и дату у пользователя.`
+      : `→ Найди в блоке «ВЛОЖЕНИЯ ПОЛЬЗОВАТЕЛЯ» (полный текст расшифровки) номер протокола, дату и название встречи для раздела 1.
+ → Предложи найденное; если в тексте нет — спроси номер и дату у пользователя. **Не вызывай** retrieveFromIndexedDocuments — расшифровка уже в системном контексте.`;
+    const section2AfterUserFacts = useRagTool
+      ? `→ Сразу переходите к разделу 2: вызовите retrieveFromIndexedDocuments про повестку/темы и задайте ОДИН вопрос по повестке.`
+      : `→ Сразу переходите к разделу 2: опирайтесь на текст расшифровки в «ВЛОЖЕНИЯ»; задайте ОДИН вопрос по повестке.`;
+
     const adaptation = `АДАПТАЦИЯ: Расшифровка получена
 ОДИН РАЗДЕЛ ПРОТОКОЛА ЗА ОДНО СООБЩЕНИЕ:
 Не объединяй в одном ответе разделы 6–10 или любые два номера раздела подряд. После «Верно» пользователя — в следующем сообщении только следующий раздел. У каждого факта из расшифровки — свой тайм-код [ТС: ЧЧ:ММ:СС]; диапазоны «от — до» запрещены.
 ════════════════════════════════════════════
  ПРОПУСТИ ЭТАП 1 (приветствие)!
- Расшифровка встречи уже доступна — либо прикреплена к сообщению, либо проиндексирована в RAG.
+ Расшифровка встречи уже доступна — в системном блоке «ВЛОЖЕНИЯ»${useRagTool ? " и/или в RAG-индексе" : ""}.
  НЕМЕДЛЕННО ПЕРЕХОДИ К ЭТАПУ 2 (сбор информации).
 
  ЕСЛИ ПОЛЬЗОВАТЕЛЬ САМ УКАЗАЛ номер протокола и/или дату встречи (например «номер протокола 1, дата 05.04.2026»):
  → Примите эти значения для раздела 1 БЕЗ проверки «есть ли в расшифровке» и БЕЗ вопроса «подтверждаете ли верно».
- → Сразу переходите к разделу 2: вызовите retrieveFromIndexedDocuments про повестку/темы и задайте ОДИН вопрос по повестке.
+ ${section2AfterUserFacts}
 
  ЕСЛИ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ ПУСТОЕ ИЛИ СОДЕРЖИТ ТОЛЬКО ФАЙЛ БЕЗ ТЕКСТА (номер/дату не назвал):
- → Вызови retrieveFromIndexedDocuments с вопросом «какой номер протокола, дата и название встречи упоминались в расшифровке?» для раздела 1.
- → Предложи найденное из excerpts; если в excerpts пусто — спроси номер и дату у пользователя (не «подтвердите то, что вы сами написали»).
+ ${section1FromTranscript}
  → НЕ проси пользователя «прислать расшифровку» — она уже есть.
 
- ЕСЛИ ПОЛЬЗОВАТЕЛЬ НАПИСАЛ КОРОТКОЕ СЛОВО («Привет», «Начинаем», «Привет, начнём»):
- → Это сигнал начать работу. Сразу переходи к первому уточняющему вопросу по расшифровке.
+ ЕСЛИ ПОЛЬЗОВАТЕЛЬ НАПИСАЛ КОРОТКОЕ СЛОВО («Привет», «Начинаем», «Привет, начнём») ПОСЛЕ того как файл уже был:
+ → Не повторяй приветствие. Сразу первый уточняющий вопрос по расшифровке (раздел 1).
 
  Задавай СТРОГО ОДИН уточняющий вопрос за ответ — никаких списков, никаких «необходимо уточнить следующее:». Если хочется спросить несколько вещей — выбери САМУЮ важную и спроси только её.
  В ЭТОМ ЧАТЕ ЗАПРЕЩЕНО выводить полный протокол из 10 разделов — используй инструмент publishInvestigationProtocol.
@@ -187,6 +198,7 @@ export async function runChatAgent(
     documentContent,
     abortSignal,
     ragRetrievalEnabled,
+    hasInlineTranscript,
     ragMode,
   } = context;
   const messagesWithUserPrompt: ModelMessage[] = [];
@@ -229,9 +241,12 @@ export async function runChatAgent(
     hasAttachedFiles(messages) ||
     hasAttachedFiles(context.uiMessages ?? []) ||
     Boolean(ragRetrievalEnabled);
+  const inlineTranscript = Boolean(hasInlineTranscript);
   let adaptedSystemPrompt =
-    adaptSystemPrompt(systemPrompt, hasFiles, messages.length) +
-    PROTOCOL_TOOL_SYSTEM_APPENDIX;
+    adaptSystemPrompt(systemPrompt, hasFiles, messages.length, {
+      ragRetrievalEnabled: Boolean(ragRetrievalEnabled),
+      hasInlineTranscript: inlineTranscript,
+    }) + PROTOCOL_TOOL_SYSTEM_APPENDIX;
   if (hasFixRequest) {
     const issuesMatch = lastUserText.match(
       /ЗАМЕЧАНИЯ[,:][\s\S]*$|замечания[,:][\s\S]*$/i,
@@ -258,7 +273,9 @@ export async function runChatAgent(
     0
   );
   // Рус. текст ≈ 2.34 симв/токен (не 4 как для EN). Уточнённая оценка.
-  console.log(`🤖 streamText start: msgs=${msgCount} ~chars=${estimatedChars} (~${Math.round(estimatedChars / 2.3)} tokens) rag=${ragRetrievalEnabled}`);
+  console.log(
+    `🤖 streamText start: msgs=${msgCount} ~chars=${estimatedChars} (~${Math.round(estimatedChars / 2.3)} tokens) rag=${Boolean(ragRetrievalEnabled)} inlineDoc=${inlineTranscript}`,
+  );
   const agentStartMs = Date.now();
 
   const stream = createUIMessageStream({
@@ -280,7 +297,6 @@ export async function runChatAgent(
         // presencePenalty=1.5 подавляет повторения в квантованных моделях.
         temperature: 0.7,
         topP: 0.8,
-        topK: 20,
         presencePenalty: 1.5,
         maxOutputTokens: Number(process.env.OLLAMA_MAX_OUTPUT_TOKENS ?? 8192),
         messages: messagesWithUserPrompt,

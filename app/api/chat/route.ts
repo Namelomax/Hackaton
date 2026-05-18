@@ -164,7 +164,21 @@ function collectUserAttachmentFilenames(msg: any): string[] {
  * Если пользователь прислал вложение(я) почти без текста — первый ответ без «Здравствуйте»,
  * сразу с подтверждением по шаблону из продукта.
  */
-function buildFileOnlyTurnAppendix(lastUserMessage: any): string {
+/** Полная расшифровка уже в системном блоке (не режим «только RAG»). */
+function hasSubstantialInlineTranscript(
+  hiddenDocsFull: string[],
+  hiddenDocsContext: string,
+): boolean {
+  const fullChars = hiddenDocsFull.reduce((s, d) => s + d.length, 0);
+  if (fullChars >= 4000) return true;
+  return hiddenDocsContext.trim().length >= 8000;
+}
+
+function buildFileOnlyTurnAppendix(
+  lastUserMessage: any,
+  options?: { protocolTranscriptReady?: boolean },
+): string {
+  if (options?.protocolTranscriptReady) return '';
   if (!lastUserMessage || lastUserMessage.role !== 'user') return '';
   const filenames = collectUserAttachmentFilenames(lastUserMessage);
   if (filenames.length === 0) return '';
@@ -827,8 +841,18 @@ export async function POST(req: Request) {
     console.log(`✂️  history trimmed: removed ${trimCount} msgs, doc≈${docTokensEstimate}tok, history≈${Math.round(usedChars/CHARS_PER_TOKEN)}tok, budget=${availableForHistoryTokens}tok`);
   }
 
-  const ragRetrievalEnabled =
+  const hasInlineTranscript =
+    !ragOmitsAttachmentBodies &&
+    hasSubstantialInlineTranscript(hiddenDocsFull, hiddenDocsContext);
+
+  let ragRetrievalEnabled =
     Boolean(useRagContext) && Boolean(process.env.RAG_API_URL?.trim());
+  if (ragRetrievalEnabled && hasInlineTranscript) {
+    console.log(
+      '📎 RAG tool off: full transcript already in system block (inline attachment)',
+    );
+    ragRetrievalEnabled = false;
+  }
   const ragModeStr =
     typeof ragMode === 'string' && ['hybrid', 'local', 'global'].includes(ragMode)
       ? ragMode
@@ -898,11 +922,15 @@ export async function POST(req: Request) {
 
   const lastTurn =
     finalMessages.length > 0 ? finalMessages[finalMessages.length - 1] : null;
-  systemPrompt += buildFileOnlyTurnAppendix(lastTurn);
+  systemPrompt += buildFileOnlyTurnAppendix(lastTurn, {
+    protocolTranscriptReady: hasInlineTranscript,
+  });
 
   const userSection1 = userProvidedSection1InTranscript(ragTranscript);
   if (userSection1) {
-    systemPrompt += buildUserProvidedSection1Appendix(userSection1);
+    systemPrompt += buildUserProvidedSection1Appendix(userSection1, {
+      ragToolEnabled: ragRetrievalEnabled,
+    });
   }
 
   if (ragRetrievalEnabled) {
@@ -943,6 +971,7 @@ export async function POST(req: Request) {
     model: languageModel,
     abortSignal: req.signal,
     ragRetrievalEnabled,
+    hasInlineTranscript,
     ragMode: ragModeStr,
   };
 

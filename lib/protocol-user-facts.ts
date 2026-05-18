@@ -66,7 +66,10 @@ export function userProvidedSection1InTranscript(transcript: string): UserSectio
   return section1FactsLookComplete(facts) ? facts : null;
 }
 
-export function buildUserProvidedSection1Appendix(facts: UserSection1Facts): string {
+export function buildUserProvidedSection1Appendix(
+  facts: UserSection1Facts,
+  options?: { ragToolEnabled?: boolean },
+): string {
   const lines: string[] = [
     "",
     "## Данные раздела 1 от пользователя (обязательно принять)",
@@ -87,7 +90,9 @@ export function buildUserProvidedSection1Appendix(facts: UserSection1Facts): str
     "- писать «в расшифровке не найдено» или просить подтвердить, что данные верны, если пользователь их уже назвал;",
     "- искать в RAG номер/дату раздела 1 — они уже заданы пользователем.",
     "",
-    "**Сразу** перейди к **разделу 2 (повестка)**: вызови retrieveFromIndexedDocuments с вопросом о темах/повестке встречи, предложи вариант повестки из excerpts и задай **один** уточняющий вопрос только по повестке.",
+    options?.ragToolEnabled
+      ? "**Сразу** перейди к **разделу 2 (повестка)**: вызови retrieveFromIndexedDocuments с вопросом о темах/повестке встречи, предложи вариант повестки из excerpts и задай **один** уточняющий вопрос только по повестке."
+      : "**Сразу** перейди к **разделу 2 (повестка)**: найди темы и цель встречи в блоке «ВЛОЖЕНИЯ ПОЛЬЗОВАТЕЛЯ» (полная расшифровка), предложи формулировку повестки и задай **один** уточняющий вопрос только по повестке.",
     "",
   );
   return lines.join("\n");

@@ -359,6 +359,20 @@ export const MessageRenderer = ({
           </div>
         )}
 
+        {message.role === 'assistant' &&
+          status !== 'streaming' &&
+          !hasVisibleAssistantText &&
+          !assistantStreamingAwaitingText &&
+          (toolParts.length > 0 ||
+            reasoningParts.length > 0 ||
+            (isLastMessage && textParts.length === 0)) && (
+            <Response className="text-muted-foreground text-sm">
+              Ответ не удалось сформировать (модель исчерпала лимит или остановилась после
+              инструментов). Отключите «контекст из RAG», если файл уже прикреплён, и отправьте
+              сообщение снова — или нажмите «Повторить».
+            </Response>
+          )}
+
         {/* ToolsDisplay скрыт: tool-вызовы не показываем пользователю */}
 
         {/* Edit mode for user messages */}
