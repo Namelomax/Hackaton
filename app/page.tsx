@@ -50,7 +50,8 @@ export default function ChatPage() {
       chatModel,
       useRagContext,
       ragMode: 'hybrid' as const,
-      useThinking: true,
+      // false: qwen3.5:9b с think=true часто не отдаёт токены в стрим минутами (бесконечная «Генерация…»)
+      useThinking: false,
     }),
     [chatModel, useRagContext],
   );

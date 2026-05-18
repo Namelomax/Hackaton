@@ -1,5 +1,5 @@
 /** Allowed local chat models (must match `ollama list` names). */
-export const DEFAULT_LOCAL_CHAT_MODELS = ['qwen3:14b', 'qwen3.5:9b'] as const;
+export const DEFAULT_LOCAL_CHAT_MODELS = ['qwen3.5:9b', 'qwen3:14b'] as const;
 
 /** Короткие подписи для селектора моделей в UI */
 export const LOCAL_MODEL_LABELS: Record<string, string> = {
@@ -28,10 +28,15 @@ export function parseModelsFromEnv(jsonEnv?: string): string[] {
   }
 }
 
-/** Предпочитает локальную модель с «14b» в имени (например qwen3:14b), иначе первую из списка. */
+/** Модель по умолчанию для чата: qwen3.5:9b, иначе первая из списка env. */
 export function pickDefaultLocalChatModel(jsonEnv?: string): string {
   const list = parseModelsFromEnv(jsonEnv);
-  return list.find((m) => /14b/i.test(m)) ?? list[0] ?? 'qwen3:14b';
+  return (
+    list.find((m) => /qwen3\.5:9b|^qwen3\.5.*9b/i.test(m)) ??
+    list.find((m) => /9b/i.test(m) && !/14b/i.test(m)) ??
+    list[0] ??
+    'qwen3.5:9b'
+  );
 }
 
 export function parseAllowedOllamaModelsFromServerEnv(csv?: string): string[] {

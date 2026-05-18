@@ -282,6 +282,7 @@ export async function runChatAgent(
         topP: 0.8,
         topK: 20,
         presencePenalty: 1.5,
+        maxOutputTokens: Number(process.env.OLLAMA_MAX_OUTPUT_TOKENS ?? 8192),
         messages: messagesWithUserPrompt,
         system: adaptedSystemPrompt,
         tools,
@@ -290,6 +291,9 @@ export async function runChatAgent(
         onStepFinish: ({ usage, finishReason, toolCalls }) => {
           const tools = toolCalls?.map((t: any) => t.toolName).join(', ') || 'none';
           console.log(`  ↳ step done: reason=${finishReason} tools=[${tools}] tokens=${usage?.totalTokens ?? '?'}`);
+        },
+        onError: ({ error }) => {
+          console.error('  ↳ streamText error:', error);
         },
       });
 

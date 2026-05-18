@@ -72,7 +72,13 @@ function resolveLanguageModel(body: Record<string, unknown>) {
         if (init?.body && typeof init.body === 'string') {
           try {
             const parsed = JSON.parse(init.body);
-            parsed.think = true;
+            const think = Boolean(body.useThinking);
+            parsed.think = think;
+            // Лимит ответа: без него thinking-модели могут крутиться до исчерпания контекста.
+            const cap = Number(process.env.OLLAMA_MAX_OUTPUT_TOKENS ?? 8192);
+            if (!parsed.max_tokens || parsed.max_tokens > cap) {
+              parsed.max_tokens = cap;
+            }
             return fetch(url, { ...init, body: JSON.stringify(parsed) });
           } catch { /* fallthrough */ }
         }
