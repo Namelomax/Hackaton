@@ -1,5 +1,6 @@
 import { Document, Packer, Paragraph, TextRun, Table, TableCell, TableRow, AlignmentType, WidthType, BorderStyle } from 'docx';
 import type { Protocol } from './schemas/protocol-schema';
+import { cleanProtocolText } from './protocol-markdown-format';
 
 /**
  * Генерирует .docx документ из структурированного протокола
@@ -148,7 +149,7 @@ export async function generateProtocolDocx(protocol: Protocol): Promise<Buffer> 
             new Paragraph({
               children: [
                 new TextRun({ text: `${index + 1}.\t`, bold: true }),
-                new TextRun(qa.question),
+                new TextRun(cleanProtocolText(qa.question)),
               ],
               spacing: { after: 100 },
             }),
@@ -161,7 +162,7 @@ export async function generateProtocolDocx(protocol: Protocol): Promise<Buffer> 
             new Paragraph({
               children: [
                 new TextRun({ text: `${index + 1}.\t`, bold: true }),
-                new TextRun(qa.answer),
+                new TextRun(cleanProtocolText(qa.answer)),
               ],
               spacing: { after: 100 },
             }),

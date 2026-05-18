@@ -1,4 +1,5 @@
 import type { Protocol } from '@/lib/schemas/protocol-schema';
+import { cleanProtocolText, isProtocolBoilerplateLine } from '@/lib/protocol-markdown-format';
 
 type ChatTurn = { role: string; text: string };
 
@@ -63,7 +64,13 @@ function parseDashListItems(text: string): Array<{ left: string; right: string }
     if (!m) continue;
     const left = m[1].trim();
     const right = m[2].trim();
-    if (left.length > 0 && left.length < 120 && right.length > 0) {
+    if (
+      left.length > 0 &&
+      left.length < 120 &&
+      right.length > 0 &&
+      !isProtocolBoilerplateLine(left) &&
+      !isProtocolBoilerplateLine(right)
+    ) {
       items.push({ left, right });
     }
   }
@@ -129,8 +136,11 @@ function parseQaFromBlocks(blocks: string[]): Protocol['questionsAndAnswers'] {
       const question = stripTimecodes(m[1].trim());
       const tail = m[2];
       const ansM = tail.match(/Ответ:\s*([\s\S]*?)(?=Вопрос:|$)/i);
-      const answer = ansM ? stripTimecodes(ansM[1].trim()) : '';
-      if (question) qa.push({ question, answer });
+      let answer = ansM ? stripTimecodes(ansM[1].trim()) : '';
+      answer = answer.replace(/\n\s*\d+[.)]\s+[\s\S]*$/, '').trim();
+      answer = cleanProtocolText(answer);
+      const qClean = cleanProtocolText(question);
+      if (qClean && !isProtocolBoilerplateLine(qClean)) qa.push({ question: qClean, answer });
     }
     if (qa.length > best.length) best = qa;
   }

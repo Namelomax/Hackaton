@@ -1,7 +1,7 @@
 'use server';
 
 import { generateText } from 'ai';
-import { createOpenRouter } from '@openrouter/ai-sdk-provider';
+import { resolveChatLanguageModel, type ResolveChatModelOptions } from '@/lib/resolve-chat-model';
 
 export interface ReviewIssue {
   level: 'error' | 'warning' | 'info';
@@ -26,7 +26,10 @@ export interface DocumentReview {
  * 
  * ВАЖНО: Проверка детерминированная — одинаковый документ всегда выдаёт одинаковые замечания.
  */
-export async function runDocumentReview(documentMarkdown: string): Promise<DocumentReview> {
+export async function runDocumentReview(
+  documentMarkdown: string,
+  modelOptions?: ResolveChatModelOptions,
+): Promise<DocumentReview> {
   // Нормализация документа перед проверкой
   const normalizedDoc = documentMarkdown
     .replace(/\r\n/g, '\n')
@@ -262,15 +265,13 @@ INFO (информация — не требует исправления):
 ================================================================================`;
 
   try {
-    const openrouter = createOpenRouter({
-      apiKey: process.env.OPENROUTER_API_KEY!,
-      baseURL: 'https://openrouter.ai/api/v1',
-      compatibility: 'strict',
-    });
-
-    const model = openrouter.chat('arcee-ai/trinity-large-preview:free');
+    const model = resolveChatLanguageModel(modelOptions ?? { chatProvider: 'ollama' });
+    const modelLabel =
+      modelOptions?.chatModel?.trim() ||
+      (modelOptions?.chatProvider === 'openrouter' ? 'openrouter' : 'ollama');
 
     console.log('[review-agent] === НАЧАЛО ПРОВЕРКИ ДОКУМЕНТА ===');
+    console.log('[review-agent] Модель:', modelLabel, 'provider:', modelOptions?.chatProvider ?? 'ollama');
     console.log('[review-agent] Длина документа:', normalizedDoc.length, 'символов');
     const startTime = Date.now();
 
@@ -344,6 +345,12 @@ INFO (информация — не требует исправления):
     return parsed;
   } catch (error) {
     console.error('[review-agent] ❌ КРИТИЧЕСКАЯ ОШИБКА:', error);
-    throw new Error(`Ошибка при проверке документа: ${String(error)}`);
+    const raw = error instanceof Error ? error.message : String(error);
+    if (/ECONNREFUSED|Cannot connect|OPENROUTER_API_KEY|fetch failed/i.test(raw)) {
+      throw new Error(
+        'Не удалось связаться с выбранной моделью (Ollama/OpenRouter). Обновите страницу и повторите проверку с той же моделью, что в чате.',
+      );
+    }
+    throw new Error(`Ошибка при проверке документа: ${raw}`);
   }
 }

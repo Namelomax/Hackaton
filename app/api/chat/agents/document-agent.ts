@@ -17,6 +17,7 @@ import {
   formatChatDraftForPrompt,
   mergeProtocolWithChatDraft,
 } from '@/lib/protocol-chat-extract';
+import { cleanProtocolText, formatNumberedLine } from '@/lib/protocol-markdown-format';
 
 function extractMessageText(msg: any): string {
   if (!msg) return '';
@@ -322,15 +323,21 @@ function protocolToMarkdown(protocol: Protocol): string {
   md += '\n\n';
 
   md += `4.\tТермины и определения:\n\n`;
-  protocol.termsAndDefinitions.forEach((term) => {
-    md += `- ${term.term} – ${term.definition}\n`;
+  protocol.termsAndDefinitions.forEach((term, i) => {
+    const t = cleanProtocolText(term.term);
+    const d = cleanProtocolText(term.definition);
+    if (!t && !d) return;
+    md += `${formatNumberedLine(i, `${t} – ${d}`)}\n`;
   });
 
   md += '\n\n';
 
   md += `5.\tСокращения и обозначения:\n\n`;
-  protocol.abbreviations.forEach((abbr) => {
-    md += `- ${abbr.abbreviation} – ${abbr.fullForm}\n`;
+  protocol.abbreviations.forEach((abbr, i) => {
+    const a = cleanProtocolText(abbr.abbreviation);
+    const f = cleanProtocolText(abbr.fullForm);
+    if (!a && !f) return;
+    md += `${formatNumberedLine(i, `${a} – ${f}`)}\n`;
   });
 
   md += '\n\n';
@@ -366,29 +373,34 @@ function protocolToMarkdown(protocol: Protocol): string {
 
   md += `7.\tВопросы:\n\n`;
   protocol.questionsAndAnswers.forEach((qa, i) => {
-    md += `- ${i + 1}. ${qa.question}\n`;
+    const line = formatNumberedLine(i, qa.question);
+    if (line) md += `${line}\n`;
   });
 
-  // 3 пустые строки для разрыва между списками
   md += '\n\n\n';
   md += `**Ответы**:\n\n`;
   protocol.questionsAndAnswers.forEach((qa, i) => {
-    md += `- ${i + 1}. ${qa.answer}\n`;
+    const line = formatNumberedLine(i, qa.answer);
+    if (line) md += `${line}\n`;
   });
 
   md += '\n\n\n';
 
   md += `8.\tРешения:\n\n`;
   protocol.decisions.forEach((decision, i) => {
-    md += `- ${i + 1}. ${decision.decision}\n`;
-    md += `  Ответственный: ${decision.responsible}\n`;
+    const line = formatNumberedLine(i, decision.decision);
+    if (!line) return;
+    md += `${line}\n`;
+    const resp = cleanProtocolText(decision.responsible);
+    if (resp) md += `  Ответственный: ${resp}\n`;
   });
 
   md += '\n\n\n';
 
   md += `9.\tОткрытые вопросы:\n\n`;
   protocol.openQuestions.forEach((q, i) => {
-    md += `- ${i + 1}. ${q}\n`;
+    const line = formatNumberedLine(i, q);
+    if (line) md += `${line}\n`;
   });
 
   md += '\n\n\n';

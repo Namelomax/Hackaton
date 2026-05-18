@@ -21,6 +21,7 @@ import { parseModelsFromEnv, pickDefaultLocalChatModel, LOCAL_MODEL_LABELS } fro
 import { copyTextToClipboard } from '@/lib/copyToClipboard';
 import { toast } from 'sonner';
 import { resolveMessagesFromRecord } from '@/lib/conversationMessages';
+import { GuestWelcomeGuide, shouldShowGuestWelcome } from '@/components/onboarding/GuestWelcomeGuide';
 
 /** Не передавать пустой documentContent в PUT — иначе БД перезапишет документ пустой строкой */
 function buildPersistPutBody(
@@ -71,6 +72,7 @@ export default function ChatPage() {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [authOpen, setAuthOpen] = useState(false);
   const [authHintFromPrompt, setAuthHintFromPrompt] = useState(false);
+  const [guestGuideOpen, setGuestGuideOpen] = useState(false);
   const handleAuthOpenChange = (open: boolean) => {
     setAuthOpen(open);
     if (!open) setAuthHintFromPrompt(false);
@@ -581,6 +583,15 @@ export default function ChatPage() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!authChecked) return;
+    if (authUser) {
+      setGuestGuideOpen(false);
+      return;
+    }
+    if (shouldShowGuestWelcome()) setGuestGuideOpen(true);
+  }, [authChecked, authUser]);
+
   // When authUser is present, fetch conversations
   useEffect(() => {
     if (!authChecked) return;
@@ -1033,6 +1044,8 @@ export default function ChatPage() {
   return (
     <div className="h-screen flex flex-col bg-background">
 
+      <GuestWelcomeGuide open={guestGuideOpen} modelIds={localModels} />
+
       {isBooting && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
           <div className="flex items-center gap-3 text-sm text-muted-foreground">
@@ -1132,11 +1145,12 @@ export default function ChatPage() {
         </div>
         {/* Правая часть — документ */}
         <div className="flex-1 min-w-0">
-          <DocumentPanel 
-            document={viewDocument} 
-            onEdit={handleDocumentEdit} 
+          <DocumentPanel
+            document={viewDocument}
+            onEdit={handleDocumentEdit}
             attachments={attachedFiles}
             onSendReview={(text) => setInput(text)}
+            chatReviewBody={chatBody}
           />
         </div>
       </div>

@@ -22,6 +22,7 @@ import { Button } from '@/components/ui/button';
 import { DocumentReviewPanel } from '@/components/document/DocumentReviewPanel';
 import type { DocumentReview } from '@/app/api/chat/agents/review-agent';
 import type { Attachment, DocumentState } from '@/lib/document/types';
+import type { ChatTransportBodyExtras } from '@/components/chat/PromptInputWrapper';
 import { buildDocxMarkdown, extractTitleFromMarkdown, formatDocumentContent, normalizeDocumentPanelMarkdown, sanitizeFilename } from '@/lib/document/formatting';
 import { copyTextToClipboard } from '@/lib/copyToClipboard';
 
@@ -31,6 +32,7 @@ type DocumentPanelProps = {
   onEdit?: (payload: DocumentState) => void;
   attachments?: Attachment[];
   onSendReview?: (text: string) => void;
+  chatReviewBody?: Pick<ChatTransportBodyExtras, 'chatProvider' | 'chatModel' | 'useThinking'>;
 };
 
 function getFileExt(name: string) {
@@ -96,7 +98,14 @@ function isImageAttachment(att: Attachment) {
   );
 }
 
-export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendReview }: DocumentPanelProps) => {
+export const DocumentPanel = ({
+  document,
+  onCopy,
+  onEdit,
+  attachments,
+  onSendReview,
+  chatReviewBody,
+}: DocumentPanelProps) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [isBundling, setIsBundling] = useState(false);
@@ -181,15 +190,23 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
       const response = await fetch('/api/review-document', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: localDoc.content }),
+        body: JSON.stringify({
+          content: localDoc.content,
+          ...(chatReviewBody ?? { chatProvider: 'ollama' as const }),
+        }),
       });
 
+      const result = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error('Ошибка при проверке документа');
+        const msg =
+          typeof result?.error === 'string'
+            ? result.error
+            : 'Ошибка при проверке документа';
+        throw new Error(msg);
       }
 
-      const result: DocumentReview = await response.json();
-      setReviewResult(result);
+      const review = result as DocumentReview;
+      setReviewResult(review);
       setIsReviewPanelOpen(true);
     } catch (error) {
       console.error('Review error:', error);

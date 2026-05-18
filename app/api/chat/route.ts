@@ -1,12 +1,9 @@
-import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { createOpenAI } from '@ai-sdk/openai';
 import {
   convertToModelMessages,
 } from 'ai';
 import crypto from 'crypto';
 import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation } from '@/lib/getPromt';
-import { parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
-import { applyOllamaOpenAiCompatOptions, ollamaChatMaxOutputTokens } from '@/lib/ollama-limits';
+import { resolveChatLanguageModel } from '@/lib/resolve-chat-model';
 import { PROTOCOL_CHAT_TIMECODE_APPENDIX } from '@/lib/protocol-timecodes';
 import { fetchRagSnippet } from '@/lib/rag-client';
 import {
@@ -31,70 +28,6 @@ export const maxDuration = 900;
 export const runtime = 'nodejs';
 
 let cachedPrompt: string | null = null;
-
-function createOpenRouterInstance() {
-  const apiKey = process.env.OPENROUTER_API_KEY ?? '';
-  return createOpenRouter({
-    apiKey,
-    baseURL: 'https://openrouter.ai/api/v1',
-    compatibility: 'strict',
-    headers: {
-      'X-Title': 'AISDK',
-    },
-  });
-}
-
-function resolveOpenRouterSlug(requestedRaw: string): string {
-  const fallback = process.env.OPENROUTER_MODEL_DEFAULT || 'nvidia/nemotron-3-super-120b-a12b:free';
-  const requested = requestedRaw.trim();
-  const allowedCsv = process.env.ALLOWED_OPENROUTER_MODELS?.trim();
-  if (!allowedCsv) {
-    if (requested && /^[\w\-./:]+$/.test(requested) && requested.length <= 160) return requested;
-    return fallback;
-  }
-  const allowed = allowedCsv.split(',').map((s) => s.trim()).filter(Boolean);
-  if (allowed.includes(requested)) return requested;
-  return allowed.includes(fallback) ? fallback : allowed[0]!;
-}
-
-function resolveLanguageModel(body: Record<string, unknown>) {
-  const provider = body.chatProvider === 'ollama' ? 'ollama' : 'openrouter';
-
-  if (provider === 'ollama') {
-    const allowed = parseAllowedOllamaModelsFromServerEnv(process.env.ALLOWED_OLLAMA_MODELS);
-    const requested = typeof body.chatModel === 'string' ? body.chatModel.trim() : '';
-    const modelId = allowed.includes(requested) ? requested : allowed[0]!;
-    const baseURL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434/v1';
-    const openai = createOpenAI({
-      baseURL,
-      apiKey: process.env.OLLAMA_API_KEY || 'ollama',
-      // Qwen3.5 на /v1/chat/completions: think=false не всегда работает — нужен reasoning_effort.
-      fetch: async (url, init) => {
-        if (init?.body && typeof init.body === 'string') {
-          try {
-            const parsed = JSON.parse(init.body) as Record<string, unknown>;
-            applyOllamaOpenAiCompatOptions(parsed, Boolean(body.useThinking));
-            // Лимит ответа: без него thinking-модели могут крутиться до исчерпания контекста.
-            const cap = ollamaChatMaxOutputTokens();
-            const requested =
-              typeof parsed.max_tokens === 'number' ? parsed.max_tokens : cap;
-            parsed.max_tokens = Math.min(requested, cap);
-            return fetch(url, { ...init, body: JSON.stringify(parsed) });
-          } catch { /* fallthrough */ }
-        }
-        return fetch(url, init ?? {});
-      },
-    });
-    return openai.chat(modelId);
-  }
-
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    throw new Error('OPENROUTER_API_KEY is not set');
-  }
-  const slug = resolveOpenRouterSlug(typeof body.chatModel === 'string' ? body.chatModel : '');
-  return createOpenRouterInstance().chat(slug);
-}
 
 function buildSystemPrompt(
   userPrompt: string,
@@ -692,12 +625,6 @@ export async function POST(req: Request) {
   // 0 = документ сразу идёт в системный блок (не в историю сообщений).
   // Это оптимально: история всегда компактна, документ всегда доступен модели.
   const MAX_DOC_FRESHNESS_MSGS = 0;
-  /**
-   * Максимальный размер одного документа в промпте (символов).
-   * При 65 536 KV-cache и ~2.34 симв/токен для рус.: 150 000 симв ≈ 64 000 токенов — весь контекст.
-   * Лимит — страховка от экстремально больших файлов; обычные транскрипты (60–150k симв) проходят без обрезки.
-   */
-  const MAX_DOC_CHARS = 150_000;
   let lastUserWithAttachmentsIndex = -1;
   if (!ragOmitsAttachmentBodies) {
     const cutoff = normalizedMessagesNonEmpty.length - MAX_DOC_FRESHNESS_MSGS;
@@ -741,19 +668,12 @@ export async function POST(req: Request) {
         );
       } else {
         const isOldAttachment = msgIdx < (normalizedMessagesNonEmpty.length - MAX_DOC_FRESHNESS_MSGS);
-        // Обрезаем документ чтобы не превысить KV-cache (см. OLLAMA_CONTEXT_LENGTH, по умолчанию 128k).
-        // 50 000 симв ≈ 21 400 рус. токенов — оставляет место для истории + ответа.
-        // Документ передаётся полностью; MAX_DOC_CHARS=150k — только страховка от гигантских файлов.
-        const docTruncated = cleaned.length > MAX_DOC_CHARS;
-        const docForContext = docTruncated
-          ? cleaned.slice(0, MAX_DOC_CHARS) +
-            `\n\n[⚠ Файл очень большой: в контекст передано первые ${MAX_DOC_CHARS.toLocaleString()} из ${cleaned.length.toLocaleString()} симв. Для работы с полным текстом используйте RAG-индексирование.]`
-          : cleaned;
+        const docForContext = cleaned;
         if (isOldAttachment) {
           // Документ слишком старый для истории — сохраним текст в системный контекст
           hiddenDocsFull.push(`\n\n---\nВложенный файл: ${attName || 'документ'}\n${docForContext}\n---`);
           fileContents.push(
-            `\n\n[Файл «${attName || 'документ'}» (${cleaned.length} симв.${docTruncated ? ', обрезан до 50 000' : ''}) приложен ранее; текст передан в системный блок «ВЛОЖЕНИЯ».]`
+            `\n\n[Файл «${attName || 'документ'}» (${cleaned.length} симв.) приложен ранее; текст передан в системный блок «ВЛОЖЕНИЯ».]`
           );
         } else {
           fileContents.push(`\n\n---\nВложенный файл: ${attName || 'документ'}\n${docForContext}\n---`);
@@ -886,7 +806,11 @@ export async function POST(req: Request) {
 
   let languageModel;
   try {
-    languageModel = resolveLanguageModel(body as Record<string, unknown>);
+    languageModel = resolveChatLanguageModel({
+      chatProvider: (body as Record<string, unknown>).chatProvider as string | undefined,
+      chatModel: (body as Record<string, unknown>).chatModel as string | undefined,
+      useThinking: Boolean((body as Record<string, unknown>).useThinking),
+    });
   } catch (err) {
     console.error('Failed to resolve language model:', err);
     return new Response(
