@@ -47,6 +47,8 @@ services:
       OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
       # Flash Attention уменьшает пиковое потребление памяти при длинных контекстах
       OLLAMA_FLASH_ATTENTION: ${OLLAMA_FLASH_ATTENTION:-1}
+      # -1 = держать модель в VRAM постоянно — исключает холодный старт (первый запрос ≈30с грузит модель)
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1}
       # 0 = без лимита на «зависшую» загрузку весов (иначе дефолт 5m у Ollama).
       OLLAMA_LOAD_TIMEOUT: ${OLLAMA_LOAD_TIMEOUT:-0}
       # true — пишет тела запросов во временный каталог для отладки (см. логи при старте).
