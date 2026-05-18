@@ -110,6 +110,9 @@ export function GuestWelcomeGuide({ open, modelIds }: GuestWelcomeGuideProps) {
                 <strong>Справа</strong> — панель документа (протокол): редактирование, проверка, скачивание
                 DOCX/ZIP, копирование.
               </li>
+              <li>
+                <strong>В правом верхнем углу</strong> вы можете зарегистрироваться и/или войти в систему.
+              </li>
             </ul>
           </section>
 
