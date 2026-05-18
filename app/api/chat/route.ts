@@ -2,6 +2,8 @@ import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { createOpenAI } from '@ai-sdk/openai';
 import {
   convertToModelMessages,
+  extractReasoningMiddleware,
+  wrapLanguageModel,
 } from 'ai';
 import crypto from 'crypto';
 import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation } from '@/lib/getPromt';
@@ -79,7 +81,12 @@ function resolveLanguageModel(body: Record<string, unknown>) {
         return fetch(url, init ?? {});
       },
     });
-    return openai.chat(modelId);
+    // Wrap with extractReasoningMiddleware so that <think>...</think> tags from Ollama
+    // are surfaced as 'reasoning' parts in the AI SDK stream (needed for Reasoning UI component).
+    return wrapLanguageModel({
+      model: openai.chat(modelId),
+      middleware: extractReasoningMiddleware({ tagName: 'think' }),
+    });
   }
 
   const apiKey = process.env.OPENROUTER_API_KEY;
