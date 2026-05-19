@@ -149,6 +149,8 @@ export const DocumentPanel = ({
   }, [document.content, document.isStreaming]);
 
   const isEmpty = !localDoc.isStreaming && !localDoc.title && !localDoc.content.trim().length;
+  /** Реальный протокол в документе (не плейсхолдер пустой панели). */
+  const hasProtocol = Boolean(localDoc.content.trim());
 
   const displayTitle = (() => {
     const raw = String(localDoc.title || '').trim();
@@ -187,8 +189,10 @@ export const DocumentPanel = ({
   };
 
   const handleReview = async () => {
-    if (!localDoc.content.trim()) {
-      toast.warning('Документ пуст', { description: 'Сначала сформируйте протокол, затем проверьте его.' });
+    if (!hasProtocol) {
+      toast.warning('Протокол ещё не сформирован', {
+        description: 'Сначала сформируйте протокол в диалоге, затем проверьте его.',
+      });
       return;
     }
 
@@ -238,7 +242,7 @@ export const DocumentPanel = ({
   };
 
   const handleDownloadBundle = async () => {
-    if (isBundling) return;
+    if (isBundling || !hasProtocol) return;
 
     setIsBundling(true);
     try {
@@ -332,7 +336,7 @@ export const DocumentPanel = ({
   };
 
   const handleDownloadDocx = async () => {
-    if (!docxData) return;
+    if (!hasProtocol || !docxData) return;
 
     try {
       void persistProtocolExample();
@@ -410,21 +414,38 @@ export const DocumentPanel = ({
     }
   };
 
+  if (collapsed) {
+    return (
+      <div
+        className={
+          'flex h-full w-10 shrink-0 flex-col border-l bg-background overflow-hidden ' +
+          'transition-[width] duration-200 ease-in-out'
+        }
+      >
+        <div className="flex flex-1 items-start justify-center border-b p-2">
+          <button
+            type="button"
+            onClick={onToggleCollapsed}
+            className="p-1 border rounded"
+            aria-label="Показать протокол"
+            title="Показать протокол"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className={
-        `flex h-full flex-col border-l bg-background shrink-0 overflow-hidden ` +
-        `transition-[width] duration-200 ease-in-out ` +
-        (collapsed ? 'w-10' : 'flex-1 min-w-0')
+        'flex h-full flex-1 min-w-[280px] flex-col border-l bg-background shrink-0 overflow-hidden ' +
+        'transition-[width] duration-200 ease-in-out'
       }
     >
-      <div className="relative border-b px-4 py-3 min-h-[52px]">
-        <div
-          className={
-            `flex items-center justify-between gap-3 transition-all duration-200 ` +
-            (collapsed ? 'opacity-0 pointer-events-none' : 'opacity-100')
-          }
-        >
+      <div className="border-b px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="text-sm font-medium truncate">{displayTitle}</div>
             {localDoc.isStreaming && (
@@ -462,7 +483,7 @@ export const DocumentPanel = ({
                   type="button"
                   title={isReviewing ? "Проверка документа..." : "Проверить документ"}
                   aria-label={isReviewing ? "Проверка документа..." : "Проверить документ"}
-                  disabled={isReviewing || localDoc.isStreaming}
+                  disabled={!hasProtocol || isReviewing || localDoc.isStreaming}
                 >
                   {isReviewing ? (
                     <Loader className="size-4 animate-spin" />
@@ -489,7 +510,7 @@ export const DocumentPanel = ({
                   type="button"
                   title="Скачать протокол (.docx)"
                   aria-label="Скачать протокол (.docx)"
-                  disabled={!docxData || localDoc.isStreaming || !localDoc.content.trim()}
+                  disabled={!hasProtocol || !docxData || localDoc.isStreaming}
                 >
                   <FileText className="size-4" />
                 </Button>
@@ -500,7 +521,7 @@ export const DocumentPanel = ({
                   type="button"
                   title="Скачать ZIP (документ + вложения)"
                   aria-label="Скачать ZIP (документ + вложения)"
-                  disabled={!docxData || localDoc.isStreaming || !localDoc.content.trim() || isBundling}
+                  disabled={!hasProtocol || !docxData || localDoc.isStreaming || isBundling}
                 >
                   <Download className="size-4" />
                 </Button>
@@ -541,34 +562,9 @@ export const DocumentPanel = ({
             )}
           </div>
         </div>
-
-        {onToggleCollapsed && (
-          <div
-            className={
-              `absolute inset-0 flex items-center justify-center transition-all duration-200 ` +
-              (collapsed ? 'opacity-100' : 'opacity-0 pointer-events-none')
-            }
-          >
-            <button
-              type="button"
-              onClick={onToggleCollapsed}
-              className="p-1 border rounded"
-              aria-label="Показать протокол"
-              title="Показать протокол"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-          </div>
-        )}
       </div>
 
-      <div
-        ref={scrollRef}
-        className={
-          `flex-1 overflow-auto p-6 transition-all duration-200 ` +
-          (collapsed ? 'opacity-0 pointer-events-none' : 'opacity-100')
-        }
-      >
+      <div ref={scrollRef} className="flex-1 overflow-auto p-6">
         {editing ? (
           <div className="space-y-3">
             <input
@@ -594,7 +590,7 @@ export const DocumentPanel = ({
         )}
       </div>
 
-      {Array.isArray(attachments) && attachments.length > 0 && !collapsed && (
+      {Array.isArray(attachments) && attachments.length > 0 && (
         <div className="border-t bg-background px-4 py-2 min-h-[104px]">
           <div className="flex items-center gap-2">
             <div className="text-xs font-medium text-muted-foreground">Загруженные документы</div>

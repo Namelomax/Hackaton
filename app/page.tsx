@@ -1090,8 +1090,13 @@ export default function ChatPage() {
           collapsed={!isChatsPanelVisible}
           onToggleCollapsed={() => setIsChatsPanelVisible((v) => !v)}
         />
-        {/* Центральная часть — чат */}
-        <div className="flex flex-col w-[600px] border-r shrink-0">
+        {/* Центральная часть — чат (расширяется, когда панель протокола свёрнута) */}
+        <div
+          className={
+            `flex flex-col border-r min-w-0 transition-[width,flex] duration-200 ease-in-out ` +
+            (isDocumentPanelVisible ? 'w-[600px] shrink-0' : 'flex-1')
+          }
+        >
           <ConversationArea
             chatKey={chatKey}
             messages={displayMessages}
