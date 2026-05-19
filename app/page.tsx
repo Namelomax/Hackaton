@@ -97,6 +97,7 @@ export default function ChatPage() {
   const engineDocumentRef = useRef(document);
   engineDocumentRef.current = document;
   const [isChatsPanelVisible, setIsChatsPanelVisible] = useState(true);
+  const [isDocumentPanelVisible, setIsDocumentPanelVisible] = useState(true);
   const selectedPromptId: string | null = null;
 
   const handleRegenerate = (messageId: string) => {
@@ -242,7 +243,13 @@ export default function ChatPage() {
     const fallback = extractTitleFromMarkdown(conv?.document_content);
 
     // If title is missing or generic, use the document heading.
-    const isGeneric = !existing || existing.toLowerCase() === 'чат' || existing.toLowerCase() === 'chat';
+    const lower = existing.toLowerCase();
+    const isGeneric =
+      !existing ||
+      lower === 'чат' ||
+      lower === 'chat' ||
+      lower === 'new conversation' ||
+      lower.startsWith('conversation ');
     const nextTitle = isGeneric && fallback ? fallback : existing;
     return { ...conv, title: nextTitle || conv?.title };
   }
@@ -426,7 +433,7 @@ export default function ChatPage() {
     const localId = `local-${Date.now()}`;
     const localConv = {
       id: localId,
-      title: `Новый чат ${new Date().toLocaleTimeString()}`,
+      title: 'Чат',
       created: new Date().toISOString(),
       messages: [],
       local: true,
@@ -637,7 +644,7 @@ export default function ChatPage() {
                 const nextDoc = {
                   title: (activeConv.title && String(activeConv.title).trim().toLowerCase() !== 'чат')
                     ? activeConv.title
-                    : (derived || 'Документ'),
+                    : (derived || 'Протокол'),
                   content: activeConv.document_content,
                   isStreaming: false,
                 } as DocumentState;
@@ -698,7 +705,7 @@ export default function ChatPage() {
               // Restore document content on login
               if (first.document_content) {
                 const nextDoc = {
-                  title: first.title || 'Документ',
+                  title: first.title || 'Протокол',
                   content: first.document_content,
                   isStreaming: false,
                 } as DocumentState;
@@ -1143,16 +1150,16 @@ export default function ChatPage() {
             </div>
           </div>
         </div>
-        {/* Правая часть — документ */}
-        <div className="flex-1 min-w-0">
-          <DocumentPanel
-            document={viewDocument}
-            onEdit={handleDocumentEdit}
-            attachments={attachedFiles}
-            onSendReview={(text) => setInput(text)}
-            chatReviewBody={chatBody}
-          />
-        </div>
+        {/* Правая часть — протокол */}
+        <DocumentPanel
+          document={viewDocument}
+          onEdit={handleDocumentEdit}
+          attachments={attachedFiles}
+          onSendReview={(text) => setInput(text)}
+          chatReviewBody={chatBody}
+          collapsed={!isDocumentPanelVisible}
+          onToggleCollapsed={() => setIsDocumentPanelVisible((v) => !v)}
+        />
       </div>
     </div>
   );

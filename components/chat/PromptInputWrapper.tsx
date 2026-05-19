@@ -84,7 +84,7 @@ const ensureConversationCreated = async (
       signal,
       body: JSON.stringify({
         userId: authUser.id,
-        title: `Conversation ${new Date().toLocaleString()}`,
+        title: 'Чат',
       }),
     });
 

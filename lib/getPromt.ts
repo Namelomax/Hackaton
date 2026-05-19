@@ -827,7 +827,7 @@ export async function createConversation(userId: string, title?: string): Promis
     user: userRecord, 
     messages: [], 
     messages_raw: JSON.stringify([]), 
-    title: title ?? 'New conversation',
+    title: title ?? 'Чат',
     document_content: "" 
   });
   return {

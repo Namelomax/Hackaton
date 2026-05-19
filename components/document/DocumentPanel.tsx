@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
+  ChevronLeft,
+  ChevronRight,
   Copy,
   Download,
   FileSpreadsheetIcon,
@@ -33,6 +35,8 @@ type DocumentPanelProps = {
   attachments?: Attachment[];
   onSendReview?: (text: string) => void;
   chatReviewBody?: Pick<ChatTransportBodyExtras, 'chatProvider' | 'chatModel' | 'useThinking'>;
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
 };
 
 function getFileExt(name: string) {
@@ -105,6 +109,8 @@ export const DocumentPanel = ({
   attachments,
   onSendReview,
   chatReviewBody,
+  collapsed,
+  onToggleCollapsed,
 }: DocumentPanelProps) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -129,7 +135,7 @@ export const DocumentPanel = ({
         setDocxData(document.docxData);
       } else if (document.content.trim() && !docxData && !document.isStreaming) {
         // Автоматически генерируем docxData если контент есть, но docxData нет
-        buildDocxData(document.title || 'Документ', document.content)
+        buildDocxData(document.title || 'Протокол', document.content)
           .then(data => setDocxData(data))
           .catch(err => console.warn('Failed to auto-generate docx', err));
       }
@@ -154,12 +160,13 @@ export const DocumentPanel = ({
       !raw ||
       raw.toLowerCase() === 'чат' ||
       raw.toLowerCase() === 'документ' ||
+      raw.toLowerCase() === 'протокол' ||
       raw.toLowerCase() === 'пример документа';
     const fromContent = extractTitleFromMarkdown(localDoc.content);
-    return generic && fromContent ? fromContent : raw || 'Пример документа';
+    return generic && fromContent ? fromContent : raw || 'Протокол';
   })();
 
-  const viewContent = isEmpty ? 'Описание: пример описания.' : localDoc.content;
+  const viewContent = isEmpty ? 'Здесь будет ваш протокол.' : localDoc.content;
   const formattedContent = useMemo(() => {
     const normalized = normalizeDocumentPanelMarkdown(viewContent);
     return formatDocumentContent(normalized);
@@ -404,16 +411,38 @@ export const DocumentPanel = ({
   };
 
   return (
-    <div className="flex h-full flex-col border-l bg-background">
-      <div className="border-b px-4 py-3">
-        <div className="flex items-center justify-between gap-3">
+    <div
+      className={
+        `flex h-full flex-col border-l bg-background shrink-0 overflow-hidden ` +
+        `transition-[width] duration-200 ease-in-out ` +
+        (collapsed ? 'w-10' : 'flex-1 min-w-0')
+      }
+    >
+      <div className="relative border-b px-4 py-3 min-h-[52px]">
+        <div
+          className={
+            `flex items-center justify-between gap-3 transition-all duration-200 ` +
+            (collapsed ? 'opacity-0 pointer-events-none' : 'opacity-100')
+          }
+        >
           <div className="min-w-0">
             <div className="text-sm font-medium truncate">{displayTitle}</div>
             {localDoc.isStreaming && (
-              <div className="text-xs text-muted-foreground">Генерация документа…</div>
+              <div className="text-xs text-muted-foreground">Генерация протокола…</div>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
+            {onToggleCollapsed && (
+              <button
+                type="button"
+                onClick={onToggleCollapsed}
+                className="p-1 border rounded"
+                aria-label="Скрыть протокол"
+                title="Скрыть протокол"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            )}
             {!editing ? (
               <>
                 <Button
@@ -512,9 +541,34 @@ export const DocumentPanel = ({
             )}
           </div>
         </div>
+
+        {onToggleCollapsed && (
+          <div
+            className={
+              `absolute inset-0 flex items-center justify-center transition-all duration-200 ` +
+              (collapsed ? 'opacity-100' : 'opacity-0 pointer-events-none')
+            }
+          >
+            <button
+              type="button"
+              onClick={onToggleCollapsed}
+              className="p-1 border rounded"
+              aria-label="Показать протокол"
+              title="Показать протокол"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+          </div>
+        )}
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-auto p-6">
+      <div
+        ref={scrollRef}
+        className={
+          `flex-1 overflow-auto p-6 transition-all duration-200 ` +
+          (collapsed ? 'opacity-0 pointer-events-none' : 'opacity-100')
+        }
+      >
         {editing ? (
           <div className="space-y-3">
             <input
@@ -540,7 +594,7 @@ export const DocumentPanel = ({
         )}
       </div>
 
-      {Array.isArray(attachments) && attachments.length > 0 && (
+      {Array.isArray(attachments) && attachments.length > 0 && !collapsed && (
         <div className="border-t bg-background px-4 py-2 min-h-[104px]">
           <div className="flex items-center gap-2">
             <div className="text-xs font-medium text-muted-foreground">Загруженные документы</div>
