@@ -422,11 +422,11 @@ export const DocumentPanel = ({
           'transition-[width] duration-200 ease-in-out'
         }
       >
-        <div className="flex flex-1 items-start justify-center border-b p-2">
+        <div className="flex flex-1 items-start justify-start border-b p-2 pl-1">
           <button
             type="button"
             onClick={onToggleCollapsed}
-            className="p-1 border rounded"
+            className="p-1 border rounded shrink-0"
             aria-label="Показать протокол"
             title="Показать протокол"
           >
@@ -444,26 +444,28 @@ export const DocumentPanel = ({
         'transition-[width] duration-200 ease-in-out'
       }
     >
-      <div className="border-b px-4 py-3">
+      <div className="border-b py-3 pl-2 pr-4">
         <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-sm font-medium truncate">{displayTitle}</div>
-            {localDoc.isStreaming && (
-              <div className="text-xs text-muted-foreground">Генерация протокола…</div>
-            )}
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
             {onToggleCollapsed && (
               <button
                 type="button"
                 onClick={onToggleCollapsed}
-                className="p-1 border rounded"
+                className="shrink-0 p-1 border rounded"
                 aria-label="Скрыть протокол"
                 title="Скрыть протокол"
               >
                 <ChevronRight className="w-4 h-4" />
               </button>
             )}
+            <div className="min-w-0">
+            <div className="text-sm font-medium truncate">{displayTitle}</div>
+            {localDoc.isStreaming && (
+              <div className="text-xs text-muted-foreground">Генерация протокола…</div>
+            )}
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
             {!editing ? (
               <>
                 <Button
