@@ -1,6 +1,6 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { createOpenAI } from '@ai-sdk/openai';
-import { parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
+import { FIXED_CHAT_MODEL, parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
 import { applyOllamaOpenAiCompatOptions, ollamaChatMaxOutputTokens } from '@/lib/ollama-limits';
 
 export type ChatProviderId = 'ollama' | 'openrouter';
@@ -41,8 +41,9 @@ export function resolveChatLanguageModel(options: ResolveChatModelOptions = {}) 
 
   if (provider === 'ollama') {
     const allowed = parseAllowedOllamaModelsFromServerEnv(process.env.ALLOWED_OLLAMA_MODELS);
-    const requested = typeof options.chatModel === 'string' ? options.chatModel.trim() : '';
-    const modelId = allowed.includes(requested) ? requested : allowed[0]!;
+    const modelId = allowed.includes(FIXED_CHAT_MODEL)
+      ? FIXED_CHAT_MODEL
+      : allowed[0]!;
     const baseURL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434/v1';
     const openai = createOpenAI({
       baseURL,

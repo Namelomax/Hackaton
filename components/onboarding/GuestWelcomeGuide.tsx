@@ -1,10 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { SUPPORTED_UPLOAD_FORMATS } from '@/lib/document-upload-guide';
-import { LOCAL_MODEL_LABELS } from '@/lib/chat-models';
 
 const STORAGE_KEY = 'guestWelcomeDismissed';
 
@@ -24,20 +23,14 @@ const PROTOCOL_SECTION_TITLES = [
 
 type GuestWelcomeGuideProps = {
   open: boolean;
-  modelIds: string[];
 };
 
-export function GuestWelcomeGuide({ open, modelIds }: GuestWelcomeGuideProps) {
+export function GuestWelcomeGuide({ open }: GuestWelcomeGuideProps) {
   const [visible, setVisible] = useState(open);
 
   useEffect(() => {
     setVisible(open);
   }, [open]);
-
-  const modelLabels = useMemo(
-    () => modelIds.map((id) => LOCAL_MODEL_LABELS[id] ?? id),
-    [modelIds],
-  );
 
   const dismiss = () => {
     try {
@@ -106,7 +99,7 @@ export function GuestWelcomeGuide({ open, modelIds }: GuestWelcomeGuideProps) {
                 <strong>Слева</strong> — история чатов (после входа список сохраняется на сервере).
               </li>
               <li>
-                <strong>По центру</strong> — диалог с ассистентом; выберите модель в списке над полем ввода.
+                <strong>По центру</strong> — диалог с ассистентом.
               </li>
               <li>
                 <strong>Справа</strong> — панель документа (протокол): редактирование, проверка, скачивание
@@ -124,14 +117,6 @@ export function GuestWelcomeGuide({ open, modelIds }: GuestWelcomeGuideProps) {
               Если вы изменили текст в правой панели вручную, а затем продолжили чат, ассистент может
               опираться на <strong>последнюю версию, которую сформировал ИИ</strong>, а не на ваши правки.
               После существенных правок лучше явно попросить обновить протокол в документе.
-            </p>
-          </section>
-
-          <section>
-            <h3 className="font-semibold text-neutral-900 mb-1">Модели</h3>
-            <p>
-              Сейчас доступны {modelLabels.length > 0 ? modelLabels.join(' и ') : 'локальные модели'} — можно
-              пробовать обе и сравнить качество на ваших материалах.
             </p>
           </section>
 

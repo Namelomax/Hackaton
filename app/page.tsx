@@ -10,14 +10,7 @@ import { Sidebar } from '@/components/chat/Sidebar';
 import { ConversationArea } from '@/components/chat/ConversationArea';
 import { PromptInputWrapper } from '@/components/chat/PromptInputWrapper';
 import { Loader } from '@/components/ai-elements/loader';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { parseModelsFromEnv, pickDefaultLocalChatModel, LOCAL_MODEL_LABELS } from '@/lib/chat-models';
+import { FIXED_CHAT_MODEL } from '@/lib/chat-models';
 import { copyTextToClipboard } from '@/lib/copyToClipboard';
 import { toast } from 'sonner';
 import { resolveMessagesFromRecord } from '@/lib/conversationMessages';
@@ -37,28 +30,16 @@ function buildPersistPutBody(
 }
 
 export default function ChatPage() {
-  const localModels = useMemo(() => parseModelsFromEnv(process.env.NEXT_PUBLIC_LOCAL_MODELS), []);
-
-  const [chatModel, setChatModel] = useState<string>(() =>
-    pickDefaultLocalChatModel(process.env.NEXT_PUBLIC_LOCAL_MODELS),
-  );
-
   const chatBody = useMemo(
     () => ({
       chatProvider: 'ollama' as const,
-      chatModel,
+      chatModel: FIXED_CHAT_MODEL,
       useRagContext: false,
       ragMode: 'hybrid' as const,
       useThinking: false,
     }),
-    [chatModel],
+    [],
   );
-
-  useEffect(() => {
-    setChatModel((prev) =>
-      localModels.includes(prev) ? prev : pickDefaultLocalChatModel(process.env.NEXT_PUBLIC_LOCAL_MODELS),
-    );
-  }, [localModels]);
 
   const [authChecked, setAuthChecked] = useState(false);
   const [conversationsLoaded, setConversationsLoaded] = useState(false);
@@ -1051,7 +1032,7 @@ export default function ChatPage() {
   return (
     <div className="h-screen flex flex-col bg-background">
 
-      <GuestWelcomeGuide open={guestGuideOpen} modelIds={localModels} />
+      <GuestWelcomeGuide open={guestGuideOpen} />
 
       {isBooting && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
@@ -1114,21 +1095,7 @@ export default function ChatPage() {
           />
           {/* Поле ввода и менеджер промптов */}
           <div className="border-t px-4 py-2 min-h-[104px]">
-            <div className="max-w-3xl mx-auto space-y-2">
-              <div className="flex flex-wrap gap-2 items-center text-xs text-neutral-700 pb-1">
-                <Select value={chatModel} onValueChange={setChatModel}>
-                  <SelectTrigger size="sm" className="h-8 min-w-[180px]">
-                    <SelectValue placeholder="Модель" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {localModels.map((m) => (
-                      <SelectItem key={m} value={m}>
-                        {LOCAL_MODEL_LABELS[m] ?? m}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+            <div className="max-w-3xl mx-auto">
               <PromptInputWrapper
                 className="w-full"
                 input={input}

@@ -1,3 +1,6 @@
+/** Единственная модель чата (пока без выбора в UI). */
+export const FIXED_CHAT_MODEL = 'qwen3.5:9b';
+
 /** Allowed local chat models (must match `ollama list` names). */
 export const DEFAULT_LOCAL_CHAT_MODELS = ['qwen3.5:9b', 'qwen3:14b'] as const;
 
@@ -29,14 +32,8 @@ export function parseModelsFromEnv(jsonEnv?: string): string[] {
 }
 
 /** Модель по умолчанию для чата: qwen3.5:9b, иначе первая из списка env. */
-export function pickDefaultLocalChatModel(jsonEnv?: string): string {
-  const list = parseModelsFromEnv(jsonEnv);
-  return (
-    list.find((m) => /qwen3\.5:9b|^qwen3\.5.*9b/i.test(m)) ??
-    list.find((m) => /9b/i.test(m) && !/14b/i.test(m)) ??
-    list[0] ??
-    'qwen3.5:9b'
-  );
+export function pickDefaultLocalChatModel(_jsonEnv?: string): string {
+  return FIXED_CHAT_MODEL;
 }
 
 export function parseAllowedOllamaModelsFromServerEnv(csv?: string): string[] {
