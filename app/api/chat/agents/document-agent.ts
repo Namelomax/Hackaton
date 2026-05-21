@@ -19,7 +19,6 @@ import {
 } from '@/lib/protocol-chat-extract';
 import {
   cleanProtocolText,
-  formatNumberedLine,
   formatProtocolSectionHeading,
   isValidParticipantRow,
 } from '@/lib/protocol-markdown-format';
@@ -177,7 +176,7 @@ export async function generateFinalDocument(
   const agreedChatContext = formatChatDraftForPrompt(chatDraft);
   if (Object.keys(chatDraft).length > 0) {
     console.log(
-      `[generateFinalDocument] chat draft: terms=${chatDraft.termsAndDefinitions?.length ?? 0} abbr=${chatDraft.abbreviations?.length ?? 0} topics=${chatDraft.meetingContent?.topics?.length ?? 0} qa=${chatDraft.questionsAndAnswers?.length ?? 0} decisions=${chatDraft.decisions?.length ?? 0} open=${chatDraft.openQuestions?.length ?? 0}`,
+      `[generateFinalDocument] chat draft: topics=${chatDraft.meetingContent?.topics?.length ?? 0} summary=${chatDraft.meetingContent?.summary?.length ?? 0} approval_cust=${chatDraft.approval?.customer?.signatories?.length ?? 0}`,
     );
   }
 
@@ -291,137 +290,101 @@ function protocolToMarkdown(protocol: Protocol): string {
   const normalizedNumber = String(protocol.protocolNumber || '').trim().startsWith('№')
     ? String(protocol.protocolNumber).trim()
     : `№${String(protocol.protocolNumber || '').trim()}`;
-  let md = `ПРОТОКОЛ ОБСЛЕДОВАНИЯ ${normalizedNumber}\n\n`;
 
-  md += formatProtocolSectionHeading(1, `Дата встречи: ${protocol.meetingDate}`);
+  let md = `ПРОТОКОЛ ${normalizedNumber} ОТ ${protocol.meetingDate}\n\n`;
 
+  const title = cleanProtocolText(protocol.protocolTitle);
+  if (title) md += `**${title}**\n\n`;
+
+  if (protocol.contractNumber) {
+    md += `Договор №${cleanProtocolText(protocol.contractNumber)}`;
+    if (protocol.contractDate) md += ` от ${cleanProtocolText(protocol.contractDate)} г.`;
+    md += '\n\n';
+  }
+  if (protocol.contractSubject) {
+    md += `Тема договора: ${cleanProtocolText(protocol.contractSubject)}\n\n`;
+  }
+
+  md += '---\n\n';
+
+  // 1. Дата собрания
+  md += formatProtocolSectionHeading(1, `Дата собрания: ${protocol.meetingDate}`);
+
+  // 2. Повестка
   md += formatProtocolSectionHeading(2, 'Повестка:');
-  const agendaTitle = cleanProtocolText(protocol.agenda.title);
-  if (agendaTitle) md += `${agendaTitle}\n\n`;
   if (protocol.agenda.items.length > 0) {
-    protocol.agenda.items.forEach((item) => {
-      md += `- ${item}\n`;
+    protocol.agenda.items.forEach((item, i) => {
+      md += `${i + 1}) ${cleanProtocolText(item)};\n`;
     });
   }
   md += '\n\n';
 
+  // 3. Участники
   md += formatProtocolSectionHeading(3, 'Участники:');
+
   const custOrg = protocol.participants.customer.organizationName.trim();
-  const custLabel =
-    custOrg && !/^заказчик$/i.test(custOrg) ? custOrg : 'группы компаний Форус';
-  md += `**Со стороны Заказчика (${custLabel}):**\n\n`;
+  md += `**Заказчик${custOrg && !/^заказчик$/i.test(custOrg) ? ` — ${custOrg}` : ''}**\n\n`;
   md += '| ФИО | Должность |\n';
   md += '| --- | --- |\n';
   protocol.participants.customer.people
     .filter((p) => isValidParticipantRow(p.fullName, p.position))
-    .forEach((p) => {
-      md += `| ${p.fullName} | ${p.position} |\n`;
-    });
+    .forEach((p) => { md += `| ${p.fullName} | ${p.position} |\n`; });
 
   md += '\n\n';
+
   const execOrg = protocol.participants.executor.organizationName.trim();
-  const execLabel =
-    execOrg && !/^исполнитель$/i.test(execOrg) ? execOrg : 'команды разработчиков';
-  md += `**Со стороны Исполнителя (${execLabel}):**\n\n`;
-  md += '| ФИО | Должность/роль |\n';
+  md += `**Исполнитель${execOrg && !/^исполнитель$/i.test(execOrg) ? ` — ${execOrg}` : ''}**\n\n`;
+  md += '| ФИО | Должность |\n';
   md += '| --- | --- |\n';
   protocol.participants.executor.people
     .filter((p) => isValidParticipantRow(p.fullName, p.position))
-    .forEach((p) => {
-      md += `| ${p.fullName} | ${p.position} |\n`;
-    });
+    .forEach((p) => { md += `| ${p.fullName} | ${p.position} |\n`; });
 
   md += '\n\n';
 
-  md += formatProtocolSectionHeading(4, 'Термины и определения:');
-  protocol.termsAndDefinitions.forEach((term, i) => {
-    const t = cleanProtocolText(term.term);
-    const d = cleanProtocolText(term.definition);
-    if (!t && !d) return;
-    md += `${formatNumberedLine(i, `${t} – ${d}`)}\n`;
+  // 4. Содержание встречи
+  md += formatProtocolSectionHeading(4, 'Содержание встречи:');
+  protocol.meetingContent.topics.forEach((topic, i) => {
+    md += `**${i + 1}) ${cleanProtocolText(topic.title)}**\n\n`;
+    const listened = cleanProtocolText(topic.listened);
+    const discussed = cleanProtocolText(topic.discussed);
+    const decided = cleanProtocolText(topic.decided);
+    if (listened) md += `**Слушали:** ${listened}\n\n`;
+    if (discussed) md += `**Обсудили:** ${discussed}\n\n`;
+    if (decided) md += `**Решили:** ${decided}\n\n`;
   });
 
-  md += '\n\n';
-
-  md += formatProtocolSectionHeading(5, 'Сокращения и обозначения:');
-  protocol.abbreviations.forEach((abbr, i) => {
-    const a = cleanProtocolText(abbr.abbreviation);
-    const f = cleanProtocolText(abbr.fullForm);
-    if (!a && !f) return;
-    md += `${formatNumberedLine(i, `${a} – ${f}`)}\n`;
-  });
-
-  md += '\n\n';
-
-  md += formatProtocolSectionHeading(6, 'Содержание встречи:');
-  md += 'В ходе встречи обсуждались следующие вопросы:\n\n';
-  if (protocol.meetingContent.introduction) {
-    md += `${protocol.meetingContent.introduction}\n\n`;
-  }
-  protocol.meetingContent.topics.forEach((topic) => {
-    md += `- ${topic.title}\n`;
-    md += `  ${topic.content}\n`;
-    if (topic.subtopics && topic.subtopics.length > 0) {
-      topic.subtopics.forEach((sub) => {
-        if (sub.title) {
-          md += `  - ${sub.title}\n`;
-        }
-        md += `    ${sub.content}\n`;
-      });
-    }
-  });
-  md += '\n\n';
-  if (protocol.meetingContent.migrationFeatures && protocol.meetingContent.migrationFeatures.length > 0) {
-    md += '| Вкладка | Особенности |\n';
+  if (protocol.meetingContent.summary.length > 0) {
+    md += '**Резюме:**\n\n';
+    md += '| Обсуждаемые вопросы | Принятые решения |\n';
     md += '| --- | --- |\n';
-    protocol.meetingContent.migrationFeatures.forEach((feat) => {
-      md += `| ${feat.tab} | ${feat.features} |\n`;
+    protocol.meetingContent.summary.forEach((row) => {
+      const q = cleanProtocolText(row.question);
+      const d = cleanProtocolText(row.decision);
+      if (q || d) md += `| ${q} | ${d} |\n`;
     });
     md += '\n';
   }
 
   md += '\n\n';
 
-  md += formatProtocolSectionHeading(7, 'Вопросы:');
-  protocol.questionsAndAnswers.forEach((qa, i) => {
-    const line = formatNumberedLine(i, qa.question);
-    if (line) md += `${line}\n`;
+  // 5. Согласовано
+  md += formatProtocolSectionHeading(5, 'Согласовано:');
+
+  const custApprOrg = protocol.approval.customer.organization.trim();
+  const execApprOrg = protocol.approval.executor.organization.trim();
+  md += `**Со стороны Заказчика**\n`;
+  if (custApprOrg && !/^заказчик$/i.test(custApprOrg)) md += `ООО «${custApprOrg}»:\n\n`;
+  protocol.approval.customer.signatories.forEach((name) => {
+    if (name.trim()) md += `${name} /______________ \n\n`;
   });
 
-  md += '\n\n\n';
-  md += `**Ответы**:\n\n`;
-  protocol.questionsAndAnswers.forEach((qa, i) => {
-    const line = formatNumberedLine(i, qa.answer);
-    if (line) md += `${line}\n`;
-  });
-
-  md += '\n\n\n';
-
-  md += formatProtocolSectionHeading(8, 'Решения:');
-  protocol.decisions.forEach((decision, i) => {
-    const line = formatNumberedLine(i, decision.decision);
-    if (!line) return;
-    md += `${line}\n`;
-    const resp = cleanProtocolText(decision.responsible);
-    if (resp) md += `  Ответственный: ${resp}\n`;
-  });
-
-  md += '\n\n\n';
-
-  md += formatProtocolSectionHeading(9, 'Открытые вопросы:');
-  protocol.openQuestions.forEach((q, i) => {
-    const line = formatNumberedLine(i, q);
-    if (line) md += `${line}\n`;
-  });
-
-  md += '\n\n\n';
-
-  md += formatProtocolSectionHeading(10, 'Согласовано:');
-  md += '| Со стороны Исполнителя | Со стороны Заказчика |\n';
-  md += '| --- | --- |\n';
-  md += `| ${protocol.approval.executorSignature.organization} | ${protocol.approval.customerSignature.organization} |\n`;
-  md += `| ${protocol.approval.executorSignature.representative} /______________ | ${protocol.approval.customerSignature.representative} /______________ |\n`;
   md += '\n';
+  md += `**Со стороны Исполнителя**\n`;
+  if (execApprOrg && !/^исполнитель$/i.test(execApprOrg)) md += `ООО «${execApprOrg}»:\n\n`;
+  protocol.approval.executor.signatories.forEach((name) => {
+    if (name.trim()) md += `${name} /______________ \n\n`;
+  });
 
   return md;
 }

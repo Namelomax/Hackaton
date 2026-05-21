@@ -56,135 +56,52 @@ export function collectUserConfirmedAssistantBlocks(uiMessages: unknown[]): stri
   return blocks;
 }
 
-function parseDashListItems(text: string): Array<{ left: string; right: string }> {
-  const items: Array<{ left: string; right: string }> = [];
-  for (const rawLine of text.split('\n')) {
-    const line = stripTimecodes(rawLine.trim());
-    if (!line || line.startsWith('|') || line.startsWith('---')) continue;
-    const m = line.match(/^(.+?)\s*[–—-]\s*(.+)$/);
-    if (!m) continue;
-    const left = m[1].trim();
-    const right = m[2].trim();
-    if (
-      left.length > 0 &&
-      left.length < 120 &&
-      right.length > 0 &&
-      !isProtocolBoilerplateLine(left) &&
-      !isProtocolBoilerplateLine(right)
-    ) {
-      items.push({ left, right });
-    }
-  }
-  return items;
-}
-
-function parseTermsFromBlocks(blocks: string[]): Protocol['termsAndDefinitions'] {
-  let best: Protocol['termsAndDefinitions'] = [];
-  for (const block of blocks) {
-    if (!/термин|определен|ФЗ|1С|BPMN|НОМЕНКЛАТУРА/i.test(block)) continue;
-    const items = parseDashListItems(block)
-      .filter((x) => !/^верно\??$/i.test(x.left))
-      .map((x) => ({ term: x.left, definition: x.right }));
-    if (items.length > best.length) best = items;
-  }
-  return best;
-}
-
-function parseAbbreviationsFromBlocks(blocks: string[]): Protocol['abbreviations'] {
-  let best: Protocol['abbreviations'] = [];
-  for (const block of blocks) {
-    if (!/сокращен|обозначен|ВКС|PDF|DOCX/i.test(block)) continue;
-    const items = parseDashListItems(block)
-      .filter((x) => x.left.length <= 20)
-      .map((x) => ({ abbreviation: x.left, fullForm: x.right }));
-    if (items.length > best.length) best = items;
-  }
-  return best;
-}
-
+/** Извлекает темы содержания встречи в формате Слушали/Обсудили/Решили. */
 function parseMeetingTopicsFromBlocks(blocks: string[]): Protocol['meetingContent']['topics'] {
   let best: Protocol['meetingContent']['topics'] = [];
   for (const block of blocks) {
-    if (!/содержание встречи|ключевые моменты|Проблемы подготовки|раздел\s*6/i.test(block)) continue;
+    if (!/содержание встречи|слушали|обсудили|решили|раздел\s*4/i.test(block)) continue;
     const topics: Protocol['meetingContent']['topics'] = [];
-    for (const rawLine of block.split('\n')) {
-      const line = stripTimecodes(rawLine.trim());
-      const m = line.match(/^(.{3,120}?):\s+(.+)$/);
-      if (!m) continue;
-      const title = m[1].trim();
-      const content = m[2].trim();
-      if (
-        /^(верно|вопрос|ответ|решение|статус|раздел|перехожу|отлично|теперь)/i.test(title) ||
-        content.length < 15
-      ) {
-        continue;
+
+    // Ищем блоки: "1) Вопрос\nСлушали: ...\nОбсудили: ...\nРешили: ..."
+    const topicBlocks = block.split(/\n(?=\d+\))/);
+    for (const tb of topicBlocks) {
+      const titleM = tb.match(/^(\d+\)\s*.+?)(?:\n|$)/);
+      if (!titleM) continue;
+      const title = stripTimecodes(titleM[1].trim());
+      const listenedM = tb.match(/Слушали:\s*([\s\S]*?)(?=Обсудили:|Решили:|$)/i);
+      const discussedM = tb.match(/Обсудили:\s*([\s\S]*?)(?=Решили:|Слушали:|$)/i);
+      const decidedM = tb.match(/Решили:\s*([\s\S]*?)(?=Обсудили:|Слушали:|$)/i);
+      const listened = listenedM ? stripTimecodes(listenedM[1].trim()) : '';
+      const discussed = discussedM ? stripTimecodes(discussedM[1].trim()) : '';
+      const decided = decidedM ? stripTimecodes(decidedM[1].trim()) : '';
+      if (title && (listened || discussed || decided)) {
+        topics.push({ title, listened, discussed, decided });
       }
-      topics.push({ title, content });
     }
     if (topics.length > best.length) best = topics;
   }
   return best;
 }
 
-function parseQaFromBlocks(blocks: string[]): Protocol['questionsAndAnswers'] {
-  let best: Protocol['questionsAndAnswers'] = [];
+/** Извлекает резюме встречи. */
+function parseSummaryFromBlocks(blocks: string[]): Protocol['meetingContent']['summary'] {
+  let best: Protocol['meetingContent']['summary'] = [];
   for (const block of blocks) {
-    if (!/вопрос|ответ/i.test(block)) continue;
-    const qa: Protocol['questionsAndAnswers'] = [];
-    const re = /Вопрос:\s*[«"]?([^»"\n]+)[»"]?\s*([\s\S]*?)(?=Вопрос:|$)/gi;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(block)) !== null) {
-      const question = stripTimecodes(m[1].trim());
-      const tail = m[2];
-      const ansM = tail.match(/Ответ:\s*([\s\S]*?)(?=Вопрос:|$)/i);
-      let answer = ansM ? stripTimecodes(ansM[1].trim()) : '';
-      answer = answer.replace(/\n\s*\d+[.)]\s+[\s\S]*$/, '').trim();
-      answer = cleanProtocolText(answer);
-      const qClean = cleanProtocolText(question);
-      if (qClean && !isProtocolBoilerplateLine(qClean)) qa.push({ question: qClean, answer });
+    if (!/резюме|обсуждаемые вопросы|принятые решения/i.test(block)) continue;
+    const rows: Protocol['meetingContent']['summary'] = [];
+    // Парсим строки таблицы Markdown
+    for (const line of block.split('\n')) {
+      const cells = line.split('|').map((c) => c.trim()).filter(Boolean);
+      if (cells.length < 2) continue;
+      if (/обсуждаемые|принятые|---/i.test(cells[0])) continue;
+      const question = stripTimecodes(cells[0]);
+      const decision = stripTimecodes(cells[1]);
+      if (question && decision && !isProtocolBoilerplateLine(question)) {
+        rows.push({ question, decision });
+      }
     }
-    if (qa.length > best.length) best = qa;
-  }
-  return best;
-}
-
-function parseDecisionsFromBlocks(blocks: string[]): Protocol['decisions'] {
-  let best: Protocol['decisions'] = [];
-  for (const block of blocks) {
-    if (!/решени/i.test(block)) continue;
-    const decisions: Protocol['decisions'] = [];
-    const re = /Решение:\s*([\s\S]*?)(?=Решение:|$)/gi;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(block)) !== null) {
-      const tail = m[1];
-      const decM = tail.match(/^(.+?)(?:\n|$)/);
-      const decision = decM ? stripTimecodes(decM[1].trim()) : '';
-      const respM = tail.match(/Ответственный:\s*(.+?)(?:\n|$)/i);
-      const responsible = respM ? stripTimecodes(respM[1].trim()) : '';
-      if (decision) decisions.push({ decision, responsible });
-    }
-    if (decisions.length > best.length) best = decisions;
-  }
-  return best;
-}
-
-function parseOpenQuestionsFromBlocks(blocks: string[]): string[] {
-  let best: string[] = [];
-  for (const block of blocks) {
-    if (!/открыт|статус:/i.test(block)) continue;
-    const items: string[] = [];
-    const re = /Вопрос:\s*([\s\S]*?)(?=Вопрос:|$)/gi;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(block)) !== null) {
-      const tail = m[1].trim();
-      const qM = tail.match(/^(.+?)(?:\n|Статус:)/i);
-      const question = qM ? stripTimecodes(qM[1].trim()) : stripTimecodes(tail);
-      const stM = tail.match(/Статус:\s*(.+?)(?:\n|$)/i);
-      const status = stM ? stripTimecodes(stM[1].trim()) : '';
-      const line = status ? `${question} Статус: ${status}` : question;
-      if (question.length > 10) items.push(line);
-    }
-    if (items.length > best.length) best = items;
+    if (rows.length > best.length) best = rows;
   }
   return best;
 }
@@ -192,31 +109,45 @@ function parseOpenQuestionsFromBlocks(blocks: string[]): string[] {
 function parseApprovalFromBlocks(blocks: string[]): Protocol['approval'] | undefined {
   for (let i = blocks.length - 1; i >= 0; i--) {
     const block = blocks[i];
-    if (!/согласован|раздел\s*10|подпис/i.test(block)) continue;
-    let customerRep = '';
-    let executorRep = '';
-    const custM = block.match(
-      /(?:со\s+стороны\s+заказчика|заказчик)[^:\n]*:\s*([^\n\[]+)/i,
-    );
-    if (custM) customerRep = stripTimecodes(custM[1].trim());
-    const execM = block.match(
-      /(?:со\s+стороны\s+исполнителя|исполнитель)[^:\n]*:\s*([^\n\[]+)/i,
-    );
-    if (execM) {
-      executorRep = stripTimecodes(execM[1].trim());
-      const namesInParens = executorRep.match(/\(([^)]+)\)/);
-      if (namesInParens) executorRep = namesInParens[1];
+    if (!/согласован|раздел\s*5|подпис/i.test(block)) continue;
+
+    const custSigns: string[] = [];
+    const execSigns: string[] = [];
+    let custOrg = '';
+    let execOrg = '';
+
+    // Ищем блок "Со стороны Заказчика"
+    const custSection = block.match(/со\s+стороны\s+заказчика([\s\S]*?)(?=со\s+стороны\s+исполнителя|$)/i);
+    if (custSection) {
+      const sec = custSection[1];
+      const orgM = sec.match(/ООО\s*[«"]([^»"]+)[»"]/i);
+      if (orgM) custOrg = orgM[1];
+      for (const line of sec.split('\n')) {
+        const clean = stripTimecodes(line.trim());
+        if (clean && !clean.startsWith('ООО') && !clean.startsWith('//') && clean.length > 3 && !/^[-_]{3,}/.test(clean)) {
+          custSigns.push(clean.replace(/\/+_+.*$/, '').trim());
+        }
+      }
     }
-    if (customerRep || executorRep) {
+
+    // Ищем блок "Со стороны Исполнителя"
+    const execSection = block.match(/со\s+стороны\s+исполнителя([\s\S]*?)(?=со\s+стороны\s+заказчика|$)/i);
+    if (execSection) {
+      const sec = execSection[1];
+      const orgM = sec.match(/ООО\s*[«"]([^»"]+)[»"]/i);
+      if (orgM) execOrg = orgM[1];
+      for (const line of sec.split('\n')) {
+        const clean = stripTimecodes(line.trim());
+        if (clean && !clean.startsWith('ООО') && !clean.startsWith('//') && clean.length > 3 && !/^[-_]{3,}/.test(clean)) {
+          execSigns.push(clean.replace(/\/+_+.*$/, '').trim());
+        }
+      }
+    }
+
+    if (custSigns.length > 0 || execSigns.length > 0) {
       return {
-        executorSignature: {
-          organization: 'Исполнитель',
-          representative: executorRep || 'Не указано в расшифровке',
-        },
-        customerSignature: {
-          organization: 'Группа компаний Форус',
-          representative: customerRep || 'Не указано в расшифровке',
-        },
+        customer: { organization: custOrg || 'Заказчик', signatories: custSigns },
+        executor: { organization: execOrg || 'Исполнитель', signatories: execSigns },
       };
     }
   }
@@ -230,24 +161,21 @@ function parseParticipantsFromBlocks(blocks: string[]): Protocol['participants']
   let execOrg = '';
 
   for (const block of blocks) {
-    if (!/участник|заказчик|исполнитель|Dream Team|Оптима|КФК/i.test(block)) continue;
-    const custSec = block.match(
-      /со\s+стороны\s+заказчика[^]*?(?=со\s+стороны\s+исполнителя|$)/i,
-    );
-    const execSec = block.match(/со\s+стороны\s+исполнителя[^]*/i);
+    if (!/участник|заказчик|исполнитель/i.test(block)) continue;
+    const custSec = block.match(/(?:заказчик|со\s+стороны\s+заказчика)[^]*?(?=(?:исполнитель|со\s+стороны\s+исполнителя)|$)/i);
+    const execSec = block.match(/(?:исполнитель|со\s+стороны\s+исполнителя)[^]*/i);
+
     const parseTable = (sec: string | null, side: 'customer' | 'executor') => {
       if (!sec) return;
-      const orgM = sec.match(/\(([^)]+)\)/);
+      const orgM = sec.match(/[—–-]\s*(.+?)[\n|]/);
       if (orgM) {
-        if (side === 'customer') custOrg = orgM[1];
-        else execOrg = orgM[1];
+        const org = orgM[1].trim();
+        if (side === 'customer') custOrg = org;
+        else execOrg = org;
       }
       const rows: Protocol['participants']['customer']['people'] = [];
       for (const line of sec.split('\n')) {
-        const cells = line
-          .split('|')
-          .map((c) => c.trim())
-          .filter(Boolean);
+        const cells = line.split('|').map((c) => c.trim()).filter(Boolean);
         if (cells.length < 2 || /фио|должность/i.test(cells[0])) continue;
         const fullName = stripTimecodes(cells[0]);
         const position = stripTimecodes(cells[1]);
@@ -265,14 +193,8 @@ function parseParticipantsFromBlocks(blocks: string[]): Protocol['participants']
 
   if (customerPeople.length === 0 && executorPeople.length === 0) return undefined;
   return {
-    customer: {
-      organizationName: custOrg || 'Группа компаний Форус',
-      people: customerPeople,
-    },
-    executor: {
-      organizationName: execOrg || 'Исполнитель',
-      people: executorPeople,
-    },
+    customer: { organizationName: custOrg || 'Заказчик', people: customerPeople },
+    executor: { organizationName: execOrg || 'Исполнитель', people: executorPeople },
   };
 }
 
@@ -281,47 +203,33 @@ export function buildProtocolDraftFromChat(uiMessages: unknown[]): Partial<Proto
   const blocks = collectUserConfirmedAssistantBlocks(uiMessages);
   if (blocks.length === 0) return {};
 
-  const termsAndDefinitions = parseTermsFromBlocks(blocks);
-  const abbreviations = parseAbbreviationsFromBlocks(blocks);
   const topics = parseMeetingTopicsFromBlocks(blocks);
-  const questionsAndAnswers = parseQaFromBlocks(blocks);
-  const decisions = parseDecisionsFromBlocks(blocks);
-  const openQuestions = parseOpenQuestionsFromBlocks(blocks);
+  const summary = parseSummaryFromBlocks(blocks);
   const approval = parseApprovalFromBlocks(blocks);
   const participants = parseParticipantsFromBlocks(blocks);
 
   const draft: Partial<Protocol> = {};
-  if (termsAndDefinitions.length) draft.termsAndDefinitions = termsAndDefinitions;
-  if (abbreviations.length) draft.abbreviations = abbreviations;
-  if (topics.length) draft.meetingContent = { introduction: '', topics };
-  if (questionsAndAnswers.length) draft.questionsAndAnswers = questionsAndAnswers;
-  if (decisions.length) draft.decisions = decisions;
-  if (openQuestions.length) draft.openQuestions = openQuestions;
+  if (topics.length || summary.length) {
+    draft.meetingContent = { topics, summary };
+  }
   if (approval) draft.approval = approval;
   if (participants) draft.participants = participants;
 
   return draft;
 }
 
-function hasTerms(p: Protocol): boolean {
-  return p.termsAndDefinitions.some((t) => t.term.trim() && t.definition.trim());
-}
-function hasAbbr(p: Protocol): boolean {
-  return p.abbreviations.some((a) => a.abbreviation.trim() && a.fullForm.trim());
-}
 function hasTopics(p: Protocol): boolean {
-  return p.meetingContent.topics.some((t) => t.title.trim() && t.content.trim());
+  return p.meetingContent.topics.some((t) => t.title.trim() && (t.discussed.trim() || t.decided.trim()));
 }
-function hasQa(p: Protocol): boolean {
-  return p.questionsAndAnswers.some((q) => q.question.trim());
+
+function hasSummary(p: Protocol): boolean {
+  return p.meetingContent.summary.some((r) => r.question.trim() && r.decision.trim());
 }
-function hasDecisions(p: Protocol): boolean {
-  return p.decisions.some((d) => d.decision.trim());
-}
+
 function hasApproval(p: Protocol): boolean {
   return Boolean(
-    p.approval.executorSignature.representative.trim() ||
-      p.approval.customerSignature.representative.trim(),
+    p.approval.customer.signatories.some((s) => s.trim()) ||
+    p.approval.executor.signatories.some((s) => s.trim()),
   );
 }
 
@@ -331,29 +239,17 @@ export function mergeProtocolWithChatDraft(model: Protocol, chatDraft: Partial<P
 
   const merged: Protocol = { ...model };
 
-  if (!hasTerms(merged) && chatDraft.termsAndDefinitions?.length) {
-    merged.termsAndDefinitions = chatDraft.termsAndDefinitions;
-  }
-  if (!hasAbbr(merged) && chatDraft.abbreviations?.length) {
-    merged.abbreviations = chatDraft.abbreviations;
-  }
   if (!hasTopics(merged) && chatDraft.meetingContent?.topics?.length) {
     merged.meetingContent = {
       ...merged.meetingContent,
       topics: chatDraft.meetingContent.topics,
     };
   }
-  if (!hasQa(merged) && chatDraft.questionsAndAnswers?.length) {
-    merged.questionsAndAnswers = chatDraft.questionsAndAnswers;
-  }
-  if (!hasDecisions(merged) && chatDraft.decisions?.length) {
-    merged.decisions = chatDraft.decisions;
-  }
-  if (
-    (!merged.openQuestions.length || merged.openQuestions.every((q) => !q.trim())) &&
-    chatDraft.openQuestions?.length
-  ) {
-    merged.openQuestions = chatDraft.openQuestions;
+  if (!hasSummary(merged) && chatDraft.meetingContent?.summary?.length) {
+    merged.meetingContent = {
+      ...merged.meetingContent,
+      summary: chatDraft.meetingContent.summary,
+    };
   }
   if (!hasApproval(merged) && chatDraft.approval) {
     merged.approval = chatDraft.approval;
@@ -386,41 +282,25 @@ export function formatChatDraftForPrompt(draft: Partial<Protocol>): string {
     '### СОГЛАСОВАНО С ПОЛЬЗОВАТЕЛЕМ В ЧАТЕ (ответ «Верно») — ОБЯЗАТЕЛЬНО перенеси в JSON дословно',
   ];
 
-  if (draft.termsAndDefinitions?.length) {
-    lines.push('\n**Раздел 4 — термины:**');
-    draft.termsAndDefinitions.forEach((t) => lines.push(`- ${t.term} — ${t.definition}`));
-  }
-  if (draft.abbreviations?.length) {
-    lines.push('\n**Раздел 5 — сокращения:**');
-    draft.abbreviations.forEach((a) => lines.push(`- ${a.abbreviation} — ${a.fullForm}`));
-  }
   if (draft.meetingContent?.topics?.length) {
-    lines.push('\n**Раздел 6 — содержание (темы):**');
-    draft.meetingContent.topics.forEach((t) => lines.push(`- ${t.title}: ${t.content}`));
-  }
-  if (draft.questionsAndAnswers?.length) {
-    lines.push('\n**Раздел 7 — вопросы и ответы:**');
-    draft.questionsAndAnswers.forEach((qa) => {
-      lines.push(`Вопрос: ${qa.question}`);
-      lines.push(`Ответ: ${qa.answer}`);
+    lines.push('\n**Раздел 4 — содержание встречи (темы):**');
+    draft.meetingContent.topics.forEach((t, i) => {
+      lines.push(`${i + 1}) ${t.title}`);
+      if (t.listened) lines.push(`  Слушали: ${t.listened}`);
+      if (t.discussed) lines.push(`  Обсудили: ${t.discussed}`);
+      if (t.decided) lines.push(`  Решили: ${t.decided}`);
     });
   }
-  if (draft.decisions?.length) {
-    lines.push('\n**Раздел 8 — решения:**');
-    draft.decisions.forEach((d) => {
-      lines.push(`Решение: ${d.decision}`);
-      lines.push(`Ответственный: ${d.responsible}`);
+  if (draft.meetingContent?.summary?.length) {
+    lines.push('\n**Раздел 4 — резюме:**');
+    draft.meetingContent.summary.forEach((r) => {
+      lines.push(`- ${r.question} | ${r.decision}`);
     });
-  }
-  if (draft.openQuestions?.length) {
-    lines.push('\n**Раздел 9 — открытые вопросы:**');
-    draft.openQuestions.forEach((q) => lines.push(`- ${q}`));
   }
   if (draft.approval) {
-    lines.push('\n**Раздел 10 — согласование:**');
-    lines.push(
-      `Исполнитель: ${draft.approval.executorSignature.representative}; Заказчик: ${draft.approval.customerSignature.representative}`,
-    );
+    lines.push('\n**Раздел 5 — согласование:**');
+    lines.push(`Заказчик (${draft.approval.customer.organization}): ${draft.approval.customer.signatories.join(', ')}`);
+    lines.push(`Исполнитель (${draft.approval.executor.organization}): ${draft.approval.executor.signatories.join(', ')}`);
   }
 
   return lines.join('\n');
