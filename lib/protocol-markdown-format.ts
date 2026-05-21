@@ -26,6 +26,13 @@ export function cleanProtocolText(text: string): string {
 /** Маркеры «Срок:» / «Ответственный:» в поле решения (после снятия **). */
 const DECISION_LABEL_SPLIT_RX = /(?=(?:Срок\s*:|Ответственн\w*\s*:))/i;
 
+/** Перенос перед метками, если модель пишет «Срок:» и «Ответственный:» в одной строке. */
+function normalizeDecisionLabelBreaks(s: string): string {
+  return s
+    .replace(/([^\n<])\s*(Срок\s*:)/gi, '$1\n$2')
+    .replace(/([^\n<])\s*(Ответственн\w*\s*:)/gi, '$1\n$2');
+}
+
 /** Текст решения для DOCX / разбора: без markdown-звёздочек, переносы из &lt;br&gt; сохранены. */
 export function prepareDecisionPlainText(raw: string): string {
   let s = String(raw ?? '').trim();
@@ -53,8 +60,9 @@ function splitLineByDecisionLabels(line: string): string[] {
 
 /** Разбивает решение на абзацы: основной текст, затем «Срок:», «Ответственный:». */
 export function splitDecisionSegments(raw: string): string[] {
-  const s = prepareDecisionPlainText(raw);
+  let s = prepareDecisionPlainText(raw);
   if (!s) return [];
+  s = normalizeDecisionLabelBreaks(s);
   return s.split(/\n+/).flatMap((line) => splitLineByDecisionLabels(line));
 }
 
@@ -122,9 +130,23 @@ export function resolveApprovalForDocument(protocol: {
 }
 
 export function formatSummaryDecisionForMarkdown(raw: string): string {
-  const segments = splitDecisionSegments(raw);
-  if (segments.length === 0) return '';
-  return segments
+  let s = prepareDecisionPlainText(raw);
+  if (!s) return '';
+
+  // Явный <br> перед метками — в GFM-ячейке таблицы это надёжнее, чем только \n
+  s = s
+    .replace(/([^\n<])\s*(Срок\s*:)/gi, '$1<br>$2')
+    .replace(/([^\n<])\s*(Ответственн\w*\s*:)/gi, '$1<br>$2')
+    .replace(/^(<br>)+/i, '');
+
+  const parts = s
+    .split(/<br\s*\/?>|\n+/i)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  if (parts.length === 0) return '';
+
+  return parts
     .map((segment) => {
       const m = segment.match(/^(Срок\s*:|Ответственн\w*\s*:)\s*([\s\S]*)/i);
       if (m) {
@@ -135,6 +157,41 @@ export function formatSummaryDecisionForMarkdown(raw: string): string {
       return segment;
     })
     .join('<br>');
+}
+
+/** Для md-to-docx: **текст** → &lt;strong&gt; (в ячейках таблиц ** часто не рендерится). */
+export function convertMarkdownBoldForDocxExport(markdown: string): string {
+  let s = String(markdown ?? '').replace(/\r\n?/g, '\n');
+  for (let i = 0; i < 8; i++) {
+    const next = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    if (next === s) break;
+    s = next;
+  }
+  return s.replace(/\*\*/g, '');
+}
+
+/** Разбирает inline **жирный** на сегменты { text, bold } для Word (docx). */
+export function parseInlineMarkdownBold(text: string): Array<{ text: string; bold: boolean }> {
+  const s = String(text ?? '');
+  if (!s) return [{ text: '', bold: false }];
+  const segments: Array<{ text: string; bold: boolean }> = [];
+  const rx = /\*\*([^*]+)\*\*/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = rx.exec(s)) !== null) {
+    if (m.index > last) {
+      segments.push({ text: s.slice(last, m.index), bold: false });
+    }
+    segments.push({ text: m[1], bold: true });
+    last = m.index + m[0].length;
+  }
+  if (last < s.length) {
+    segments.push({ text: s.slice(last), bold: false });
+  }
+  if (segments.length === 0) {
+    return [{ text: s.replace(/\*\*/g, ''), bold: false }];
+  }
+  return segments;
 }
 
 export function normalizeMarkdownBold(text: string): string {

@@ -3,12 +3,41 @@ import type { Protocol } from './schemas/protocol-schema';
 import {
   cleanProtocolText,
   formatContractBlock,
+  parseInlineMarkdownBold,
   resolveApprovalForDocument,
   splitDecisionSegments,
 } from './protocol-markdown-format';
 
 function normalizeDocxOrgName(org: string): string {
   return org.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').replace(/^ООО\s+/, '').trim();
+}
+
+function docxRunsFromInlineMarkdown(
+  text: string,
+  options?: { defaultBold?: boolean; italics?: boolean },
+): TextRun[] {
+  const segments = parseInlineMarkdownBold(cleanProtocolText(text));
+  return segments
+    .filter((seg) => seg.text.length > 0)
+    .map(
+      (seg) =>
+        new TextRun({
+          text: seg.text,
+          bold: seg.bold || options?.defaultBold,
+          italics: options?.italics,
+        }),
+    );
+}
+
+function docxParagraphFromInlineMarkdown(
+  text: string,
+  options?: { defaultBold?: boolean; italics?: boolean; spacingAfter?: number },
+): Paragraph {
+  const runs = docxRunsFromInlineMarkdown(text, options);
+  return new Paragraph({
+    children: runs.length ? runs : [new TextRun('')],
+    ...(options?.spacingAfter != null ? { spacing: { after: options.spacingAfter } } : {}),
+  });
 }
 
 function isValidOrgDisplayName(name: string): boolean {
@@ -39,7 +68,7 @@ function decisionToDocxParagraphs(raw: string): Paragraph[] {
       });
     }
     return new Paragraph({
-      children: [new TextRun(cleanProtocolText(segment))],
+      children: docxRunsFromInlineMarkdown(segment),
       spacing: { after: index < segments.length - 1 ? 80 : 0 },
     });
   });
@@ -237,8 +266,8 @@ function createParticipantsTable(participants: Array<{ fullName: string; positio
         (p) =>
           new TableRow({
             children: [
-              new TableCell({ children: [new Paragraph(p.fullName)] }),
-              new TableCell({ children: [new Paragraph(p.position)] }),
+              new TableCell({ children: [docxParagraphFromInlineMarkdown(p.fullName)] }),
+              new TableCell({ children: [docxParagraphFromInlineMarkdown(p.position)] }),
             ],
           }),
       ),
@@ -274,7 +303,7 @@ function createSummaryTable(summary: Array<{ question: string; decision: string 
         (row) =>
           new TableRow({
             children: [
-              new TableCell({ children: [new Paragraph(cleanProtocolText(row.question))] }),
+              new TableCell({ children: [docxParagraphFromInlineMarkdown(row.question)] }),
               new TableCell({ children: decisionToDocxParagraphs(row.decision) }),
             ],
           }),
@@ -300,10 +329,10 @@ function formatApprovalOrgLine(org: string): string {
 
 function signatoryParagraph(name?: string): Paragraph {
   const n = name?.trim();
-  return new Paragraph({
-    text: n ? `${n} /______________` : '______________________',
-    spacing: { after: 80 },
-  });
+  return docxParagraphFromInlineMarkdown(
+    n ? `${n} /______________` : '______________________',
+    { spacingAfter: 80 },
+  );
 }
 
 function createApprovalTable(protocol: Protocol): Table {
@@ -318,10 +347,14 @@ function createApprovalTable(protocol: Protocol): Table {
     new TableRow({
       children: [
         new TableCell({
-          children: [new Paragraph({ children: [new TextRun({ text: 'Со стороны Заказчика', bold: true })] })],
+          children: [
+            docxParagraphFromInlineMarkdown('**Со стороны Заказчика**', { defaultBold: true }),
+          ],
         }),
         new TableCell({
-          children: [new Paragraph({ children: [new TextRun({ text: 'Со стороны Исполнителя', bold: true })] })],
+          children: [
+            docxParagraphFromInlineMarkdown('**Со стороны Исполнителя**', { defaultBold: true }),
+          ],
         }),
       ],
     }),
@@ -329,15 +362,15 @@ function createApprovalTable(protocol: Protocol): Table {
       children: [
         new TableCell({
           children: [
-            new Paragraph({
-              children: [new TextRun({ text: formatApprovalOrgLine(sides.customer.organization), italics: true })],
+            docxParagraphFromInlineMarkdown(formatApprovalOrgLine(sides.customer.organization), {
+              italics: true,
             }),
           ],
         }),
         new TableCell({
           children: [
-            new Paragraph({
-              children: [new TextRun({ text: formatApprovalOrgLine(sides.executor.organization), italics: true })],
+            docxParagraphFromInlineMarkdown(formatApprovalOrgLine(sides.executor.organization), {
+              italics: true,
             }),
           ],
         }),

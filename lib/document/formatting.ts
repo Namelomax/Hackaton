@@ -1,4 +1,7 @@
-import { fixProtocolSectionHeadingsInMarkdown } from '@/lib/protocol-markdown-format';
+import {
+  convertMarkdownBoldForDocxExport,
+  fixProtocolSectionHeadingsInMarkdown,
+} from '@/lib/protocol-markdown-format';
 
 /**
  * Убирает лишние маркеры ненумерованного списка перед нумерованными блоками
@@ -29,6 +32,8 @@ export function normalizeMarkdownForDocx(raw: string) {
   // Normalize bullet points into markdown list items.
   text = text.replace(/^[ \t]*•\s*/gm, '- ');
   text = text.replace(/([^\n])\s*•\s*/g, '$1\n- ');
+
+  text = convertMarkdownBoldForDocxExport(text);
 
   return text;
 }
