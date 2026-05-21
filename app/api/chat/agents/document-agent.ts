@@ -274,6 +274,28 @@ export async function generateFinalDocument(
   return markdownContent;
 }
 
+/** Проверяет, что название организации — реальное имя, а не заглушка или мусор из LLM. */
+function isValidOrgDisplayName(name: string): boolean {
+  const s = name.trim();
+  if (!s) return false;
+  if (/^[-–—\s.]+$/.test(s)) return false;         // только дефисы/тире/точки
+  if (/^(заказчик|исполнитель)$/i.test(s)) return false;
+  if (s.length > 100) return false;                 // слишком длинно — попал контент встречи
+  return true;
+}
+
+/**
+ * Форматирует поле «Принятые решения» в Резюме:
+ * «Срок:» и «Ответственный:» — с новой строки, жирным.
+ */
+function formatSummaryDecision(raw: string): string {
+  let s = cleanProtocolText(raw);
+  s = s.replace(/\r?\n/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  s = s.replace(/\s*(Срок\s*:)/gi, '<br>**$1**');
+  s = s.replace(/\s*(Ответственн\w*\s*:)/gi, '<br>**$1**');
+  return s;
+}
+
 function protocolToMarkdown(protocol: Protocol): string {
   const normalizedNumber = String(protocol.protocolNumber || '').trim().startsWith('№')
     ? String(protocol.protocolNumber).trim()
@@ -311,7 +333,7 @@ function protocolToMarkdown(protocol: Protocol): string {
   md += formatProtocolSectionHeading(3, 'Участники:');
 
   const custOrg = protocol.participants.customer.organizationName.trim();
-  md += `**Заказчик${custOrg && !/^заказчик$/i.test(custOrg) ? ` — ${custOrg}` : ''}**\n\n`;
+  md += `**Заказчик${isValidOrgDisplayName(custOrg) ? ` — ${custOrg}` : ''}**\n\n`;
   md += '| ФИО | Должность |\n';
   md += '| --- | --- |\n';
   protocol.participants.customer.people
@@ -321,7 +343,7 @@ function protocolToMarkdown(protocol: Protocol): string {
   md += '\n\n';
 
   const execOrg = protocol.participants.executor.organizationName.trim();
-  md += `**Исполнитель${execOrg && !/^исполнитель$/i.test(execOrg) ? ` — ${execOrg}` : ''}**\n\n`;
+  md += `**Исполнитель${isValidOrgDisplayName(execOrg) ? ` — ${execOrg}` : ''}**\n\n`;
   md += '| ФИО | Должность |\n';
   md += '| --- | --- |\n';
   protocol.participants.executor.people
@@ -348,7 +370,7 @@ function protocolToMarkdown(protocol: Protocol): string {
     md += '| --- | --- |\n';
     protocol.meetingContent.summary.forEach((row) => {
       const q = cleanProtocolText(row.question);
-      const d = cleanProtocolText(row.decision);
+      const d = formatSummaryDecision(row.decision);
       if (q || d) md += `| ${q} | ${d} |\n`;
     });
     md += '\n';
@@ -356,27 +378,43 @@ function protocolToMarkdown(protocol: Protocol): string {
 
   md += '\n\n';
 
-  // 5. Согласовано
+  // 5. Согласовано — двухколоночная таблица
   md += formatProtocolSectionHeading(5, 'Согласовано:');
 
   const custApprOrg = protocol.approval.customer.organization.trim();
   const execApprOrg = protocol.approval.executor.organization.trim();
   const normalizeOrgName = (org: string) =>
     org.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').replace(/^ООО\s+/, '').trim();
-  md += `**Со стороны Заказчика**\n`;
   const cleanCustOrg = normalizeOrgName(custApprOrg);
-  if (cleanCustOrg && !/^заказчик$/i.test(cleanCustOrg)) md += `ООО «${cleanCustOrg}»:\n\n`;
+  const cleanExecOrg = normalizeOrgName(execApprOrg);
+
+  // Строки левого столбца (Заказчик)
+  const custCells: string[] = [];
+  if (cleanCustOrg && !/^заказчик$/i.test(cleanCustOrg)) custCells.push(`ООО «${cleanCustOrg}»:`);
+  custCells.push('');
   protocol.approval.customer.signatories.forEach((name) => {
-    if (name.trim()) md += `${name} /______________ \n\n`;
+    if (name.trim()) custCells.push(`${name.trim()} /______________`);
   });
 
-  md += '\n';
-  md += `**Со стороны Исполнителя**\n`;
-  const cleanExecOrg = normalizeOrgName(execApprOrg);
-  if (cleanExecOrg && !/^исполнитель$/i.test(cleanExecOrg)) md += `ООО «${cleanExecOrg}»:\n\n`;
+  // Строки правого столбца (Исполнитель)
+  const execCells: string[] = [];
+  if (cleanExecOrg && !/^исполнитель$/i.test(cleanExecOrg)) execCells.push(`ООО «${cleanExecOrg}»:`);
+  execCells.push('');
   protocol.approval.executor.signatories.forEach((name) => {
-    if (name.trim()) md += `${name} /______________ \n\n`;
+    if (name.trim()) execCells.push(`${name.trim()} /______________`);
   });
+
+  // Выровнять по длине
+  const bodyLen = Math.max(custCells.length, execCells.length);
+  while (custCells.length < bodyLen) custCells.push('');
+  while (execCells.length < bodyLen) execCells.push('');
+
+  md += `| **Со стороны Заказчика** | **Со стороны Исполнителя** |\n`;
+  md += `| --- | --- |\n`;
+  for (let i = 0; i < bodyLen; i++) {
+    md += `| ${custCells[i]} | ${execCells[i]} |\n`;
+  }
+  md += '\n';
 
   return md;
 }
