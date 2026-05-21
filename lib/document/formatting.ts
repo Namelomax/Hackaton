@@ -37,7 +37,7 @@ export function buildDocxMarkdown(title: string, content: string) {
   const body = String(content || '').trim();
   const firstLine = body.split('\n')[0]?.trim() || '';
   const hasHeading = /^#\s+/.test(firstLine);
-  const hasTitleLine = /^ПРОТОКОЛ ОБСЛЕДОВАНИЯ\b/i.test(firstLine);
+  const hasTitleLine = /^ПРОТОКОЛ\s+(№|\d)/i.test(firstLine);
   const withTitle = hasHeading || hasTitleLine ? body : `# ${title}\n\n${body}`;
   return normalizeMarkdownForDocx(withTitle);
 }

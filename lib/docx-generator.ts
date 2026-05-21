@@ -2,6 +2,10 @@ import { Document, Packer, Paragraph, TextRun, Table, TableCell, TableRow, Align
 import type { Protocol } from './schemas/protocol-schema';
 import { cleanProtocolText } from './protocol-markdown-format';
 
+function normalizeDocxOrgName(org: string): string {
+  return org.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').replace(/^ООО\s+/, '').trim();
+}
+
 export async function generateProtocolDocx(protocol: Protocol): Promise<Buffer> {
   const normalizedNumber = String(protocol.protocolNumber || '').trim().startsWith('№')
     ? String(protocol.protocolNumber).trim()
@@ -270,7 +274,7 @@ function createApprovalTable(approval: Protocol['approval']): Table {
             children: [
               new Paragraph({ children: [new TextRun({ text: 'Со стороны Заказчика', bold: true })] }),
               ...(approval.customer.organization && !/^заказчик$/i.test(approval.customer.organization)
-                ? [new Paragraph({ children: [new TextRun({ text: `ООО «${approval.customer.organization}»:`, italics: true })] })]
+                ? [new Paragraph({ children: [new TextRun({ text: `ООО «${normalizeDocxOrgName(approval.customer.organization)}»:`, italics: true })] })]
                 : []),
               new Paragraph({ text: '' }),
               ...makeSignatoryParagraphs(approval.customer.signatories),
@@ -281,7 +285,7 @@ function createApprovalTable(approval: Protocol['approval']): Table {
             children: [
               new Paragraph({ children: [new TextRun({ text: 'Со стороны Исполнителя', bold: true })] }),
               ...(approval.executor.organization && !/^исполнитель$/i.test(approval.executor.organization)
-                ? [new Paragraph({ children: [new TextRun({ text: `ООО «${approval.executor.organization}»:`, italics: true })] })]
+                ? [new Paragraph({ children: [new TextRun({ text: `ООО «${normalizeDocxOrgName(approval.executor.organization)}»:`, italics: true })] })]
                 : []),
               new Paragraph({ text: '' }),
               ...makeSignatoryParagraphs(approval.executor.signatories),

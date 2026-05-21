@@ -86,6 +86,10 @@ export async function runDocumentAgent(context: AgentContext) {
           0.1,
           abortSignal ?? undefined,
         );
+        const doneId = `done-${Date.now()}`;
+        writer.write({ type: 'text-start', id: doneId });
+        writer.write({ type: 'text-delta', id: doneId, delta: 'Протокол обследования сформирован.' });
+        writer.write({ type: 'text-end', id: doneId });
       } catch (error) {
         console.error('Document generation error:', error);
         writer.write({ type: 'text-start', id: 'error' });
@@ -162,15 +166,6 @@ export async function generateFinalDocument(
   const existingDocumentContext = existingDocument && existingDocument.trim()
     ? `\n\nСУЩЕСТВУЮЩАЯ ВЕРСИЯ ДОКУМЕНТА (пользователь редактировал вручную):\n"""\n${existingDocument}\n"""\n\n`
     : '';
-
-  const progressId = `protocol-${crypto.randomUUID()}`;
-  dataStream.write({ type: 'text-start', id: progressId });
-
-  dataStream.write({
-    type: 'text-delta',
-    id: progressId,
-    delta: '📝 Формирование протокола обследования\n',
-  });
 
   const chatDraft = buildProtocolDraftFromChat(uiMessages);
   const agreedChatContext = formatChatDraftForPrompt(chatDraft);
@@ -273,16 +268,9 @@ export async function generateFinalDocument(
     });
   } catch (error) {
     console.error('Protocol generation error:', error);
-    dataStream.write({
-      type: 'text-delta',
-      id: progressId,
-      delta: '❌ Ошибка при формировании протокола. Проверьте полноту данных в расшифровке.\n',
-    });
-    dataStream.write({ type: 'text-end', id: progressId });
     throw error;
   }
 
-  dataStream.write({ type: 'text-end', id: progressId });
   return markdownContent;
 }
 
@@ -373,15 +361,19 @@ function protocolToMarkdown(protocol: Protocol): string {
 
   const custApprOrg = protocol.approval.customer.organization.trim();
   const execApprOrg = protocol.approval.executor.organization.trim();
+  const normalizeOrgName = (org: string) =>
+    org.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').replace(/^ООО\s+/, '').trim();
   md += `**Со стороны Заказчика**\n`;
-  if (custApprOrg && !/^заказчик$/i.test(custApprOrg)) md += `ООО «${custApprOrg}»:\n\n`;
+  const cleanCustOrg = normalizeOrgName(custApprOrg);
+  if (cleanCustOrg && !/^заказчик$/i.test(cleanCustOrg)) md += `ООО «${cleanCustOrg}»:\n\n`;
   protocol.approval.customer.signatories.forEach((name) => {
     if (name.trim()) md += `${name} /______________ \n\n`;
   });
 
   md += '\n';
   md += `**Со стороны Исполнителя**\n`;
-  if (execApprOrg && !/^исполнитель$/i.test(execApprOrg)) md += `ООО «${execApprOrg}»:\n\n`;
+  const cleanExecOrg = normalizeOrgName(execApprOrg);
+  if (cleanExecOrg && !/^исполнитель$/i.test(cleanExecOrg)) md += `ООО «${cleanExecOrg}»:\n\n`;
   protocol.approval.executor.signatories.forEach((name) => {
     if (name.trim()) md += `${name} /______________ \n\n`;
   });

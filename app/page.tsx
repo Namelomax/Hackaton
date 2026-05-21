@@ -16,6 +16,11 @@ import { toast } from 'sonner';
 import { resolveMessagesFromRecord } from '@/lib/conversationMessages';
 import { GuestWelcomeGuide, shouldShowGuestWelcome } from '@/components/onboarding/GuestWelcomeGuide';
 
+/** Убирает бинарный DOCX-блок, который старые версии сохраняли в document_content */
+function stripDocxMeta(content: string): string {
+  return content.replace(/---DOCX_META---[\s\S]*?---DOCX_META_END---/g, '').trim();
+}
+
 /** Не передавать пустой documentContent в PUT — иначе БД перезапишет документ пустой строкой */
 function buildPersistPutBody(
   conversationId: string,
@@ -621,12 +626,13 @@ export default function ChatPage() {
               
               // Restore document content
               if (activeConv.document_content) {
-                const derived = extractTitleFromMarkdown(activeConv.document_content);
+                const cleanContent = stripDocxMeta(activeConv.document_content);
+                const derived = extractTitleFromMarkdown(cleanContent);
                 const nextDoc = {
                   title: (activeConv.title && String(activeConv.title).trim().toLowerCase() !== 'чат')
                     ? activeConv.title
                     : (derived || 'Протокол'),
-                  content: activeConv.document_content,
+                  content: cleanContent,
                   isStreaming: false,
                 } as DocumentState;
                 setDocument(nextDoc);
@@ -687,7 +693,7 @@ export default function ChatPage() {
               if (first.document_content) {
                 const nextDoc = {
                   title: first.title || 'Протокол',
-                  content: first.document_content,
+                  content: stripDocxMeta(first.document_content),
                   isStreaming: false,
                 } as DocumentState;
                 setDocument(nextDoc);
@@ -955,7 +961,9 @@ export default function ChatPage() {
 
     // Обновляем conversation из conversationsList, чтобы получить актуальный document_content
     const conversationFromList = conversationsList.find((c) => c.id === conversation.id);
-    const documentContentToUse = conversationFromList?.document_content || conversation.document_content;
+    const documentContentToUse = stripDocxMeta(
+      conversationFromList?.document_content || conversation.document_content || ''
+    ) || undefined;
     
     console.log('[handleSelectConversation] Using documentContent:', {
       fromList: !!conversationFromList?.document_content,
