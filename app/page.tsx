@@ -1132,6 +1132,7 @@ export default function ChatPage() {
         </div>
         {/* Правая часть — протокол */}
         <DocumentPanel
+          key={viewConversationId ?? 'no-conv'}
           document={viewDocument}
           onEdit={handleDocumentEdit}
           attachments={attachedFiles}

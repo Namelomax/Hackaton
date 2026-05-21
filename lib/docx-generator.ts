@@ -6,6 +6,42 @@ function normalizeDocxOrgName(org: string): string {
   return org.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').replace(/^ООО\s+/, '').trim();
 }
 
+function isValidOrgDisplayName(name: string): boolean {
+  const s = name.trim();
+  if (!s) return false;
+  if (/^[-–—\s.]+$/.test(s)) return false;
+  if (/^(заказчик|исполнитель)$/i.test(s)) return false;
+  if (s.length > 100) return false;
+  return true;
+}
+
+/** Splits a decision string at «Срок:» / «Ответственный:» markers, returning multiple Paragraphs with bold labels. */
+function decisionToDocxParagraphs(raw: string): Paragraph[] {
+  let s = cleanProtocolText(raw);
+  s = s.replace(/\r?\n/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  if (!s) return [new Paragraph('')];
+
+  // Split at Срок: and Ответственный: markers (lookahead keeps the keyword in the segment)
+  const segments = s.split(/(?=\s*(?:Срок\s*:|Ответственн\w*\s*:))/i).map((p) => p.trim()).filter(Boolean);
+
+  if (segments.length <= 1) {
+    return [new Paragraph({ text: s })];
+  }
+
+  return segments.map((segment) => {
+    const m = segment.match(/^(Срок\s*:|Ответственн\w*\s*:)\s*(.*)/i);
+    if (m) {
+      return new Paragraph({
+        children: [
+          new TextRun({ text: m[1], bold: true }),
+          ...(m[2].trim() ? [new TextRun({ text: ` ${m[2].trim()}` })] : []),
+        ],
+      });
+    }
+    return new Paragraph({ text: segment });
+  });
+}
+
 export async function generateProtocolDocx(protocol: Protocol): Promise<Buffer> {
   const normalizedNumber = String(protocol.protocolNumber || '').trim().startsWith('№')
     ? String(protocol.protocolNumber).trim()
@@ -92,7 +128,7 @@ export async function generateProtocolDocx(protocol: Protocol): Promise<Buffer> 
           new Paragraph({
             children: [
               new TextRun({
-                text: `Заказчик${protocol.participants.customer.organizationName && !/^заказчик$/i.test(protocol.participants.customer.organizationName) ? ` — ${protocol.participants.customer.organizationName}` : ''}`,
+                text: `Заказчик${isValidOrgDisplayName(protocol.participants.customer.organizationName?.trim() ?? '') ? ` — ${protocol.participants.customer.organizationName.trim()}` : ''}`,
                 bold: true,
               }),
             ],
@@ -104,7 +140,7 @@ export async function generateProtocolDocx(protocol: Protocol): Promise<Buffer> 
           new Paragraph({
             children: [
               new TextRun({
-                text: `Исполнитель${protocol.participants.executor.organizationName && !/^исполнитель$/i.test(protocol.participants.executor.organizationName) ? ` — ${protocol.participants.executor.organizationName}` : ''}`,
+                text: `Исполнитель${isValidOrgDisplayName(protocol.participants.executor.organizationName?.trim() ?? '') ? ` — ${protocol.participants.executor.organizationName.trim()}` : ''}`,
                 bold: true,
               }),
             ],
@@ -243,7 +279,7 @@ function createSummaryTable(summary: Array<{ question: string; decision: string 
           new TableRow({
             children: [
               new TableCell({ children: [new Paragraph(cleanProtocolText(row.question))] }),
-              new TableCell({ children: [new Paragraph(cleanProtocolText(row.decision))] }),
+              new TableCell({ children: decisionToDocxParagraphs(row.decision) }),
             ],
           }),
       ),
