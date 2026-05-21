@@ -403,7 +403,6 @@ function protocolToMarkdown(protocol: Protocol): string {
   // Org name row — only when at least one side has a valid org name
   if (custOrgCell || execOrgCell) {
     md += `| ${custOrgCell} | ${execOrgCell} |\n`;
-    md += `|  |  |\n`; // visual spacer between org header and signatures
   }
 
   // Signatories aligned: first customer sig on the same row as first executor sig
