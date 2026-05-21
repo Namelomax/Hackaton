@@ -217,11 +217,8 @@ export default function ChatPage() {
     for (const line of lines) {
       const t = line.trim();
       if (!t) continue;
-      // Standard markdown heading: # Title
       const m = t.match(/^#\s+(.+?)\s*$/);
       if (m?.[1]) return m[1].trim();
-      // Protocol header: ПРОТОКОЛ №X ОТ DD.MM.YYYY
-      if (/^ПРОТОКОЛ\s+/i.test(t)) return t;
       break;
     }
     return null;
@@ -799,19 +796,8 @@ export default function ChatPage() {
     newTitle = newTitle.trim();
     if (!newTitle) return;
 
-    const applyTitle = (resolvedTitle: string) => {
-      setConversationsList(prev => prev.map(c => c.id === conv.id ? { ...c, title: resolvedTitle } : c));
-      // Immediately sync the document panel header for the currently viewed / active conversation
-      if (conv.id === viewConversationId) {
-        setViewDocument(prev => ({ ...prev, title: resolvedTitle }));
-      }
-      if (conv.id === conversationId) {
-        setDocument(prev => ({ ...prev, title: resolvedTitle }));
-      }
-    };
-
     if (String(conv.id).startsWith('local-')) {
-      applyTitle(newTitle);
+      setConversationsList(prev => prev.map(c => c.id === conv.id ? { ...c, title: newTitle } : c));
       return;
     }
 
@@ -825,10 +811,12 @@ export default function ChatPage() {
       if (!j?.success) {
         throw new Error(j?.message || 'rename failed');
       }
-      applyTitle(j.conversation?.title ?? newTitle);
+      const updated = j.conversation;
+      setConversationsList(prev => prev.map(c => c.id === conv.id ? { ...c, title: updated?.title ?? newTitle } : c));
     } catch (e) {
       console.error('Failed to rename conversation', e);
       setConversationsList(prev => prev.map(c => c.id === conv.id ? { ...c, title: conv.title } : c));
+      return;
     }
   };
 

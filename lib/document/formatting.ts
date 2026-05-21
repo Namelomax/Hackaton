@@ -49,11 +49,8 @@ export function extractTitleFromMarkdown(markdown?: string | null): string | nul
   for (const line of lines) {
     const t = line.trim();
     if (!t) continue;
-    // Standard markdown heading: # Title
     const m = t.match(/^#\s+(.+?)\s*$/);
     if (m?.[1]) return m[1].trim();
-    // Protocol header: ПРОТОКОЛ №X ОТ DD.MM.YYYY
-    if (/^ПРОТОКОЛ\s+/i.test(t)) return t;
     break;
   }
   return null;
