@@ -100,25 +100,22 @@ function adaptSystemPrompt(
     const useRagTool =
       options.ragRetrievalEnabled && !options.hasInlineTranscript;
     const section1FromTranscript = useRagTool
-      ? `→ Вызови retrieveFromIndexedDocuments: шапка (номер, дата ОТ, дата собрания, название, договор, тема из цели встречи).
- → Предложи найденное; тему договора выводи из предмета встречи, не оставляй пустой.`
-      : `→ Предложи **шапку целиком**: ПРОТОКОЛ № … ОТ …, **Дата собрания:** …, Название, Договор, **Тема договора** (из того, о чём встреча).
- → Не вызывай retrieveFromIndexedDocuments — расшифровка в контексте.`;
+      ? `→ Вызови retrieveFromIndexedDocuments с вопросом «какой номер протокола, дата и название встречи упоминались в расшифровке?» для раздела 1.
+ → Предложи найденное из excerpts; если excerpts пусты — спроси номер и дату у пользователя.`
+      : `→ Найди в блоке «ВЛОЖЕНИЯ ПОЛЬЗОВАТЕЛЯ» (полный текст расшифровки) номер протокола, дату и название встречи для раздела 1.
+ → Предложи найденное; если в тексте нет — спроси номер и дату у пользователя. **Не вызывай** retrieveFromIndexedDocuments — расшифровка уже в системном контексте.`;
     const section2AfterUserFacts = useRagTool
-      ? `→ После «Верно» по шапке: если в шапке уже есть «Дата собрания» — НЕ задавай отдельный раздел 1, сразу повестка (раздел 2). Иначе — один вопрос по дате собрания.`
-      : `→ После «Верно» по шапке: если дата собрания уже в шапке — пропусти раздел 1, сразу повестка. Иначе — один вопрос по дате.`;
+      ? `→ Сразу переходите к разделу 2: вызовите retrieveFromIndexedDocuments про повестку/темы и задайте ОДИН вопрос по повестке.`
+      : `→ Сразу переходите к разделу 2: опирайтесь на текст расшифровки в «ВЛОЖЕНИЯ»; задайте ОДИН вопрос по повестке.`;
 
     const adaptation = `АДАПТАЦИЯ: Расшифровка получена
 ОДИН РАЗДЕЛ ПРОТОКОЛА ЗА ОДНО СООБЩЕНИЕ:
-Не объединяй в одном ответе шапку с разделами или разделы 4–5 подряд. После «Верно» — только следующий шаг.
-ПУНКТ ПОВЕСТКИ №N ≠ РАЗДЕЛ 5 «Согласовано». В разделе 5 — только организации и подписи, без Слушали/Обсудили/Решили.
-Организационные шаги (Telegram, загрузка видео) — в последний пункт повестки по смыслу, не в раздел 5.
-После согласования всех пунктов — обязательно вызови publishInvestigationProtocol; не дублируй «Протокол сформирован» в чате.
+Не объединяй в одном ответе разделы 4–5 или любые два номера раздела подряд. После «Верно» пользователя — в следующем сообщении только следующий раздел.
 
 ТАЙМ-КОДЫ: ${PROTOCOL_TIMECODE_ADAPTATION_LINE} Пример: строка «00:02:47 — … Никита Касьянов, представитель Форус» → «…Форус [ТС: 00:02:47].» Таблица участников — [ТС: …] в каждой ячейке с фактом. Без [ТС: …] в ответе по расшифровке — недопустимо.
 ════════════════════════════════════════════
  ПРОПУСТИ ЭТАП 1 (приветствие)!
- Расшифровка встречи уже доступна в контексте${useRagTool ? " (и в RAG-индексе)" : ""}.
+ Расшифровка встречи уже доступна — в системном блоке «ВЛОЖЕНИЯ»${useRagTool ? " и/или в RAG-индексе" : ""}.
  НЕМЕДЛЕННО ПЕРЕХОДИ К ЭТАПУ 2 (сбор информации).
 
  ЕСЛИ ПОЛЬЗОВАТЕЛЬ САМ УКАЗАЛ номер протокола и/или дату встречи (например «номер протокола 1, дата 05.04.2026»):
@@ -130,12 +127,12 @@ function adaptSystemPrompt(
  → НЕ проси пользователя «прислать расшифровку» — она уже есть.
 
  ЕСЛИ ПОЛЬЗОВАТЕЛЬ НАПИСАЛ КОРОТКОЕ СЛОВО («Привет», «Начинаем», «Привет, начнём») ПОСЛЕ того как файл уже был:
- → Не повторяй приветствие. Сразу первый уточняющий вопрос по шапке протокола.
+ → Не повторяй приветствие. Сразу первый уточняющий вопрос по расшифровке (раздел 1).
 
  Задавай СТРОГО ОДИН уточняющий вопрос за ответ — никаких списков, никаких «необходимо уточнить следующее:». Если хочется спросить несколько вещей — выбери САМУЮ важную и спроси только её.
- ПЕРВЫЙ ОТВЕТ после файла без текста: максимум 6–10 предложений — подтверждение получения файла и один вопрос по шапке. Запрещено пересказывать расшифровку и перечислять все разделы.
- В ЭТОМ ЧАТЕ ЗАПРЕЩЕНО выводить полный протокол — используй инструмент publishInvestigationProtocol.
- ЗАПРЕЩЕНЫ заголовки как у финального документа: блоки с разделами 1–5 подряд — пользователь увидит это в правой панели.
+ ПЕРВЫЙ ОТВЕТ после файла без текста: максимум 6–10 предложений — подтверждение получения файла и один вопрос по разделу 1. Запрещено пересказывать расшифровку и перечислять разделы 2–10.
+ В ЭТОМ ЧАТЕ ЗАПРЕЩЕНО выводить полный протокол из 5 разделов — используй инструмент publishInvestigationProtocol.
+ ЗАПРЕЩЕНЫ заголовки как у финального документа: «Протокол встречи», блоки с разделами 1–5 подряд — пользователь увидит это в правой панели.
  Пиши название компании «Форус», по продукту — только «протокол обследования».
 ════════════════════════════════════════════
 
@@ -163,7 +160,7 @@ ${existingDocument}
 ${issuesText}
 
 Алгоритм:
-1. Сохрани шапку и все 5 разделов протокола; ничего ценного не удаляй.
+1. Сохрани все 5 разделов протокола; ничего ценного не удаляй.
 2. Для каждого замечания внеси конкретную правку в нужный раздел.
 3. Если в данных пробел и нельзя исправить без уточнения — задай **один** короткий уточняющий вопрос обычным текстом, инструмент не вызывай.
 4. Когда правки очевидны (или после уточнения у пользователя) — **обязательно** вызови инструмент **publishInvestigationProtocol**, чтобы обновлённый протокол попал в правую панель.
@@ -300,14 +297,12 @@ export async function runChatAgent(
     hasInlineTranscript: inlineTranscript,
     dialogMessageCount,
   });
-  const userPromptChars = userPrompt?.length ?? 0;
   console.log(
-    `🤖 streamText start: msgs=${msgCount} dialog=${dialogMessageCount} input≈${estimatedInputTokens}tok (sys=${systemChars}c prompt=${userPromptChars}c) useThinking=${Boolean(useThinking)} maxOut=${maxOutputTokens} rag=${Boolean(ragRetrievalEnabled)} inlineDoc=${inlineTranscript}`,
+    `🤖 streamText start: msgs=${msgCount} dialog=${dialogMessageCount} input≈${estimatedInputTokens}tok (sys=${systemChars}c) maxOut=${maxOutputTokens} rag=${Boolean(ragRetrievalEnabled)} inlineDoc=${inlineTranscript}`,
   );
   const agentStartMs = Date.now();
   const heartbeatMs = ollamaStreamHeartbeatMs(inlineTranscript);
   let lastHeartbeatAt = agentStartMs;
-  let firstTokenAtMs: number | null = null;
   let streamedTextChars = 0;
   let streamedReasoningChars = 0;
   let streamPhase: "prefill" | "generating" = "prefill";
@@ -339,61 +334,28 @@ export async function runChatAgent(
         stopWhen: stepCountIs(ragRetrievalEnabled ? 14 : 8),
         ...(abortSignal ? { abortSignal } : {}),
         onChunk: ({ chunk }) => {
-          const hasDelta =
-            (chunk.type === "text-delta" || chunk.type === "reasoning-delta") &&
-            "text" in chunk &&
-            chunk.text;
-          if (chunk.type === "text-delta" && hasDelta) {
+          if (chunk.type === "text-delta" && "text" in chunk && chunk.text) {
             streamedTextChars += chunk.text.length;
             streamPhase = "generating";
           }
-          if (chunk.type === "reasoning-delta" && hasDelta) {
+          if (chunk.type === "reasoning-delta" && "text" in chunk && chunk.text) {
             streamedReasoningChars += chunk.text.length;
             streamPhase = "generating";
           }
           const now = Date.now();
-          if (hasDelta && firstTokenAtMs === null) {
-            firstTokenAtMs = now;
-            const ttftSec = Math.round((now - agentStartMs) / 1000);
-            console.log(
-              `  ⚡ TTFT: ${ttftSec}s (prefill≈${estimatedInputTokens}tok input, think≈${streamedReasoningChars}c text≈${streamedTextChars}c)`,
-            );
-          }
           if (now - lastHeartbeatAt >= heartbeatMs) {
             lastHeartbeatAt = now;
-            const genSec =
-              firstTokenAtMs != null
-                ? Math.round((now - firstTokenAtMs) / 1000)
-                : 0;
             console.log(
-              `  ⏳ stream: ${Math.round((now - agentStartMs) / 1000)}s phase=${streamPhase} gen+${genSec}s out≈${streamedTextChars} think≈${streamedReasoningChars}`,
+              `  ⏳ stream: ${Math.round((now - agentStartMs) / 1000)}s phase=${streamPhase} out≈${streamedTextChars} think≈${streamedReasoningChars}`,
             );
           }
         },
         onStepFinish: ({ usage, finishReason, toolCalls, text }) => {
           const tools = toolCalls?.map((t: any) => t.toolName).join(', ') || 'none';
           const outChars = typeof text === 'string' ? text.length : streamedTextChars;
-          const inTok = usage?.inputTokens;
-          const outTok = usage?.outputTokens;
-          const tokDetail =
-            inTok != null || outTok != null
-              ? `in=${inTok ?? '?'} out=${outTok ?? '?'} total=${usage?.totalTokens ?? '?'}`
-              : `tokens=${usage?.totalTokens ?? '?'}`;
           console.log(
-            `  ↳ step done: reason=${finishReason} tools=[${tools}] ${tokDetail} outChars=${outChars} maxOut=${maxOutputTokens}`,
+            `  ↳ step done: reason=${finishReason} tools=[${tools}] tokens=${usage?.totalTokens ?? '?'} outChars=${outChars} maxOut=${maxOutputTokens}`,
           );
-          if (
-            firstTokenAtMs != null &&
-            outTok != null &&
-            outTok > 0 &&
-            Date.now() > firstTokenAtMs
-          ) {
-            const genSec = (Date.now() - firstTokenAtMs) / 1000;
-            const tps = (outTok / genSec).toFixed(1);
-            console.log(
-              `  📊 gen speed: ~${tps} tok/s (${outTok} completion tok за ${genSec.toFixed(1)}s после TTFT)`,
-            );
-          }
           if (finishReason === 'length') {
             console.warn(
               '  ⚠️ length: контекст или лимит ответа исчерпан — укоротите историю или увеличьте OLLAMA_CONTEXT_LENGTH / проверьте maxOut',

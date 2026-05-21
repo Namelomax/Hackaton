@@ -15,18 +15,21 @@ import { copyTextToClipboard } from '@/lib/copyToClipboard';
 import { toast } from 'sonner';
 import { resolveMessagesFromRecord } from '@/lib/conversationMessages';
 import { GuestWelcomeGuide, shouldShowGuestWelcome } from '@/components/onboarding/GuestWelcomeGuide';
-import { packDocumentContentForDb, unpackDocumentContentFromDb } from '@/lib/document/persisted-document';
+
+/** Убирает бинарный DOCX-блок, который старые версии сохраняли в document_content */
+function stripDocxMeta(content: string): string {
+  return content.replace(/---DOCX_META---[\s\S]*?---DOCX_META_END---/g, '').trim();
+}
 
 /** Не передавать пустой documentContent в PUT — иначе БД перезапишет документ пустой строкой */
 function buildPersistPutBody(
   conversationId: string,
   messages: unknown[],
   documentContent?: string | null,
-  docxData?: { content: string; filename: string } | null,
 ): Record<string, unknown> {
   const body: Record<string, unknown> = { conversationId, messages };
   if (typeof documentContent === 'string' && documentContent.trim().length > 0) {
-    body.documentContent = packDocumentContentForDb(documentContent, docxData ?? undefined);
+    body.documentContent = documentContent;
   }
   return body;
 }
@@ -167,7 +170,7 @@ export default function ChatPage() {
 
   function toUIMessages(raw: any[]): any[] {
     if (!Array.isArray(raw)) return [];
-    const mapped = raw.map((m) => {
+    return raw.map((m) => {
       const fallbackText = coerceStoredPlainText(m);
       let parts = Array.isArray(m.parts) && m.parts.length > 0 ? [...m.parts] : [];
       if (parts.length > 0) {
@@ -196,22 +199,6 @@ export default function ChatPage() {
         metadata: m.metadata || {},
       };
     });
-
-    const deduped: any[] = [];
-    for (const m of mapped) {
-      const text = coerceStoredPlainText(m);
-      const prev = deduped[deduped.length - 1];
-      if (
-        m.role === 'assistant' &&
-        prev?.role === 'assistant' &&
-        text.trim() &&
-        text.trim() === coerceStoredPlainText(prev).trim()
-      ) {
-        continue;
-      }
-      deduped.push(m);
-    }
-    return deduped;
   }
 
   function getLastAssistantId(uiMessages: any[]): string | null {
@@ -230,8 +217,11 @@ export default function ChatPage() {
     for (const line of lines) {
       const t = line.trim();
       if (!t) continue;
+      // Standard markdown heading: # Title
       const m = t.match(/^#\s+(.+?)\s*$/);
       if (m?.[1]) return m[1].trim();
+      // Protocol header: ПРОТОКОЛ №X ОТ DD.MM.YYYY
+      if (/^ПРОТОКОЛ\s+/i.test(t)) return t;
       break;
     }
     return null;
@@ -402,19 +392,9 @@ export default function ChatPage() {
       }
 
       if (normalized.type === 'data-documentDelta') {
-        const payload = normalized.data;
-        const chunk =
-          typeof payload === 'string'
-            ? payload
-            : String((payload as { content?: string })?.content ?? '');
-        const replace =
-          typeof payload === 'object' &&
-          payload !== null &&
-          (payload as { replace?: boolean }).replace === true;
         updateEngineDocument((prev: DocumentState) => ({
           ...prev,
-          content: replace ? chunk : prev.content + chunk,
-          isStreaming: true,
+          content: prev.content + normalized.data,
         }));
       }
 
@@ -577,9 +557,7 @@ export default function ChatPage() {
         const resp = await fetch('/api/conversations', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(
-            buildPersistPutBody(conversationId, messages, document.content, document.docxData),
-          ),
+          body: JSON.stringify(buildPersistPutBody(conversationId, messages, document.content)),
         });
         const j = await resp.json();
         if (j?.success) {
@@ -651,15 +629,14 @@ export default function ChatPage() {
               
               // Restore document content
               if (activeConv.document_content) {
-                const unpacked = unpackDocumentContentFromDb(activeConv.document_content);
-                const derived = extractTitleFromMarkdown(unpacked.markdown);
+                const cleanContent = stripDocxMeta(activeConv.document_content);
+                const derived = extractTitleFromMarkdown(cleanContent);
                 const nextDoc = {
                   title: (activeConv.title && String(activeConv.title).trim().toLowerCase() !== 'чат')
                     ? activeConv.title
                     : (derived || 'Протокол'),
-                  content: unpacked.markdown,
+                  content: cleanContent,
                   isStreaming: false,
-                  ...(unpacked.docxData ? { docxData: unpacked.docxData } : {}),
                 } as DocumentState;
                 setDocument(nextDoc);
                 setViewDocument(nextDoc);
@@ -717,12 +694,10 @@ export default function ChatPage() {
               
               // Restore document content on login
               if (first.document_content) {
-                const unpacked = unpackDocumentContentFromDb(first.document_content);
                 const nextDoc = {
                   title: first.title || 'Протокол',
-                  content: unpacked.markdown,
+                  content: stripDocxMeta(first.document_content),
                   isStreaming: false,
-                  ...(unpacked.docxData ? { docxData: unpacked.docxData } : {}),
                 } as DocumentState;
                 setDocument(nextDoc);
                 setViewDocument(nextDoc);
@@ -824,8 +799,19 @@ export default function ChatPage() {
     newTitle = newTitle.trim();
     if (!newTitle) return;
 
+    const applyTitle = (resolvedTitle: string) => {
+      setConversationsList(prev => prev.map(c => c.id === conv.id ? { ...c, title: resolvedTitle } : c));
+      // Immediately sync the document panel header for the currently viewed / active conversation
+      if (conv.id === viewConversationId) {
+        setViewDocument(prev => ({ ...prev, title: resolvedTitle }));
+      }
+      if (conv.id === conversationId) {
+        setDocument(prev => ({ ...prev, title: resolvedTitle }));
+      }
+    };
+
     if (String(conv.id).startsWith('local-')) {
-      setConversationsList(prev => prev.map(c => c.id === conv.id ? { ...c, title: newTitle } : c));
+      applyTitle(newTitle);
       return;
     }
 
@@ -839,12 +825,10 @@ export default function ChatPage() {
       if (!j?.success) {
         throw new Error(j?.message || 'rename failed');
       }
-      const updated = j.conversation;
-      setConversationsList(prev => prev.map(c => c.id === conv.id ? { ...c, title: updated?.title ?? newTitle } : c));
+      applyTitle(j.conversation?.title ?? newTitle);
     } catch (e) {
       console.error('Failed to rename conversation', e);
       setConversationsList(prev => prev.map(c => c.id === conv.id ? { ...c, title: conv.title } : c));
-      return;
     }
   };
 
@@ -910,9 +894,7 @@ export default function ChatPage() {
     if (viewConversationId) {
       setConversationsList((prev) => {
         const newList = prev.map((c) =>
-          c.id === viewConversationId
-            ? { ...c, document_content: packDocumentContentForDb(updated.content, updated.docxData) }
-            : c
+          c.id === viewConversationId ? { ...c, document_content: updated.content } : c
         );
         console.log('[handleDocumentEdit] Updated conversationsList:', {
           found: newList.some(c => c.id === viewConversationId),
@@ -938,9 +920,7 @@ export default function ChatPage() {
         const resp = await fetch('/api/conversations', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(
-          buildPersistPutBody(viewConversationId, messagesForPut, updated.content, updated.docxData),
-        ),
+          body: JSON.stringify({ conversationId: viewConversationId, messages: messagesForPut, documentContent: updated.content }),
         });
         const result = await resp.json();
         console.log('[handleDocumentEdit] Backend save result:', result);
@@ -983,7 +963,7 @@ export default function ChatPage() {
       fetch('/api/conversations', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildPersistPutBody(conversationId, messages, document.content, document.docxData)),
+        body: JSON.stringify(buildPersistPutBody(conversationId, messages, document.content)),
       }).catch((err) => console.warn('Failed to save conversation on switch', err));
     }
 
@@ -993,7 +973,9 @@ export default function ChatPage() {
 
     // Обновляем conversation из conversationsList, чтобы получить актуальный document_content
     const conversationFromList = conversationsList.find((c) => c.id === conversation.id);
-    const documentContentToUse = conversationFromList?.document_content || conversation.document_content;
+    const documentContentToUse = stripDocxMeta(
+      conversationFromList?.document_content || conversation.document_content || ''
+    ) || undefined;
     
     console.log('[handleSelectConversation] Using documentContent:', {
       fromList: !!conversationFromList?.document_content,
@@ -1009,15 +991,13 @@ export default function ChatPage() {
       // Правая панель: живое состояние движка, а не снимок из списка (во время стрима).
       setViewDocument({ ...engineDocumentRef.current });
     } else if (documentContentToUse) {
-      const unpacked = unpackDocumentContentFromDb(documentContentToUse);
-      const derived = extractTitleFromMarkdown(unpacked.markdown);
+      const derived = extractTitleFromMarkdown(documentContentToUse);
       const newDoc = {
         title: (conversation.title && String(conversation.title).trim().toLowerCase() !== 'чат')
           ? conversation.title
           : (derived || 'Документ'),
-        content: unpacked.markdown,
+        content: documentContentToUse,
         isStreaming: false,
-        ...(unpacked.docxData ? { docxData: unpacked.docxData } : {}),
       } as DocumentState;
       console.log('[handleSelectConversation] Setting viewDocument:', {
         title: newDoc.title,
@@ -1047,15 +1027,13 @@ export default function ChatPage() {
 
       // Keep engine document in sync when engine chat changes.
       if (documentContentToUse) {
-        const unpacked = unpackDocumentContentFromDb(documentContentToUse);
-        const derived = extractTitleFromMarkdown(unpacked.markdown);
+        const derived = extractTitleFromMarkdown(documentContentToUse);
         const nextDoc = {
           title: (conversation.title && String(conversation.title).trim().toLowerCase() !== 'чат')
             ? conversation.title
             : (derived || 'Документ'),
-          content: unpacked.markdown,
+          content: documentContentToUse,
           isStreaming: false,
-          ...(unpacked.docxData ? { docxData: unpacked.docxData } : {}),
         } as DocumentState;
         console.log('[handleSelectConversation] Setting engine document:', {
           title: nextDoc.title,
@@ -1166,6 +1144,7 @@ export default function ChatPage() {
         </div>
         {/* Правая часть — протокол */}
         <DocumentPanel
+          key={viewConversationId ?? 'no-conv'}
           document={viewDocument}
           onEdit={handleDocumentEdit}
           attachments={attachedFiles}

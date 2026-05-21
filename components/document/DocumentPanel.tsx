@@ -133,6 +133,11 @@ export const DocumentPanel = ({
       // Проверяем наличие .docx данных в документе
       if (document.docxData) {
         setDocxData(document.docxData);
+      } else if (document.content.trim() && !docxData && !document.isStreaming) {
+        // Автоматически генерируем docxData если контент есть, но docxData нет
+        buildDocxData(document.title || 'Протокол', document.content)
+          .then(data => setDocxData(data))
+          .catch(err => console.warn('Failed to auto-generate docx', err));
       }
     }
   }, [document, editing]);
@@ -143,13 +148,16 @@ export const DocumentPanel = ({
     }
   }, [document.content, document.isStreaming]);
 
-  const isEmpty = !localDoc.isStreaming && !localDoc.title && !localDoc.content.trim().length;
+  // Use document prop (not localDoc) for empty/protocol checks to avoid a one-frame lag:
+  // localDoc is synced via useEffect which runs after paint, so on the render where the
+  // loading overlay disappears, localDoc can still be empty while document already has content.
+  const isEmpty = !document.isStreaming && !document.title && !document.content.trim().length;
   /** Реальный протокол в документе (не плейсхолдер пустой панели). */
-  const hasProtocol = Boolean(localDoc.content.trim());
+  const hasProtocol = Boolean(document.content.trim());
 
   const displayTitle = (() => {
-    const raw = String(localDoc.title || '').trim();
-    if (localDoc.isStreaming) {
+    const raw = String(document.title || '').trim();
+    if (document.isStreaming) {
       return raw || 'Генерация документа…';
     }
 
@@ -159,18 +167,20 @@ export const DocumentPanel = ({
       raw.toLowerCase() === 'документ' ||
       raw.toLowerCase() === 'протокол' ||
       raw.toLowerCase() === 'пример документа';
-    const fromContent = extractTitleFromMarkdown(localDoc.content);
+    const fromContent = extractTitleFromMarkdown(document.content);
     return generic && fromContent ? fromContent : raw || 'Протокол';
   })();
 
-  const viewContent = isEmpty ? 'Здесь будет ваш протокол.' : localDoc.content;
+  const viewContent = isEmpty ? 'Здесь будет ваш протокол.' : (editing ? draftContent : document.content);
   const formattedContent = useMemo(() => {
     const normalized = normalizeDocumentPanelMarkdown(viewContent);
     return formatDocumentContent(normalized);
   }, [viewContent]);
 
   const handleCopy = async () => {
-    const formatted = `# ${displayTitle}\n\n${viewContent}`;
+    const raw = `# ${displayTitle}\n\n${viewContent}`;
+    // Strip HTML tags so <br> doesn't appear literally in the clipboard
+    const formatted = raw.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '');
 
     const ok = await copyTextToClipboard(formatted);
     if (ok) {
@@ -243,20 +253,13 @@ export const DocumentPanel = ({
     try {
       void persistProtocolExample();
       const JSZip = (await import('jszip')).default;
+      const { convertMarkdownToDocx } = await import('@mohtasham/md-to-docx');
       const zip = new JSZip();
 
       const docFilename = sanitizeFilename(displayTitle, 'document') + '.docx';
-      let docxBuffer: ArrayBuffer;
-      if (docxData?.content) {
-        const binary = atob(docxData.content);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        docxBuffer = bytes.buffer;
-      } else {
-        const { convertMarkdownToDocx } = await import('@mohtasham/md-to-docx');
-        const docBody = buildDocxMarkdown(displayTitle, viewContent);
-        docxBuffer = await (await convertMarkdownToDocx(docBody)).arrayBuffer();
-      }
+      const docBody = buildDocxMarkdown(displayTitle, viewContent);
+      const docxBlob = await convertMarkdownToDocx(docBody);
+      const docxBuffer = await docxBlob.arrayBuffer();
       zip.file(docFilename, docxBuffer);
 
       const list = Array.isArray(attachments) ? attachments : [];
@@ -587,7 +590,7 @@ export const DocumentPanel = ({
         ) : (
           <Response
             className="document-panel-markdown prose prose-sm max-w-none dark:prose-invert"
-            controls={{ table: true, code: false }}
+            controls={{ table: false }}
           >
             {formattedContent}
           </Response>
