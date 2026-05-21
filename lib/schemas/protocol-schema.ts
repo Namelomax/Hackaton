@@ -218,24 +218,30 @@ function preprocessLlmProtocolShape(input: unknown): Record<string, unknown> {
   if (out.approval && typeof out.approval === 'object' && out.participants && typeof out.participants === 'object') {
     const appr = out.approval as Record<string, unknown>;
     const par = out.participants as Record<string, unknown>;
-    const pickFirstNamed = (rows: unknown[]) => {
-      for (const row of rows) {
-        const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
-        const name = toStr(r.fullName ?? r.name ?? r.фамилия_имя);
-        if (name.trim()) return name;
-      }
-      return '';
-    };
     const fillSide = (approvalKey: string, participantsKey: string) => {
       const side = appr[approvalKey] as Record<string, unknown> | undefined;
       if (!side) return;
-      if (Array.isArray(side.signatories) && side.signatories.length > 0) return;
       const grp = par[participantsKey] as Record<string, unknown> | undefined;
       if (!grp || typeof grp !== 'object' || Array.isArray(grp)) return;
       const people = Array.isArray(grp.people) ? (grp.people as unknown[]) : [];
-      const firstName = pickFirstNamed(people);
-      if (firstName) side.signatories = [firstName];
+      const namesFromPeople = people
+        .map((row) => {
+          const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+          return toStr(r.fullName ?? r.name ?? r.фамилия_имя).trim();
+        })
+        .filter(Boolean);
+      const existing = Array.isArray(side.signatories)
+        ? (side.signatories as unknown[]).map((s) => toStr(s).trim()).filter(Boolean)
+        : [];
+      if (existing.length === 0 && namesFromPeople.length > 0) {
+        side.signatories = namesFromPeople;
+      }
       if (isBlankStr(side.organization) && !isBlankStr(grp.organizationName)) {
+        side.organization = toStr(grp.organizationName);
+      } else if (
+        /^исполнитель$|^заказчик$/i.test(toStr(side.organization)) &&
+        !isBlankStr(grp.organizationName)
+      ) {
         side.organization = toStr(grp.organizationName);
       }
     };

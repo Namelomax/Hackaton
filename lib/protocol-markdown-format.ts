@@ -39,21 +39,88 @@ export function prepareDecisionPlainText(raw: string): string {
   return s.trim();
 }
 
+/** Рекурсивно режет строку, если «Ответственный:» остался внутри блока после «Срок:». */
+function splitLineByDecisionLabels(line: string): string[] {
+  const parts = line.split(DECISION_LABEL_SPLIT_RX).map((p) => p.trim()).filter(Boolean);
+  const out: string[] = [];
+  for (const part of parts) {
+    const nested = part.split(DECISION_LABEL_SPLIT_RX).map((p) => p.trim()).filter(Boolean);
+    if (nested.length > 1) out.push(...splitLineByDecisionLabels(part));
+    else out.push(part);
+  }
+  return out;
+}
+
 /** Разбивает решение на абзацы: основной текст, затем «Срок:», «Ответственный:». */
 export function splitDecisionSegments(raw: string): string[] {
   const s = prepareDecisionPlainText(raw);
   if (!s) return [];
-  return s
-    .split(/\n+/)
-    .flatMap((line) =>
-      line
-        .split(DECISION_LABEL_SPLIT_RX)
-        .map((part) => part.trim())
-        .filter(Boolean),
-    );
+  return s.split(/\n+/).flatMap((line) => splitLineByDecisionLabels(line));
 }
 
 /** Ячейка «Принятые решения» в markdown-таблице: переносы через &lt;br&gt;, жирные метки через &lt;strong&gt;. */
+export function formatContractBlock(protocol: {
+  contractNumber?: string;
+  contractDate?: string;
+}): string {
+  const num = prepareDecisionPlainText(protocol.contractNumber ?? '').trim();
+  const date = prepareDecisionPlainText(protocol.contractDate ?? '').trim();
+  const numText = num && !/не\s+указан/i.test(num) ? num : 'не указано в расшифровке';
+  const dateText = date && !/не\s+указан/i.test(date) ? date : 'не указано в расшифровке';
+  return `Договор №${numText} от ${dateText} г.`;
+}
+
+function isGenericApprovalOrg(name: string): boolean {
+  return /^(заказчик|исполнитель)$/i.test(name.trim());
+}
+
+/** Организации и подписи для раздела 5: из approval, при нехватке — из участников. */
+export function resolveApprovalForDocument(protocol: {
+  approval: {
+    customer: { organization: string; signatories: string[] };
+    executor: { organization: string; signatories: string[] };
+  };
+  participants: {
+    customer: { organizationName: string; people: Array<{ fullName: string }> };
+    executor: { organizationName: string; people: Array<{ fullName: string }> };
+  };
+}): {
+  customer: { organization: string; signatories: string[] };
+  executor: { organization: string; signatories: string[] };
+} {
+  const pickOrg = (approvalOrg: string, participantOrg: string, fallback: string) => {
+    const a = approvalOrg.trim();
+    const p = participantOrg.trim();
+    if (a && !isGenericApprovalOrg(a)) return a;
+    if (p && !isGenericApprovalOrg(p)) return p;
+    return fallback;
+  };
+  const pickSigs = (approvalSigs: string[], people: Array<{ fullName: string }>) => {
+    const fromApproval = approvalSigs.map((s) => s.trim()).filter(Boolean);
+    if (fromApproval.length > 0) return fromApproval;
+    return people.map((p) => p.fullName.trim()).filter(Boolean);
+  };
+
+  return {
+    customer: {
+      organization: pickOrg(
+        protocol.approval.customer.organization,
+        protocol.participants.customer.organizationName,
+        'Заказчик',
+      ),
+      signatories: pickSigs(protocol.approval.customer.signatories, protocol.participants.customer.people),
+    },
+    executor: {
+      organization: pickOrg(
+        protocol.approval.executor.organization,
+        protocol.participants.executor.organizationName,
+        'Исполнитель',
+      ),
+      signatories: pickSigs(protocol.approval.executor.signatories, protocol.participants.executor.people),
+    },
+  };
+}
+
 export function formatSummaryDecisionForMarkdown(raw: string): string {
   const segments = splitDecisionSegments(raw);
   if (segments.length === 0) return '';

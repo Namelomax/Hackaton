@@ -1,6 +1,11 @@
 import { Document, Packer, Paragraph, TextRun, Table, TableCell, TableRow, AlignmentType, WidthType, BorderStyle } from 'docx';
 import type { Protocol } from './schemas/protocol-schema';
-import { cleanProtocolText, splitDecisionSegments } from './protocol-markdown-format';
+import {
+  cleanProtocolText,
+  formatContractBlock,
+  resolveApprovalForDocument,
+  splitDecisionSegments,
+} from './protocol-markdown-format';
 
 function normalizeDocxOrgName(org: string): string {
   return org.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').replace(/^ООО\s+/, '').trim();
@@ -68,18 +73,11 @@ export async function generateProtocolDocx(protocol: Protocol): Promise<Buffer> 
               ]
             : []),
 
-          // Договор
-          ...(protocol.contractNumber
-            ? [
-                new Paragraph({
-                  children: [
-                    new TextRun(`Договор №${cleanProtocolText(protocol.contractNumber)}`),
-                    ...(protocol.contractDate ? [new TextRun(` от ${cleanProtocolText(protocol.contractDate)} г.`)] : []),
-                  ],
-                  spacing: { after: 100 },
-                }),
-              ]
-            : []),
+          // Договор — блок всегда (при отсутствии данных — «не указано в расшифровке»)
+          new Paragraph({
+            children: [new TextRun(formatContractBlock(protocol))],
+            spacing: { after: 100 },
+          }),
 
           // Тема договора
           ...(protocol.contractSubject
@@ -210,7 +208,7 @@ export async function generateProtocolDocx(protocol: Protocol): Promise<Buffer> 
             spacing: { before: 400, after: 200 },
           }),
 
-          createApprovalTable(protocol.approval),
+          createApprovalTable(protocol),
         ],
       },
     ],
@@ -293,47 +291,80 @@ function createSummaryTable(summary: Array<{ question: string; decision: string 
   });
 }
 
-function createApprovalTable(approval: Protocol['approval']): Table {
-  const makeSignatoryParagraphs = (signatories: string[]) =>
-    signatories.length > 0
-      ? signatories.map((name) => new Paragraph({ text: `${name} /______________` }))
-      : [new Paragraph({ text: '______________________' })];
+function formatApprovalOrgLine(org: string): string {
+  const n = normalizeDocxOrgName(org);
+  if (!n || /^(заказчик|исполнитель)$/i.test(n)) return 'не указано в расшифровке';
+  if (/^ООО\s/i.test(org.trim())) return `${org.trim()}:`;
+  return `ООО «${n}»:`;
+}
+
+function signatoryParagraph(name?: string): Paragraph {
+  const n = name?.trim();
+  return new Paragraph({
+    text: n ? `${n} /______________` : '______________________',
+    spacing: { after: 80 },
+  });
+}
+
+function createApprovalTable(protocol: Protocol): Table {
+  const sides = resolveApprovalForDocument(protocol);
+  const sigLen = Math.max(
+    sides.customer.signatories.length,
+    sides.executor.signatories.length,
+    1,
+  );
+
+  const rows: TableRow[] = [
+    new TableRow({
+      children: [
+        new TableCell({
+          children: [new Paragraph({ children: [new TextRun({ text: 'Со стороны Заказчика', bold: true })] })],
+        }),
+        new TableCell({
+          children: [new Paragraph({ children: [new TextRun({ text: 'Со стороны Исполнителя', bold: true })] })],
+        }),
+      ],
+    }),
+    new TableRow({
+      children: [
+        new TableCell({
+          children: [
+            new Paragraph({
+              children: [new TextRun({ text: formatApprovalOrgLine(sides.customer.organization), italics: true })],
+            }),
+          ],
+        }),
+        new TableCell({
+          children: [
+            new Paragraph({
+              children: [new TextRun({ text: formatApprovalOrgLine(sides.executor.organization), italics: true })],
+            }),
+          ],
+        }),
+      ],
+    }),
+  ];
+
+  for (let i = 0; i < sigLen; i++) {
+    rows.push(
+      new TableRow({
+        children: [
+          new TableCell({ children: [signatoryParagraph(sides.customer.signatories[i])] }),
+          new TableCell({ children: [signatoryParagraph(sides.executor.signatories[i])] }),
+        ],
+      }),
+    );
+  }
 
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
-    rows: [
-      new TableRow({
-        children: [
-          new TableCell({
-            children: [
-              new Paragraph({ children: [new TextRun({ text: 'Со стороны Заказчика', bold: true })] }),
-              ...(approval.customer.organization && !/^заказчик$/i.test(approval.customer.organization)
-                ? [new Paragraph({ children: [new TextRun({ text: `ООО «${normalizeDocxOrgName(approval.customer.organization)}»:`, italics: true })] })]
-                : []),
-              new Paragraph({ text: '' }),
-              ...makeSignatoryParagraphs(approval.customer.signatories),
-            ],
-            width: { size: 50, type: WidthType.PERCENTAGE },
-          }),
-          new TableCell({
-            children: [
-              new Paragraph({ children: [new TextRun({ text: 'Со стороны Исполнителя', bold: true })] }),
-              ...(approval.executor.organization && !/^исполнитель$/i.test(approval.executor.organization)
-                ? [new Paragraph({ children: [new TextRun({ text: `ООО «${normalizeDocxOrgName(approval.executor.organization)}»:`, italics: true })] })]
-                : []),
-              new Paragraph({ text: '' }),
-              ...makeSignatoryParagraphs(approval.executor.signatories),
-            ],
-            width: { size: 50, type: WidthType.PERCENTAGE },
-          }),
-        ],
-      }),
-    ],
+    rows,
     borders: {
       top: { style: BorderStyle.SINGLE, size: 1 },
       bottom: { style: BorderStyle.SINGLE, size: 1 },
       left: { style: BorderStyle.SINGLE, size: 1 },
       right: { style: BorderStyle.SINGLE, size: 1 },
+      insideHorizontal: { style: BorderStyle.SINGLE, size: 1 },
       insideVertical: { style: BorderStyle.SINGLE, size: 1 },
     },
   });

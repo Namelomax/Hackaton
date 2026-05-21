@@ -20,8 +20,10 @@ import {
 import {
   cleanProtocolText,
   formatProtocolSectionHeading,
+  formatContractBlock,
   formatSummaryDecisionForMarkdown,
   isValidParticipantRow,
+  resolveApprovalForDocument,
 } from '@/lib/protocol-markdown-format';
 
 function extractMessageText(msg: any): string {
@@ -295,11 +297,7 @@ function protocolToMarkdown(protocol: Protocol): string {
   const title = cleanProtocolText(protocol.protocolTitle);
   if (title) md += `**${title}**\n\n`;
 
-  if (protocol.contractNumber) {
-    md += `Договор №${cleanProtocolText(protocol.contractNumber)}`;
-    if (protocol.contractDate) md += ` от ${cleanProtocolText(protocol.contractDate)} г.`;
-    md += '\n\n';
-  }
+  md += `${formatContractBlock(protocol)}\n\n`;
   if (protocol.contractSubject) {
     md += `Тема договора: ${cleanProtocolText(protocol.contractSubject)}\n\n`;
   }
@@ -370,35 +368,26 @@ function protocolToMarkdown(protocol: Protocol): string {
   // 5. Согласовано — двухколоночная таблица
   md += formatProtocolSectionHeading(5, 'Согласовано:');
 
-  const custApprOrg = protocol.approval.customer.organization.trim();
-  const execApprOrg = protocol.approval.executor.organization.trim();
-  const normalizeOrgName = (org: string) =>
-    org.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').replace(/^ООО\s+/, '').trim();
-  const cleanCustOrg = normalizeOrgName(custApprOrg);
-  const cleanExecOrg = normalizeOrgName(execApprOrg);
+  const approval = resolveApprovalForDocument(protocol);
+  const formatApprOrg = (org: string) => {
+    const t = org.trim();
+    if (!t || /^(заказчик|исполнитель)$/i.test(t)) return 'не указано в расшифровке';
+    if (/^ООО\s/i.test(t)) return `${t}:`;
+    const inner = t.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').replace(/^ООО\s+/, '').trim();
+    return `ООО «${inner}»:`;
+  };
 
-  // Org name cells (hardcoded, never from LLM text)
-  const custOrgCell = cleanCustOrg && !/^заказчик$/i.test(cleanCustOrg) ? `ООО «${cleanCustOrg}»:` : '';
-  const execOrgCell = cleanExecOrg && !/^исполнитель$/i.test(cleanExecOrg) ? `ООО «${cleanExecOrg}»:` : '';
-
-  // Signatory rows — collected independently, then aligned side-by-side from row 0
-  const custSigs = protocol.approval.customer.signatories.filter((n) => n.trim());
-  const execSigs = protocol.approval.executor.signatories.filter((n) => n.trim());
+  const custSigs = approval.customer.signatories;
+  const execSigs = approval.executor.signatories;
   const sigLen = Math.max(custSigs.length, execSigs.length, 1);
 
   md += `| **Со стороны Заказчика** | **Со стороны Исполнителя** |\n`;
   md += `| --- | --- |\n`;
+  md += `| ${formatApprOrg(approval.customer.organization)} | ${formatApprOrg(approval.executor.organization)} |\n`;
 
-  // Org name row — only when at least one side has a valid org name
-  if (custOrgCell || execOrgCell) {
-    md += `| ${custOrgCell} | ${execOrgCell} |\n`;
-    md += `|  |  |\n`; // visual spacer between org header and signatures
-  }
-
-  // Signatories aligned: first customer sig on the same row as first executor sig
   for (let i = 0; i < sigLen; i++) {
-    const cust = custSigs[i] ? `${custSigs[i].trim()} /______________` : '';
-    const exec = execSigs[i] ? `${execSigs[i].trim()} /______________` : '';
+    const cust = custSigs[i] ? `${custSigs[i].trim()} /______________` : '______________________';
+    const exec = execSigs[i] ? `${execSigs[i].trim()} /______________` : '______________________';
     md += `| ${cust} | ${exec} |\n`;
   }
   md += '\n';
