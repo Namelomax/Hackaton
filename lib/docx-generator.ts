@@ -1,6 +1,6 @@
 import { Document, Packer, Paragraph, TextRun, Table, TableCell, TableRow, AlignmentType, WidthType, BorderStyle } from 'docx';
 import type { Protocol } from './schemas/protocol-schema';
-import { cleanProtocolText } from './protocol-markdown-format';
+import { cleanProtocolText, splitDecisionSegments } from './protocol-markdown-format';
 
 function normalizeDocxOrgName(org: string): string {
   return org.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').replace(/^ООО\s+/, '').trim();
@@ -15,30 +15,28 @@ function isValidOrgDisplayName(name: string): boolean {
   return true;
 }
 
-/** Splits a decision string at «Срок:» / «Ответственный:» markers, returning multiple Paragraphs with bold labels. */
+/** Несколько Paragraph в ячейке таблицы — переносы сохраняются в DOCX; метки жирным через TextRun. */
 function decisionToDocxParagraphs(raw: string): Paragraph[] {
-  let s = cleanProtocolText(raw);
-  s = s.replace(/\r?\n/g, ' ').replace(/\s{2,}/g, ' ').trim();
-  if (!s) return [new Paragraph('')];
+  const segments = splitDecisionSegments(raw);
+  if (segments.length === 0) return [new Paragraph('')];
 
-  // Split at Срок: and Ответственный: markers (lookahead keeps the keyword in the segment)
-  const segments = s.split(/(?=\s*(?:Срок\s*:|Ответственн\w*\s*:))/i).map((p) => p.trim()).filter(Boolean);
-
-  if (segments.length <= 1) {
-    return [new Paragraph({ text: s })];
-  }
-
-  return segments.map((segment) => {
-    const m = segment.match(/^(Срок\s*:|Ответственн\w*\s*:)\s*(.*)/i);
+  return segments.map((segment, index) => {
+    const m = segment.match(/^(Срок\s*:|Ответственн\w*\s*:)\s*([\s\S]*)/i);
     if (m) {
+      const label = m[1].trim();
+      const rest = m[2].trim();
       return new Paragraph({
         children: [
-          new TextRun({ text: m[1], bold: true }),
-          ...(m[2].trim() ? [new TextRun({ text: ` ${m[2].trim()}` })] : []),
+          new TextRun({ text: label, bold: true }),
+          ...(rest ? [new TextRun({ text: ` ${rest}` })] : []),
         ],
+        spacing: { after: index < segments.length - 1 ? 80 : 0 },
       });
     }
-    return new Paragraph({ text: segment });
+    return new Paragraph({
+      children: [new TextRun(cleanProtocolText(segment))],
+      spacing: { after: index < segments.length - 1 ? 80 : 0 },
+    });
   });
 }
 

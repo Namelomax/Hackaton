@@ -23,6 +23,53 @@ export function cleanProtocolText(text: string): string {
 }
 
 /** Убирает пробелы внутри **…** и снимает «висячие» пары звёздочек. */
+/** Маркеры «Срок:» / «Ответственный:» в поле решения (после снятия **). */
+const DECISION_LABEL_SPLIT_RX = /(?=(?:Срок\s*:|Ответственн\w*\s*:))/i;
+
+/** Текст решения для DOCX / разбора: без markdown-звёздочек, переносы из &lt;br&gt; сохранены. */
+export function prepareDecisionPlainText(raw: string): string {
+  let s = String(raw ?? '').trim();
+  if (!s) return '';
+  s = s.replace(/<br\s*\/?>/gi, '\n');
+  s = s.replace(/\*\*/g, '');
+  s = s.replace(/(?<!\*)\*(?!\*)/g, '');
+  s = s.replace(/\r\n?/g, '\n');
+  s = s.replace(BOILERPLATE_RX, '').trim();
+  s = s.replace(TRAILING_NUMBERED_JUNK_RX, '').trim();
+  return s.trim();
+}
+
+/** Разбивает решение на абзацы: основной текст, затем «Срок:», «Ответственный:». */
+export function splitDecisionSegments(raw: string): string[] {
+  const s = prepareDecisionPlainText(raw);
+  if (!s) return [];
+  return s
+    .split(/\n+/)
+    .flatMap((line) =>
+      line
+        .split(DECISION_LABEL_SPLIT_RX)
+        .map((part) => part.trim())
+        .filter(Boolean),
+    );
+}
+
+/** Ячейка «Принятые решения» в markdown-таблице: переносы через &lt;br&gt;, жирные метки через &lt;strong&gt;. */
+export function formatSummaryDecisionForMarkdown(raw: string): string {
+  const segments = splitDecisionSegments(raw);
+  if (segments.length === 0) return '';
+  return segments
+    .map((segment) => {
+      const m = segment.match(/^(Срок\s*:|Ответственн\w*\s*:)\s*([\s\S]*)/i);
+      if (m) {
+        const label = m[1].trim();
+        const rest = m[2].trim();
+        return rest ? `<strong>${label}</strong> ${rest}` : `<strong>${label}</strong>`;
+      }
+      return segment;
+    })
+    .join('<br>');
+}
+
 export function normalizeMarkdownBold(text: string): string {
   let s = text;
   for (let i = 0; i < 6; i++) {

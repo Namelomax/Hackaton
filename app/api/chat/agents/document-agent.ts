@@ -20,6 +20,7 @@ import {
 import {
   cleanProtocolText,
   formatProtocolSectionHeading,
+  formatSummaryDecisionForMarkdown,
   isValidParticipantRow,
 } from '@/lib/protocol-markdown-format';
 
@@ -284,18 +285,6 @@ function isValidOrgDisplayName(name: string): boolean {
   return true;
 }
 
-/**
- * Форматирует поле «Принятые решения» в Резюме:
- * «Срок:» и «Ответственный:» — с новой строки, жирным.
- */
-function formatSummaryDecision(raw: string): string {
-  let s = cleanProtocolText(raw);
-  s = s.replace(/\r?\n/g, ' ').replace(/\s{2,}/g, ' ').trim();
-  s = s.replace(/\s*(Срок\s*:)/gi, '<br>**$1**');
-  s = s.replace(/\s*(Ответственн\w*\s*:)/gi, '<br>**$1**');
-  return s;
-}
-
 function protocolToMarkdown(protocol: Protocol): string {
   const normalizedNumber = String(protocol.protocolNumber || '').trim().startsWith('№')
     ? String(protocol.protocolNumber).trim()
@@ -370,7 +359,7 @@ function protocolToMarkdown(protocol: Protocol): string {
     md += '| --- | --- |\n';
     protocol.meetingContent.summary.forEach((row) => {
       const q = cleanProtocolText(row.question);
-      const d = formatSummaryDecision(row.decision);
+      const d = formatSummaryDecisionForMarkdown(row.decision);
       if (q || d) md += `| ${q} | ${d} |\n`;
     });
     md += '\n';
