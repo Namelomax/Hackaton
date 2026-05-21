@@ -353,7 +353,7 @@ function protocolToMarkdown(protocol: Protocol): string {
 
   if (protocol.meetingContent.summary.length > 0) {
     md += '**Резюме:**\n\n';
-    md += '| <strong>Обсуждаемые вопросы</strong> | <strong>Принятые решения</strong> |\n';
+    md += '| **Обсуждаемые вопросы** | **Принятые решения** |\n';
     md += '| --- | --- |\n';
     protocol.meetingContent.summary.forEach((row) => {
       const q = cleanProtocolText(row.question);
@@ -381,7 +381,7 @@ function protocolToMarkdown(protocol: Protocol): string {
   const execSigs = approval.executor.signatories;
   const sigLen = Math.max(custSigs.length, execSigs.length, 1);
 
-  md += `| <strong>Со стороны Заказчика</strong> | <strong>Со стороны Исполнителя</strong> |\n`;
+  md += `| **Со стороны Заказчика** | **Со стороны Исполнителя** |\n`;
   md += `| --- | --- |\n`;
   md += `| ${formatApprOrg(approval.customer.organization)} | ${formatApprOrg(approval.executor.organization)} |\n`;
 

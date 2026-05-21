@@ -66,7 +66,7 @@ export function splitDecisionSegments(raw: string): string[] {
   return s.split(/\n+/).flatMap((line) => splitLineByDecisionLabels(line));
 }
 
-/** Ячейка «Принятые решения» в markdown-таблице: переносы через &lt;br&gt;, жирные метки через &lt;strong&gt;. */
+/** Ячейка «Принятые решения» в markdown-таблице: переносы через &lt;br&gt;, жирные метки через **. */
 export function formatContractBlock(protocol: {
   contractNumber?: string;
   contractDate?: string;
@@ -152,22 +152,19 @@ export function formatSummaryDecisionForMarkdown(raw: string): string {
       if (m) {
         const label = m[1].trim();
         const rest = m[2].trim();
-        return rest ? `<strong>${label}</strong> ${rest}` : `<strong>${label}</strong>`;
+        return rest ? `**${label}** ${rest}` : `**${label}**`;
       }
       return segment;
     })
     .join('<br>');
 }
 
-/** Для md-to-docx: **текст** → &lt;strong&gt; (в ячейках таблиц ** часто не рендерится). */
-export function convertMarkdownBoldForDocxExport(markdown: string): string {
+/** Убирает HTML-жирный из markdown перед md-to-docx — в Word иначе видны сырые &lt;strong&gt;. */
+export function normalizeMarkdownBoldForDocxExport(markdown: string): string {
   let s = String(markdown ?? '').replace(/\r\n?/g, '\n');
-  for (let i = 0; i < 8; i++) {
-    const next = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    if (next === s) break;
-    s = next;
-  }
-  return s.replace(/\*\*/g, '');
+  s = s.replace(/<strong>([^<]*)<\/strong>/gi, '**$1**');
+  s = s.replace(/<\/?strong>/gi, '');
+  return s;
 }
 
 /** Разбирает inline **жирный** на сегменты { text, bold } для Word (docx). */

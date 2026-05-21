@@ -1,6 +1,6 @@
 import {
-  convertMarkdownBoldForDocxExport,
   fixProtocolSectionHeadingsInMarkdown,
+  normalizeMarkdownBoldForDocxExport,
 } from '@/lib/protocol-markdown-format';
 
 /**
@@ -33,7 +33,7 @@ export function normalizeMarkdownForDocx(raw: string) {
   text = text.replace(/^[ \t]*•\s*/gm, '- ');
   text = text.replace(/([^\n])\s*•\s*/g, '$1\n- ');
 
-  text = convertMarkdownBoldForDocxExport(text);
+  text = normalizeMarkdownBoldForDocxExport(text);
 
   return text;
 }
