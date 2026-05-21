@@ -7,19 +7,7 @@ import { SUPPORTED_UPLOAD_FORMATS } from '@/lib/document-upload-guide';
 
 const STORAGE_KEY = 'guestWelcomeDismissed';
 
-/** Разделы протокола обследования (как в промптах и правой панели). */
-const PROTOCOL_SECTION_TITLES = [
-  'Номер протокола и дата встречи',
-  'Повестка',
-  'Участники',
-  'Термины и определения',
-  'Сокращения и обозначения',
-  'Содержание встречи',
-  'Вопросы и ответы',
-  'Решения и ответственные',
-  'Открытые вопросы',
-  'Согласовано',
-] as const;
+import { PROTOCOL_SECTION_TITLES } from '@/lib/protocol-structure';
 
 type GuestWelcomeGuideProps = {
   open: boolean;
@@ -123,8 +111,12 @@ export function GuestWelcomeGuide({ open }: GuestWelcomeGuideProps) {
           <section>
             <h3 className="font-semibold text-neutral-900 mb-1">Структура протокола</h3>
             <p className="mb-2">
-              Итоговый протокол в правой панели собирается по заданной структуре.
-              При необходимости её легко заменить — через редактирование промпта.
+              Итоговый протокол: шапка (номер, дата, название, договор, тема) и 5 нумерованных разделов.
+              В разделе 4 — блоки «Слушали / Обсудили / Решили» и таблица «Резюме».
+            </p>
+            <p className="mb-2 text-neutral-700">
+              Перед отправкой участникам замените примеры и удалите пояснения к заполнению; жирные метки не
+              меняйте.
             </p>
             <ol className="list-decimal pl-5 space-y-0.5 text-neutral-800">
               {PROTOCOL_SECTION_TITLES.map((title) => (

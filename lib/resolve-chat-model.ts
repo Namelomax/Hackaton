@@ -52,11 +52,17 @@ export function resolveChatLanguageModel(options: ResolveChatModelOptions = {}) 
         if (init?.body && typeof init.body === 'string') {
           try {
             const parsed = JSON.parse(init.body) as Record<string, unknown>;
-            applyOllamaOpenAiCompatOptions(parsed, Boolean(options.useThinking));
+            const useThinking = Boolean(options.useThinking);
+            applyOllamaOpenAiCompatOptions(parsed, useThinking);
             const cap = ollamaChatMaxOutputTokens();
             const requestedMax =
               typeof parsed.max_tokens === 'number' ? parsed.max_tokens : cap;
             parsed.max_tokens = Math.min(requestedMax, cap);
+            if (process.env.OLLAMA_LOG_CHAT_REQUEST === '1') {
+              console.log(
+                `[ollama→] model=${modelId} think=${String(parsed.think)} reasoning_effort=${String(parsed.reasoning_effort)} max_tokens=${parsed.max_tokens} msgs=${Array.isArray(parsed.messages) ? parsed.messages.length : '?'}`,
+              );
+            }
             return fetch(url, { ...init, body: JSON.stringify(parsed) });
           } catch {
             /* fallthrough */

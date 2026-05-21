@@ -1,4 +1,5 @@
 import { fixProtocolSectionHeadingsInMarkdown } from '@/lib/protocol-markdown-format';
+import { protocolContentToPreviewMarkdown } from '@/lib/protocol-preview-markdown';
 
 /**
  * Убирает лишние маркеры ненумерованного списка перед нумерованными блоками
@@ -6,8 +7,11 @@ import { fixProtocolSectionHeadingsInMarkdown } from '@/lib/protocol-markdown-fo
  */
 export function normalizeDocumentPanelMarkdown(raw: string): string {
   if (!raw) return '';
-  let s = fixProtocolSectionHeadingsInMarkdown(raw);
-  s = s.replace(/\r\n?/g, '\n');
+  let s = raw.replace(/\r\n?/g, '\n');
+  if (/^ПРОТОКОЛ\s*№/im.test(s.trim())) {
+    return protocolContentToPreviewMarkdown(s);
+  }
+  s = fixProtocolSectionHeadingsInMarkdown(s);
   // Строка только из маркера списка без текста
   s = s.replace(/(^|\n)[ \t]*(?:[-*•])[ \t]*(?=\n)/g, '$1');
   // Маркер списка с пустой строкой перед нумерованным списком
@@ -37,7 +41,7 @@ export function buildDocxMarkdown(title: string, content: string) {
   const body = String(content || '').trim();
   const firstLine = body.split('\n')[0]?.trim() || '';
   const hasHeading = /^#\s+/.test(firstLine);
-  const hasTitleLine = /^ПРОТОКОЛ\s+(№|\d)/i.test(firstLine);
+  const hasTitleLine = /^ПРОТОКОЛ ОБСЛЕДОВАНИЯ\b/i.test(firstLine);
   const withTitle = hasHeading || hasTitleLine ? body : `# ${title}\n\n${body}`;
   return normalizeMarkdownForDocx(withTitle);
 }
@@ -49,11 +53,8 @@ export function extractTitleFromMarkdown(markdown?: string | null): string | nul
   for (const line of lines) {
     const t = line.trim();
     if (!t) continue;
-    // Standard markdown heading: # Title
     const m = t.match(/^#\s+(.+?)\s*$/);
     if (m?.[1]) return m[1].trim();
-    // Protocol header: ПРОТОКОЛ №X ОТ DD.MM.YYYY
-    if (/^ПРОТОКОЛ\s+/i.test(t)) return t;
     break;
   }
   return null;

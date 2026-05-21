@@ -26,6 +26,7 @@ import type { DocumentReview } from '@/app/api/chat/agents/review-agent';
 import type { Attachment, DocumentState } from '@/lib/document/types';
 import type { ChatTransportBodyExtras } from '@/components/chat/PromptInputWrapper';
 import { buildDocxMarkdown, extractTitleFromMarkdown, formatDocumentContent, normalizeDocumentPanelMarkdown, sanitizeFilename } from '@/lib/document/formatting';
+import { stripDocumentPanelPlaceholder } from '@/lib/protocol-from-markdown';
 import { copyTextToClipboard } from '@/lib/copyToClipboard';
 
 type DocumentPanelProps = {
@@ -126,19 +127,11 @@ export const DocumentPanel = ({
 
   useEffect(() => {
     if (!editing) {
-      setLocalDoc(document);
+      const content = stripDocumentPanelPlaceholder(document.content);
+      setLocalDoc({ ...document, content });
       setDraftTitle(document.title);
-      setDraftContent(document.content);
-      
-      // Проверяем наличие .docx данных в документе
-      if (document.docxData) {
-        setDocxData(document.docxData);
-      } else if (document.content.trim() && !docxData && !document.isStreaming) {
-        // Автоматически генерируем docxData если контент есть, но docxData нет
-        buildDocxData(document.title || 'Протокол', document.content)
-          .then(data => setDocxData(data))
-          .catch(err => console.warn('Failed to auto-generate docx', err));
-      }
+      setDraftContent(content);
+      setDocxData(document.docxData ?? null);
     }
   }, [document, editing]);
 
@@ -148,16 +141,14 @@ export const DocumentPanel = ({
     }
   }, [document.content, document.isStreaming]);
 
-  // Use document prop (not localDoc) for empty/protocol checks to avoid a one-frame lag:
-  // localDoc is synced via useEffect which runs after paint, so on the render where the
-  // loading overlay disappears, localDoc can still be empty while document already has content.
-  const isEmpty = !document.isStreaming && !document.title && !document.content.trim().length;
+  const contentForView = stripDocumentPanelPlaceholder(localDoc.content);
+  const isEmpty = !localDoc.isStreaming && !localDoc.title && !contentForView.length;
   /** Реальный протокол в документе (не плейсхолдер пустой панели). */
-  const hasProtocol = Boolean(document.content.trim());
+  const hasProtocol = Boolean(contentForView.length);
 
   const displayTitle = (() => {
-    const raw = String(document.title || '').trim();
-    if (document.isStreaming) {
+    const raw = String(localDoc.title || '').trim();
+    if (localDoc.isStreaming) {
       return raw || 'Генерация документа…';
     }
 
@@ -167,20 +158,18 @@ export const DocumentPanel = ({
       raw.toLowerCase() === 'документ' ||
       raw.toLowerCase() === 'протокол' ||
       raw.toLowerCase() === 'пример документа';
-    const fromContent = extractTitleFromMarkdown(document.content);
+    const fromContent = extractTitleFromMarkdown(localDoc.content);
     return generic && fromContent ? fromContent : raw || 'Протокол';
   })();
 
-  const viewContent = isEmpty ? 'Здесь будет ваш протокол.' : (editing ? draftContent : document.content);
+  const viewContent = isEmpty ? 'Здесь будет ваш протокол.' : contentForView;
   const formattedContent = useMemo(() => {
     const normalized = normalizeDocumentPanelMarkdown(viewContent);
     return formatDocumentContent(normalized);
   }, [viewContent]);
 
   const handleCopy = async () => {
-    const raw = `# ${displayTitle}\n\n${viewContent}`;
-    // Strip HTML tags so <br> doesn't appear literally in the clipboard
-    const formatted = raw.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '');
+    const formatted = `# ${displayTitle}\n\n${viewContent}`;
 
     const ok = await copyTextToClipboard(formatted);
     if (ok) {
@@ -253,13 +242,35 @@ export const DocumentPanel = ({
     try {
       void persistProtocolExample();
       const JSZip = (await import('jszip')).default;
-      const { convertMarkdownToDocx } = await import('@mohtasham/md-to-docx');
       const zip = new JSZip();
 
       const docFilename = sanitizeFilename(displayTitle, 'document') + '.docx';
-      const docBody = buildDocxMarkdown(displayTitle, viewContent);
-      const docxBlob = await convertMarkdownToDocx(docBody);
-      const docxBuffer = await docxBlob.arrayBuffer();
+      let docxBuffer: ArrayBuffer;
+      const regen = await fetch('/api/regenerate-protocol-docx', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ markdown: contentForView, filename: docFilename }),
+      });
+      if (regen.ok) {
+        const j = await regen.json();
+        if (j?.content) {
+          const binary = atob(j.content);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          docxBuffer = bytes.buffer;
+        } else {
+          throw new Error('empty docx');
+        }
+      } else if (docxData?.content) {
+        const binary = atob(docxData.content);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        docxBuffer = bytes.buffer;
+      } else {
+        const { convertMarkdownToDocx } = await import('@mohtasham/md-to-docx');
+        const docBody = buildDocxMarkdown(displayTitle, viewContent);
+        docxBuffer = await (await convertMarkdownToDocx(docBody)).arrayBuffer();
+      }
       zip.file(docFilename, docxBuffer);
 
       const list = Array.isArray(attachments) ? attachments : [];
@@ -341,14 +352,32 @@ export const DocumentPanel = ({
   };
 
   const handleDownloadDocx = async () => {
-    if (!hasProtocol || !docxData) return;
+    if (!hasProtocol) return;
 
     try {
       void persistProtocolExample();
+      let payload = docxData;
+      const regen = await fetch('/api/regenerate-protocol-docx', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          markdown: contentForView,
+          filename: docxData?.filename || sanitizeFilename(displayTitle, 'Протокол') + '.docx',
+        }),
+      });
+      if (regen.ok) {
+        const j = await regen.json();
+        if (j?.content) {
+          payload = { content: j.content, filename: j.filename || payload?.filename || 'Протокол.docx' };
+          setDocxData(payload);
+        }
+      }
+      if (!payload?.content) return;
+
       const response = await fetch('/api/download-docx', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(docxData),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) throw new Error('Failed to download docx');
@@ -357,7 +386,7 @@ export const DocumentPanel = ({
       const url = URL.createObjectURL(blob);
       const link = window.document.createElement('a');
       link.href = url;
-      link.download = docxData.filename;
+      link.download = payload.filename;
       window.document.body.appendChild(link);
       link.click();
       window.document.body.removeChild(link);
@@ -517,7 +546,7 @@ export const DocumentPanel = ({
                   type="button"
                   title="Скачать протокол (.docx)"
                   aria-label="Скачать протокол (.docx)"
-                  disabled={!hasProtocol || !docxData || localDoc.isStreaming}
+                  disabled={!hasProtocol || localDoc.isStreaming}
                 >
                   <FileText className="size-4" />
                 </Button>
@@ -528,7 +557,7 @@ export const DocumentPanel = ({
                   type="button"
                   title="Скачать ZIP (документ + вложения)"
                   aria-label="Скачать ZIP (документ + вложения)"
-                  disabled={!hasProtocol || !docxData || localDoc.isStreaming || isBundling}
+                  disabled={!hasProtocol || localDoc.isStreaming || isBundling}
                 >
                   <Download className="size-4" />
                 </Button>
@@ -590,7 +619,7 @@ export const DocumentPanel = ({
         ) : (
           <Response
             className="document-panel-markdown prose prose-sm max-w-none dark:prose-invert"
-            controls={{ table: false }}
+            controls={{ table: true, code: false }}
           >
             {formattedContent}
           </Response>
