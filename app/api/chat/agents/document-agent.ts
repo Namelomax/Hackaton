@@ -388,31 +388,29 @@ function protocolToMarkdown(protocol: Protocol): string {
   const cleanCustOrg = normalizeOrgName(custApprOrg);
   const cleanExecOrg = normalizeOrgName(execApprOrg);
 
-  // Строки левого столбца (Заказчик)
-  const custCells: string[] = [];
-  if (cleanCustOrg && !/^заказчик$/i.test(cleanCustOrg)) custCells.push(`ООО «${cleanCustOrg}»:`);
-  custCells.push('');
-  protocol.approval.customer.signatories.forEach((name) => {
-    if (name.trim()) custCells.push(`${name.trim()} /______________`);
-  });
+  // Org name cells (hardcoded, never from LLM text)
+  const custOrgCell = cleanCustOrg && !/^заказчик$/i.test(cleanCustOrg) ? `ООО «${cleanCustOrg}»:` : '';
+  const execOrgCell = cleanExecOrg && !/^исполнитель$/i.test(cleanExecOrg) ? `ООО «${cleanExecOrg}»:` : '';
 
-  // Строки правого столбца (Исполнитель)
-  const execCells: string[] = [];
-  if (cleanExecOrg && !/^исполнитель$/i.test(cleanExecOrg)) execCells.push(`ООО «${cleanExecOrg}»:`);
-  execCells.push('');
-  protocol.approval.executor.signatories.forEach((name) => {
-    if (name.trim()) execCells.push(`${name.trim()} /______________`);
-  });
-
-  // Выровнять по длине
-  const bodyLen = Math.max(custCells.length, execCells.length);
-  while (custCells.length < bodyLen) custCells.push('');
-  while (execCells.length < bodyLen) execCells.push('');
+  // Signatory rows — collected independently, then aligned side-by-side from row 0
+  const custSigs = protocol.approval.customer.signatories.filter((n) => n.trim());
+  const execSigs = protocol.approval.executor.signatories.filter((n) => n.trim());
+  const sigLen = Math.max(custSigs.length, execSigs.length, 1);
 
   md += `| **Со стороны Заказчика** | **Со стороны Исполнителя** |\n`;
   md += `| --- | --- |\n`;
-  for (let i = 0; i < bodyLen; i++) {
-    md += `| ${custCells[i]} | ${execCells[i]} |\n`;
+
+  // Org name row — only when at least one side has a valid org name
+  if (custOrgCell || execOrgCell) {
+    md += `| ${custOrgCell} | ${execOrgCell} |\n`;
+    md += `|  |  |\n`; // visual spacer between org header and signatures
+  }
+
+  // Signatories aligned: first customer sig on the same row as first executor sig
+  for (let i = 0; i < sigLen; i++) {
+    const cust = custSigs[i] ? `${custSigs[i].trim()} /______________` : '';
+    const exec = execSigs[i] ? `${execSigs[i].trim()} /______________` : '';
+    md += `| ${cust} | ${exec} |\n`;
   }
   md += '\n';
 
