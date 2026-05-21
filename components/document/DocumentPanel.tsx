@@ -26,7 +26,6 @@ import type { DocumentReview } from '@/app/api/chat/agents/review-agent';
 import type { Attachment, DocumentState } from '@/lib/document/types';
 import type { ChatTransportBodyExtras } from '@/components/chat/PromptInputWrapper';
 import { buildDocxMarkdown, extractTitleFromMarkdown, formatDocumentContent, normalizeDocumentPanelMarkdown, sanitizeFilename } from '@/lib/document/formatting';
-import { stripDocumentPanelPlaceholder } from '@/lib/protocol-from-markdown';
 import { copyTextToClipboard } from '@/lib/copyToClipboard';
 
 type DocumentPanelProps = {
@@ -127,11 +126,14 @@ export const DocumentPanel = ({
 
   useEffect(() => {
     if (!editing) {
-      const content = stripDocumentPanelPlaceholder(document.content);
-      setLocalDoc({ ...document, content });
+      setLocalDoc(document);
       setDraftTitle(document.title);
-      setDraftContent(content);
-      setDocxData(document.docxData ?? null);
+      setDraftContent(document.content);
+      
+      // Проверяем наличие .docx данных в документе
+      if (document.docxData) {
+        setDocxData(document.docxData);
+      }
     }
   }, [document, editing]);
 
@@ -141,10 +143,9 @@ export const DocumentPanel = ({
     }
   }, [document.content, document.isStreaming]);
 
-  const contentForView = stripDocumentPanelPlaceholder(localDoc.content);
-  const isEmpty = !localDoc.isStreaming && !localDoc.title && !contentForView.length;
+  const isEmpty = !localDoc.isStreaming && !localDoc.title && !localDoc.content.trim().length;
   /** Реальный протокол в документе (не плейсхолдер пустой панели). */
-  const hasProtocol = Boolean(contentForView.length);
+  const hasProtocol = Boolean(localDoc.content.trim());
 
   const displayTitle = (() => {
     const raw = String(localDoc.title || '').trim();
@@ -162,7 +163,7 @@ export const DocumentPanel = ({
     return generic && fromContent ? fromContent : raw || 'Протокол';
   })();
 
-  const viewContent = isEmpty ? 'Здесь будет ваш протокол.' : contentForView;
+  const viewContent = isEmpty ? 'Здесь будет ваш протокол.' : localDoc.content;
   const formattedContent = useMemo(() => {
     const normalized = normalizeDocumentPanelMarkdown(viewContent);
     return formatDocumentContent(normalized);
@@ -246,22 +247,7 @@ export const DocumentPanel = ({
 
       const docFilename = sanitizeFilename(displayTitle, 'document') + '.docx';
       let docxBuffer: ArrayBuffer;
-      const regen = await fetch('/api/regenerate-protocol-docx', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ markdown: contentForView, filename: docFilename }),
-      });
-      if (regen.ok) {
-        const j = await regen.json();
-        if (j?.content) {
-          const binary = atob(j.content);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          docxBuffer = bytes.buffer;
-        } else {
-          throw new Error('empty docx');
-        }
-      } else if (docxData?.content) {
+      if (docxData?.content) {
         const binary = atob(docxData.content);
         const bytes = new Uint8Array(binary.length);
         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -352,32 +338,14 @@ export const DocumentPanel = ({
   };
 
   const handleDownloadDocx = async () => {
-    if (!hasProtocol) return;
+    if (!hasProtocol || !docxData) return;
 
     try {
       void persistProtocolExample();
-      let payload = docxData;
-      const regen = await fetch('/api/regenerate-protocol-docx', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          markdown: contentForView,
-          filename: docxData?.filename || sanitizeFilename(displayTitle, 'Протокол') + '.docx',
-        }),
-      });
-      if (regen.ok) {
-        const j = await regen.json();
-        if (j?.content) {
-          payload = { content: j.content, filename: j.filename || payload?.filename || 'Протокол.docx' };
-          setDocxData(payload);
-        }
-      }
-      if (!payload?.content) return;
-
       const response = await fetch('/api/download-docx', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(docxData),
       });
 
       if (!response.ok) throw new Error('Failed to download docx');
@@ -386,7 +354,7 @@ export const DocumentPanel = ({
       const url = URL.createObjectURL(blob);
       const link = window.document.createElement('a');
       link.href = url;
-      link.download = payload.filename;
+      link.download = docxData.filename;
       window.document.body.appendChild(link);
       link.click();
       window.document.body.removeChild(link);
@@ -546,7 +514,7 @@ export const DocumentPanel = ({
                   type="button"
                   title="Скачать протокол (.docx)"
                   aria-label="Скачать протокол (.docx)"
-                  disabled={!hasProtocol || localDoc.isStreaming}
+                  disabled={!hasProtocol || !docxData || localDoc.isStreaming}
                 >
                   <FileText className="size-4" />
                 </Button>
@@ -557,7 +525,7 @@ export const DocumentPanel = ({
                   type="button"
                   title="Скачать ZIP (документ + вложения)"
                   aria-label="Скачать ZIP (документ + вложения)"
-                  disabled={!hasProtocol || localDoc.isStreaming || isBundling}
+                  disabled={!hasProtocol || !docxData || localDoc.isStreaming || isBundling}
                 >
                   <Download className="size-4" />
                 </Button>

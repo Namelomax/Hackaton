@@ -10,7 +10,6 @@ import {
   type Protocol,
 } from '@/lib/schemas/protocol-schema';
 import { generateProtocolDocx } from '@/lib/docx-generator';
-import { parseProtocolFromMarkdown } from '@/lib/protocol-from-markdown';
 import { SGR_DOCUMENT_AGENT_PROMPT } from '@/lib/prompts/sgr-prompts';
 import { ollamaProtocolMaxOutputTokens } from '@/lib/ollama-limits';
 import {
@@ -187,8 +186,7 @@ export async function generateFinalDocument(
     markdownContent = finalMarkdown;
     const docTitle = `ПРОТОКОЛ № ${validated.protocolNumber}`.trim();
     await streamProtocolToPanel(finalMarkdown, writeData, { title: docTitle, chunkDelayMs: 32 });
-    const docxProtocol = parseProtocolFromMarkdown(finalMarkdown) ?? validated;
-    const docxBuffer = await generateProtocolDocx(docxProtocol);
+    const docxBuffer = await generateProtocolDocx(validated);
     writeData({
       type: 'data-docx',
       data: {
@@ -292,8 +290,7 @@ export async function generateFinalDocument(
       writeData({ type: 'data-finish', data: null, transient: true });
     }
 
-    const docxProtocol = parseProtocolFromMarkdown(finalMarkdown) ?? validated;
-    const docxBuffer = await generateProtocolDocx(docxProtocol);
+    const docxBuffer = await generateProtocolDocx(validated);
     const base64Docx = docxBuffer.toString('base64');
     writeData({
       type: 'data-docx',

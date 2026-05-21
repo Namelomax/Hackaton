@@ -76,6 +76,7 @@ export async function generateProtocolDocx(protocol: Protocol): Promise<Buffer> 
     if (q.listened.trim()) paras.push(labeledParagraph('Слушали: ', q.listened));
     if (q.discussed.trim()) paras.push(labeledParagraph('Обсудили: ', q.discussed));
     if (q.decided.trim()) paras.push(labeledParagraph('Решили: ', q.decided));
+    paras.push(new Paragraph({ text: '', spacing: { after: 160 } }));
     return paras;
   });
 
@@ -235,7 +236,7 @@ function createSignatureTable(approval: Protocol['approval']): Table {
   const maxSigs = Math.max(
     approval.customer.signatories.length,
     approval.executor.signatories.length,
-    1,
+    3,
   );
   const rows: TableRow[] = [
     new TableRow({

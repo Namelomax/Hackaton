@@ -16,7 +16,6 @@ import { toast } from 'sonner';
 import { resolveMessagesFromRecord } from '@/lib/conversationMessages';
 import { GuestWelcomeGuide, shouldShowGuestWelcome } from '@/components/onboarding/GuestWelcomeGuide';
 import { packDocumentContentForDb, unpackDocumentContentFromDb } from '@/lib/document/persisted-document';
-import { stripDocumentPanelPlaceholder } from '@/lib/protocol-from-markdown';
 
 /** Не передавать пустой documentContent в PUT — иначе БД перезапишет документ пустой строкой */
 function buildPersistPutBody(
@@ -429,19 +428,10 @@ export default function ChatPage() {
 
       if (normalized.type === 'data-docx') {
         console.log('📦 DOCX data received:', normalized.data);
-        updateEngineDocument((prev: DocumentState) => {
-          const next = { ...prev, docxData: normalized.data };
-          if (conversationId && !String(conversationId).startsWith('local-')) {
-            const text = stripDocumentPanelPlaceholder(prev.content);
-            if (text) {
-              const packed = packDocumentContentForDb(text, normalized.data);
-              setConversationsList((list) =>
-                list.map((c) => (c.id === conversationId ? { ...c, document_content: packed } : c)),
-              );
-            }
-          }
-          return next;
-        });
+        updateEngineDocument((prev: DocumentState) => ({
+          ...prev,
+          docxData: normalized.data,
+        }));
       }
 
     },
@@ -548,24 +538,26 @@ export default function ChatPage() {
   }, [displayMessages]);
   useEffect(() => {
     if (!conversationId) return;
-    const text = stripDocumentPanelPlaceholder(document.content);
-    if (!text) return;
-    const packed = packDocumentContentForDb(text, document.docxData);
     setConversationsList((prev) =>
-      prev.map((c) => (c.id === conversationId ? { ...c, document_content: packed } : c)),
+      prev.map((c) =>
+        c.id === conversationId
+          ? { ...c, document_content: document.content }
+          : c
+      )
     );
-  }, [document.content, document.docxData, conversationId]);
+  }, [document.content, conversationId]);
 
   // Панель справа может показывать другой чат, чем движок; без этого в списке сайдбара не будет актуального document_content.
   useEffect(() => {
     if (!viewConversationId || String(viewConversationId).startsWith('local-')) return;
-    const text = stripDocumentPanelPlaceholder(viewDocument.content);
+    const text = viewDocument.content?.trim() ?? '';
     if (!text) return;
-    const packed = packDocumentContentForDb(text, viewDocument.docxData);
     setConversationsList((prev) =>
-      prev.map((c) => (c.id === viewConversationId ? { ...c, document_content: packed } : c)),
+      prev.map((c) =>
+        c.id === viewConversationId ? { ...c, document_content: viewDocument.content } : c
+      )
     );
-  }, [viewDocument.content, viewDocument.docxData, viewConversationId]);
+  }, [viewDocument.content, viewConversationId]);
 
   const [lastSavedAssistantId, setLastSavedAssistantId] = useState<string | null>(null);
   useEffect(() => {
@@ -592,17 +584,7 @@ export default function ChatPage() {
         const j = await resp.json();
         if (j?.success) {
           setLastSavedAssistantId(last.id);
-          const packed = packDocumentContentForDb(
-            stripDocumentPanelPlaceholder(document.content),
-            document.docxData,
-          );
-          setConversationsList((prev) =>
-            prev.map((conv) =>
-              conv.id === conversationId
-                ? { ...conv, messages: messages, document_content: packed }
-                : conv,
-            ),
-          );
+          setConversationsList(prev => prev.map(conv => conv.id === conversationId ? { ...conv, messages: messages, document_content: document.content } : conv));
         }
       } catch (e) {
         console.warn('Failed to persist conversation after finish', e);
@@ -675,7 +657,7 @@ export default function ChatPage() {
                   title: (activeConv.title && String(activeConv.title).trim().toLowerCase() !== 'чат')
                     ? activeConv.title
                     : (derived || 'Протокол'),
-                  content: stripDocumentPanelPlaceholder(unpacked.markdown),
+                  content: unpacked.markdown,
                   isStreaming: false,
                   ...(unpacked.docxData ? { docxData: unpacked.docxData } : {}),
                 } as DocumentState;
@@ -1028,13 +1010,12 @@ export default function ChatPage() {
       setViewDocument({ ...engineDocumentRef.current });
     } else if (documentContentToUse) {
       const unpacked = unpackDocumentContentFromDb(documentContentToUse);
-      const markdown = stripDocumentPanelPlaceholder(unpacked.markdown);
-      const derived = extractTitleFromMarkdown(markdown);
+      const derived = extractTitleFromMarkdown(unpacked.markdown);
       const newDoc = {
         title: (conversation.title && String(conversation.title).trim().toLowerCase() !== 'чат')
           ? conversation.title
           : (derived || 'Документ'),
-        content: markdown,
+        content: unpacked.markdown,
         isStreaming: false,
         ...(unpacked.docxData ? { docxData: unpacked.docxData } : {}),
       } as DocumentState;
@@ -1067,13 +1048,12 @@ export default function ChatPage() {
       // Keep engine document in sync when engine chat changes.
       if (documentContentToUse) {
         const unpacked = unpackDocumentContentFromDb(documentContentToUse);
-        const markdown = stripDocumentPanelPlaceholder(unpacked.markdown);
-        const derived = extractTitleFromMarkdown(markdown);
+        const derived = extractTitleFromMarkdown(unpacked.markdown);
         const nextDoc = {
           title: (conversation.title && String(conversation.title).trim().toLowerCase() !== 'чат')
             ? conversation.title
             : (derived || 'Документ'),
-          content: markdown,
+          content: unpacked.markdown,
           isStreaming: false,
           ...(unpacked.docxData ? { docxData: unpacked.docxData } : {}),
         } as DocumentState;
