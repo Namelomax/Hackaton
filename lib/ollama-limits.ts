@@ -53,3 +53,13 @@ export function ollamaStreamHeartbeatMs(inlineDoc?: boolean): number {
   if (inlineDoc) return Math.min(base, 5000);
   return base;
 }
+
+/**
+ * Количество параллельных запросов к Ollama.
+ * Читается из OLLAMA_NUM_PARALLEL (задаётся на стороне Ollama-сервера).
+ * Эта функция только для логирования и диагностики — сам Ollama читает переменную напрямую.
+ */
+export function ollamaNumParallel(): number {
+  const n = Number(process.env.OLLAMA_NUM_PARALLEL);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+}

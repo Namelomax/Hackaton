@@ -17,6 +17,7 @@ import {
   ollamaStreamHeartbeatMs,
   pickChatMaxOutputTokens,
 } from "@/lib/ollama-limits";
+import { PROTOCOL_REGULATION } from "@/lib/prompts/regulation";
 
 const PROTOCOL_TOOL_SYSTEM_APPENDIX = `
 
@@ -218,6 +219,11 @@ export async function runChatAgent(
       content: userPrompt,
     });
   }
+
+  messagesWithUserPrompt.push({
+    role: "system",
+    content: PROTOCOL_REGULATION,
+  });
 
   const lastUserMessage = messages[messages.length - 1];
   let lastUserText = "";

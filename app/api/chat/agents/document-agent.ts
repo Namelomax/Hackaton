@@ -11,6 +11,7 @@ import {
 } from '@/lib/schemas/protocol-schema';
 import { generateProtocolDocx } from '@/lib/docx-generator';
 import { SGR_DOCUMENT_AGENT_PROMPT } from '@/lib/prompts/sgr-prompts';
+import { PROTOCOL_REGULATION } from '@/lib/prompts/regulation';
 import { ollamaProtocolMaxOutputTokens } from '@/lib/ollama-limits';
 import {
   buildProtocolDraftFromChat,
@@ -179,7 +180,9 @@ export async function generateFinalDocument(
   }
 
   // Use SGR-enhanced document generation prompt
-  const protocolPrompt = SGR_DOCUMENT_AGENT_PROMPT.replace('{{CONVERSATION_CONTEXT}}', conversationContext)
+  const protocolPrompt = SGR_DOCUMENT_AGENT_PROMPT
+    .replace('{{REGULATION}}', PROTOCOL_REGULATION)
+    .replace('{{CONVERSATION_CONTEXT}}', conversationContext)
     .replace('{{EXISTING_DOCUMENT_CONTEXT}}', existingDocumentContext)
     .replace(
       '{{AGREED_CHAT_CONTEXT}}',
