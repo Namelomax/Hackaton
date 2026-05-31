@@ -16,7 +16,6 @@ import { ollamaProtocolMaxOutputTokens } from '@/lib/ollama-limits';
 import {
   buildProtocolDraftFromChat,
   formatChatDraftForPrompt,
-  mergeProtocolWithChatDraft,
 } from '@/lib/protocol-chat-extract';
 import {
   cleanProtocolText,
@@ -208,7 +207,7 @@ export async function generateFinalDocument(
     let lastTitle = '';
 
     for await (const partial of streamResult.partialObjectStream) {
-      const safeProtocol = mergeProtocolWithChatDraft(coerceProtocolPartial(partial), chatDraft);
+      const safeProtocol = coerceProtocolPartial(partial);
 
       let nextMarkdown = '';
       try {
@@ -253,8 +252,6 @@ export async function generateFinalDocument(
         'Итоговый протокол не прошёл проверку структуры (protocol-schema). Сформируйте документ повторно или дополните расшифровку.',
       );
     }
-
-    validated = mergeProtocolWithChatDraft(validated, chatDraft);
 
     const finalMarkdown = protocolToMarkdown(validated);
     markdownContent = finalMarkdown;

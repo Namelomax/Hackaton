@@ -1,6 +1,6 @@
 import type { Protocol } from '@/lib/schemas/protocol-schema';
 import { isValidParticipantRow } from '@/lib/protocol-markdown-format';
-import { cleanProtocolText, isProtocolBoilerplateLine } from '@/lib/protocol-markdown-format';
+import { isProtocolBoilerplateLine } from '@/lib/protocol-markdown-format';
 
 type ChatTurn = { role: string; text: string };
 
@@ -274,12 +274,12 @@ export function mergeProtocolWithChatDraft(model: Protocol, chatDraft: Partial<P
   return merged;
 }
 
-/** Краткая выжимка для промпта document-agent (приоритет над расшифровкой). */
+/** Краткая выжимка для промпта document-agent (контекст, но НЕ дословно). */
 export function formatChatDraftForPrompt(draft: Partial<Protocol>): string {
   if (!draft || Object.keys(draft).length === 0) return '';
 
   const lines: string[] = [
-    '### СОГЛАСОВАНО С ПОЛЬЗОВАТЕЛЕМ В ЧАТЕ (ответ «Верно») — ОБЯЗАТЕЛЬНО перенеси в JSON дословно',
+    '### ПОДТВЕРЖДЁННЫЕ ПОЛЬЗОВАТЕЛЕМ РАЗДЕЛЫ — используй как основу фактов, но ОБЯЗАТЕЛЬНО переформулируй согласно регламенту (официально-деловой стиль, без жаргона, без разговорной речи)',
   ];
 
   if (draft.meetingContent?.topics?.length) {
