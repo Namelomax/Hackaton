@@ -123,13 +123,34 @@ export const DocumentPanel = ({
   const [isReviewing, setIsReviewing] = useState(false);
   const [isReviewPanelOpen, setIsReviewPanelOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // RAF throttle: limit Streamdown re-renders to one per animation frame during streaming.
+  const displayContentRef = useRef(document.content);
+  const [displayContent, setDisplayContent] = useState(document.content);
+  const rafRef = useRef<number>(0);
+
+  useEffect(() => {
+    displayContentRef.current = document.content;
+    if (!document.isStreaming) {
+      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }
+      setDisplayContent(document.content);
+      return;
+    }
+    if (!rafRef.current) {
+      rafRef.current = requestAnimationFrame(() => {
+        setDisplayContent(displayContentRef.current);
+        rafRef.current = 0;
+      });
+    }
+  }, [document.content, document.isStreaming]);
+
+  useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
 
   useEffect(() => {
     if (!editing) {
       setLocalDoc(document);
       setDraftTitle(document.title);
       setDraftContent(document.content);
-      
+
       // Проверяем наличие .docx данных в документе
       if (document.docxData) {
         setDocxData(document.docxData);
@@ -145,10 +166,10 @@ export const DocumentPanel = ({
   useEffect(() => {
     if (!document.isStreaming || !scrollRef.current) return;
     const el = scrollRef.current;
-    // Only follow the bottom if the user hasn't scrolled up (within 200px of bottom).
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceFromBottom < 200) {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    // Instant scroll (no smooth) — smooth scroll in tight loops constantly restarts
+    // and causes the viewport to jump to position 0. Only scroll if near bottom.
+    if (el.scrollHeight - el.scrollTop - el.clientHeight <= 80) {
+      el.scrollTop = el.scrollHeight;
     }
   }, [document.content, document.isStreaming]);
 
@@ -175,7 +196,7 @@ export const DocumentPanel = ({
     return generic && fromContent ? fromContent : raw || 'Протокол';
   })();
 
-  const viewContent = isEmpty ? 'Здесь будет ваш протокол.' : (editing ? draftContent : document.content);
+  const viewContent = isEmpty ? 'Здесь будет ваш протокол.' : (editing ? draftContent : (displayContent || document.content));
   const formattedContent = useMemo(() => {
     const normalized = normalizeDocumentPanelMarkdown(viewContent);
     return formatDocumentContent(normalized);
