@@ -592,18 +592,20 @@ export const DocumentPanel = ({
             />
           </div>
         ) : (
-          <Response
-            className="document-panel-markdown prose prose-sm max-w-none dark:prose-invert"
-            controls={{ table: false }}
-          >
-            {formattedContent}
+          <div className="relative">
+            <Response
+              className="document-panel-markdown prose prose-sm max-w-none dark:prose-invert"
+              controls={{ table: false }}
+            >
+              {formattedContent}
+            </Response>
             {document.isStreaming && (
               <span
                 aria-hidden="true"
                 className="inline-block w-[2px] h-[1em] bg-current align-middle ml-[1px] animate-[blink_1s_step-end_infinite]"
               />
             )}
-          </Response>
+          </div>
         )}
       </div>
 
