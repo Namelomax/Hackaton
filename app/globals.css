@@ -3,6 +3,11 @@
 @source "../node_modules/streamdown/dist/index.js";
 @custom-variant dark (&:is(.dark *));
 
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

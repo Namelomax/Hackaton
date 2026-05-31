@@ -143,8 +143,12 @@ export const DocumentPanel = ({
   }, [document, editing]);
 
   useEffect(() => {
-    if (document.isStreaming && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (!document.isStreaming || !scrollRef.current) return;
+    const el = scrollRef.current;
+    // Only follow the bottom if the user hasn't scrolled up (within 200px of bottom).
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom < 200) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     }
   }, [document.content, document.isStreaming]);
 
@@ -593,6 +597,12 @@ export const DocumentPanel = ({
             controls={{ table: false }}
           >
             {formattedContent}
+            {document.isStreaming && (
+              <span
+                aria-hidden="true"
+                className="inline-block w-[2px] h-[1em] bg-current align-middle ml-[1px] animate-[blink_1s_step-end_infinite]"
+              />
+            )}
           </Response>
         )}
       </div>

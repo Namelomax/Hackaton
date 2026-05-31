@@ -205,6 +205,10 @@ export async function generateFinalDocument(
 
     let lastMarkdown = '';
     let lastTitle = '';
+    // Track exactly what has been sent to the frontend to compute true deltas.
+    // Clear once upfront so the panel is blank before streaming begins.
+    writeData({ type: 'data-clear', data: null, transient: true });
+    let sentContent = '';
 
     for await (const partial of streamResult.partialObjectStream) {
       const safeProtocol = coerceProtocolPartial(partial);
@@ -226,8 +230,19 @@ export async function generateFinalDocument(
         }
       }
 
-      writeData({ type: 'data-clear', data: null, transient: true });
-      writeData({ type: 'data-documentDelta', data: nextMarkdown, transient: true });
+      // Send only the new delta so the frontend can append without clearing.
+      // If content was reorganized (doesn't start with what we sent), do a full reset.
+      if (nextMarkdown.startsWith(sentContent)) {
+        const delta = nextMarkdown.slice(sentContent.length);
+        if (delta) {
+          writeData({ type: 'data-documentDelta', data: delta, transient: true });
+          sentContent = nextMarkdown;
+        }
+      } else {
+        writeData({ type: 'data-clear', data: null, transient: true });
+        writeData({ type: 'data-documentDelta', data: nextMarkdown, transient: true });
+        sentContent = nextMarkdown;
+      }
 
       lastMarkdown = nextMarkdown;
       markdownContent = nextMarkdown;
@@ -255,8 +270,16 @@ export async function generateFinalDocument(
 
     const finalMarkdown = protocolToMarkdown(validated);
     markdownContent = finalMarkdown;
-    writeData({ type: 'data-clear', data: null, transient: true });
-    writeData({ type: 'data-documentDelta', data: finalMarkdown, transient: true });
+    // Append only what hasn't been sent yet; full reset if final was restructured.
+    if (finalMarkdown !== sentContent) {
+      if (finalMarkdown.startsWith(sentContent)) {
+        const remaining = finalMarkdown.slice(sentContent.length);
+        if (remaining) writeData({ type: 'data-documentDelta', data: remaining, transient: true });
+      } else {
+        writeData({ type: 'data-clear', data: null, transient: true });
+        writeData({ type: 'data-documentDelta', data: finalMarkdown, transient: true });
+      }
+    }
 
     writeData({ type: 'data-finish', data: null, transient: true });
 
