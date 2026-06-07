@@ -1137,6 +1137,7 @@ export default function ChatPage() {
           onEdit={handleDocumentEdit}
           attachments={attachedFiles}
           onSendReview={(text) => setInput(text)}
+          onQuote={(text) => setInput(`> "${text}"\n\n`)}
           chatReviewBody={chatBody}
           collapsed={!isDocumentPanelVisible}
           onToggleCollapsed={() => setIsDocumentPanelVisible((v) => !v)}

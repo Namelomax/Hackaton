@@ -34,6 +34,7 @@ type DocumentPanelProps = {
   onEdit?: (payload: DocumentState) => void;
   attachments?: Attachment[];
   onSendReview?: (text: string) => void;
+  onQuote?: (text: string) => void;
   chatReviewBody?: Pick<ChatTransportBodyExtras, 'chatProvider' | 'chatModel' | 'useThinking'>;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
@@ -108,6 +109,7 @@ export const DocumentPanel = ({
   onEdit,
   attachments,
   onSendReview,
+  onQuote,
   chatReviewBody,
   collapsed,
   onToggleCollapsed,
@@ -127,6 +129,8 @@ export const DocumentPanel = ({
   const displayContentRef = useRef(document.content);
   const [displayContent, setDisplayContent] = useState(document.content);
   const rafRef = useRef<number>(0);
+  // Quote tooltip: shown when user selects text inside the document panel
+  const [quoteTooltip, setQuoteTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
 
   useEffect(() => {
     displayContentRef.current = document.content;
@@ -596,7 +600,39 @@ export const DocumentPanel = ({
         </div>
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-auto p-6">
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-auto p-6"
+        onMouseDown={() => setQuoteTooltip(null)}
+        onMouseUp={() => {
+          if (!onQuote || editing || document.isStreaming) return;
+          const sel = window.getSelection();
+          const text = sel?.toString().trim() ?? '';
+          if (!text || text.length > 600) return;
+          const range = sel!.getRangeAt(0);
+          const rect = range.getBoundingClientRect();
+          setQuoteTooltip({ text, x: rect.left + rect.width / 2, y: rect.top });
+        }}
+      >
+        {quoteTooltip && (
+          <div
+            className="fixed z-50 -translate-x-1/2 -translate-y-full pointer-events-auto"
+            style={{ left: quoteTooltip.x, top: quoteTooltip.y - 6 }}
+          >
+            <Button
+              size="sm"
+              variant="default"
+              className="shadow-lg text-xs h-7 px-3"
+              onClick={() => {
+                onQuote?.(quoteTooltip.text);
+                setQuoteTooltip(null);
+                window.getSelection()?.removeAllRanges();
+              }}
+            >
+              Цитировать в чат
+            </Button>
+          </div>
+        )}
         {editing ? (
           <div className="space-y-3">
             <input
