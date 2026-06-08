@@ -619,6 +619,7 @@ export const DocumentPanel = ({
             className="fixed z-50 -translate-x-1/2 -translate-y-full pointer-events-auto"
             style={{ left: quoteTooltip.x, top: quoteTooltip.y - 6 }}
             onMouseDown={(e) => e.stopPropagation()}
+            onMouseUp={(e) => e.stopPropagation()}
           >
             <Button
               size="sm"

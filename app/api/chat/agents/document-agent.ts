@@ -403,8 +403,11 @@ function protocolToMarkdown(protocol: Protocol): string {
     const t = org.trim();
     if (!t || /^(заказчик|исполнитель)$/i.test(t)) return 'не указано в расшифровке';
     if (/^ООО\s/i.test(t)) return `${t}:`;
-    const inner = t.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').replace(/^ООО\s+/, '').trim();
-    return `ООО «${inner}»:`;
+    // If value was wrapped in ООО «...», keep that form
+    const inner = t.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').trim();
+    if (inner !== t) return `ООО «${inner}»:`;
+    // Non-ООО entity (hackathon teams, consortia, etc.) — use as-is
+    return `${t}:`;
   };
 
   const custSigs = approval.customer.signatories;

@@ -363,8 +363,9 @@ meetingContent.summary — таблица резюме:
 Если данных нет: topics: [{title: «Не указано», listened: «», discussed: «Не указано в расшифровке», decided: «»}], summary: []
 
 ### Раздел 5: Согласовано
-approval.customer: {organization: «ООО...», signatories: [«ФИО»]}
-approval.executor: {organization: «ООО...», signatories: [«ФИО»]}
+approval.customer: {organization: «название организации в любом формате (ООО, АО, Команды хакатона, и т.п.) — берётся из диалога», signatories: [«ФИО»]}
+approval.executor: {organization: «название организации или объединения в любом формате — берётся из диалога, не придумывать», signatories: [«ФИО»]}
+Если организация не указана явно: organization: «»
 Если ФИО не указаны: signatories: []
 
 ## КОНТРОЛЬ КАЧЕСТВА

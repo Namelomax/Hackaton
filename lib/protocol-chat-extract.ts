@@ -116,32 +116,49 @@ function parseApprovalFromBlocks(blocks: string[]): Protocol['approval'] | undef
     let custOrg = '';
     let execOrg = '';
 
+    const extractOrgAndSigs = (sec: string): { org: string; sigs: string[] } => {
+      // 1. Org name: ООО «...» pattern first, then any "Name:" line
+      const oooM = sec.match(/ООО\s*[«"]([^»"]+)[»"]/i);
+      let org = oooM ? `ООО «${oooM[1]}»` : '';
+      if (!org) {
+        for (const line of sec.split('\n')) {
+          const t = stripTimecodes(line.trim());
+          if (t.endsWith(':') && t.length > 3 && t.length < 150 &&
+              !/^(со\s+стороны|подпис)/i.test(t)) {
+            org = t.slice(0, -1).trim();
+            break;
+          }
+        }
+      }
+      // 2. Signatories: person lines only (skip org lines, dashes, ООО headers)
+      const sigs: string[] = [];
+      for (const line of sec.split('\n')) {
+        const clean = stripTimecodes(line.trim());
+        if (!clean || clean.length <= 3) continue;
+        if (/^[-_]{3,}/.test(clean)) continue;
+        if (clean.startsWith('//')) continue;
+        if (/^ООО\s/i.test(clean)) continue;
+        if (clean.endsWith(':')) continue; // org name lines end with colon
+        const sig = clean.replace(/\/+_+.*$/, '').trim();
+        if (sig && sig.length > 2) sigs.push(sig);
+      }
+      return { org, sigs };
+    };
+
     // Ищем блок "Со стороны Заказчика"
     const custSection = block.match(/со\s+стороны\s+заказчика([\s\S]*?)(?=со\s+стороны\s+исполнителя|$)/i);
     if (custSection) {
-      const sec = custSection[1];
-      const orgM = sec.match(/ООО\s*[«"]([^»"]+)[»"]/i);
-      if (orgM) custOrg = orgM[1];
-      for (const line of sec.split('\n')) {
-        const clean = stripTimecodes(line.trim());
-        if (clean && !clean.startsWith('ООО') && !clean.startsWith('//') && clean.length > 3 && !/^[-_]{3,}/.test(clean)) {
-          custSigns.push(clean.replace(/\/+_+.*$/, '').trim());
-        }
-      }
+      const { org, sigs } = extractOrgAndSigs(custSection[1]);
+      custOrg = org;
+      custSigns.push(...sigs);
     }
 
     // Ищем блок "Со стороны Исполнителя"
     const execSection = block.match(/со\s+стороны\s+исполнителя([\s\S]*?)(?=со\s+стороны\s+заказчика|$)/i);
     if (execSection) {
-      const sec = execSection[1];
-      const orgM = sec.match(/ООО\s*[«"]([^»"]+)[»"]/i);
-      if (orgM) execOrg = orgM[1];
-      for (const line of sec.split('\n')) {
-        const clean = stripTimecodes(line.trim());
-        if (clean && !clean.startsWith('ООО') && !clean.startsWith('//') && clean.length > 3 && !/^[-_]{3,}/.test(clean)) {
-          execSigns.push(clean.replace(/\/+_+.*$/, '').trim());
-        }
-      }
+      const { org, sigs } = extractOrgAndSigs(execSection[1]);
+      execOrg = org;
+      execSigns.push(...sigs);
     }
 
     if (custSigns.length > 0 || execSigns.length > 0) {

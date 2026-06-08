@@ -217,7 +217,7 @@ export const PromptInputWrapper = ({
         : [];
       const trimmedText = (message.text || '').trim();
       const textWithQuote = quoteText
-        ? `> "${quoteText}"\n\n${trimmedText}`
+        ? `[Цитата из протокола]: «${quoteText}»\n\n${trimmedText}`
         : trimmedText;
 
       const hasPayload = Boolean(textWithQuote) || preparedFiles.length > 0;
@@ -315,7 +315,10 @@ return (
       {/* Quote attachment */}
       {quoteText && (
         <div className="flex items-start gap-2 rounded-md border-l-2 border-primary bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-          <span className="flex-1 line-clamp-2 italic">«{quoteText}»</span>
+          <div className="flex-1 min-w-0">
+            <div className="text-[10px] font-semibold text-primary mb-0.5 uppercase tracking-wide">Цитата из протокола</div>
+            <span className="line-clamp-2 italic">«{quoteText}»</span>
+          </div>
           <button
             type="button"
             className="ml-1 shrink-0 text-muted-foreground hover:text-foreground leading-none"
