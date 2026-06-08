@@ -8,6 +8,39 @@ import {
   splitDecisionSegments,
 } from './protocol-markdown-format';
 
+/**
+ * Renders a labeled block ("Обсудили:", "Решили:") with multiline support.
+ * Single-line text: label + text in one paragraph.
+ * Multi-line text: label paragraph, then each line as an indented paragraph.
+ */
+function buildMultilineLabeledBlock(label: string, text: string, spacingAfter: number): Paragraph[] {
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length <= 1) {
+    return [
+      new Paragraph({
+        children: [
+          new TextRun({ text: `${label} `, bold: true }),
+          new TextRun(text),
+        ],
+        spacing: { after: spacingAfter },
+      }),
+    ];
+  }
+  return [
+    new Paragraph({
+      children: [new TextRun({ text: label, bold: true })],
+      spacing: { after: 60 },
+    }),
+    ...lines.map((line, idx) =>
+      new Paragraph({
+        children: [new TextRun(`• ${line}`)],
+        indent: { left: 360 },
+        spacing: { after: idx === lines.length - 1 ? spacingAfter : 60 },
+      }),
+    ),
+  ];
+}
+
 function normalizeDocxOrgName(org: string): string {
   return org.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').replace(/^ООО\s+/, '').trim();
 }
@@ -197,26 +230,10 @@ export async function generateProtocolDocx(protocol: Protocol): Promise<Buffer> 
                 ]
               : []),
             ...(topic.discussed
-              ? [
-                  new Paragraph({
-                    children: [
-                      new TextRun({ text: 'Обсудили: ', bold: true }),
-                      new TextRun(cleanProtocolText(topic.discussed)),
-                    ],
-                    spacing: { after: 100 },
-                  }),
-                ]
+              ? buildMultilineLabeledBlock('Обсудили:', cleanProtocolText(topic.discussed), 100)
               : []),
             ...(topic.decided
-              ? [
-                  new Paragraph({
-                    children: [
-                      new TextRun({ text: 'Решили: ', bold: true }),
-                      new TextRun(cleanProtocolText(topic.decided)),
-                    ],
-                    spacing: { after: 200 },
-                  }),
-                ]
+              ? buildMultilineLabeledBlock('Решили:', cleanProtocolText(topic.decided), 200)
               : []),
           ]),
 

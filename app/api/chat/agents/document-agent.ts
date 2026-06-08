@@ -310,6 +310,13 @@ function isValidOrgDisplayName(name: string): boolean {
   return true;
 }
 
+/** Converts a multiline string to a markdown bullet list. Single-line text is returned as-is. */
+function formatMultilineField(text: string): string {
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length <= 1) return text;
+  return lines.map((l) => `- ${l}`).join('\n');
+}
+
 function protocolToMarkdown(protocol: Protocol): string {
   const normalizedNumber = String(protocol.protocolNumber || '').trim().startsWith('№')
     ? String(protocol.protocolNumber).trim()
@@ -370,8 +377,8 @@ function protocolToMarkdown(protocol: Protocol): string {
     const discussed = cleanProtocolText(topic.discussed);
     const decided = cleanProtocolText(topic.decided);
     if (listened) md += `**Слушали:** ${listened}\n\n`;
-    if (discussed) md += `**Обсудили:** ${discussed}\n\n`;
-    if (decided) md += `**Решили:** ${decided}\n\n`;
+    if (discussed) md += `**Обсудили:**\n\n${formatMultilineField(discussed)}\n\n`;
+    if (decided) md += `**Решили:**\n\n${formatMultilineField(decided)}\n\n`;
   });
 
   if (protocol.meetingContent.summary.length > 0) {
