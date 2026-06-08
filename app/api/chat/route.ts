@@ -891,6 +891,17 @@ export async function POST(req: Request) {
     systemPrompt += PROTOCOL_CHAT_TIMECODE_APPENDIX;
   }
 
+  // Inject current date + day-of-week so the LLM can resolve relative dates ("до конца недели" etc.)
+  {
+    const DAY_NAMES_RU = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
+    const now = new Date();
+    const dd = String(now.getDate()).padStart(2, '0');
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const yyyy = now.getFullYear();
+    const dayName = DAY_NAMES_RU[now.getDay()];
+    systemPrompt += `\n\n[КОНТЕКСТ ДАТЫ: Текущая дата — ${dd}.${mm}.${yyyy} (${dayName}). Используй для вычисления абсолютных дат из относительных выражений. Если выражение требует знания дня недели даты встречи и ты не можешь вычислить точную дату — задай уточняющий вопрос пользователю.]`;
+  }
+
   // messages-prepared verbose log removed
 
   // 5. Create Agent Context - with safety checks

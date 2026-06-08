@@ -66,16 +66,22 @@ export function splitDecisionSegments(raw: string): string[] {
   return s.split(/\n+/).flatMap((line) => splitLineByDecisionLabels(line));
 }
 
-/** Ячейка «Принятые решения» в markdown-таблице: переносы через &lt;br&gt;, жирные метки через **. */
+/** Строка договора в шапке документа. Пустые/плейсхолдерные поля опускаются. */
 export function formatContractBlock(protocol: {
   contractNumber?: string;
   contractDate?: string;
 }): string {
-  const num = prepareDecisionPlainText(protocol.contractNumber ?? '').trim();
-  const date = prepareDecisionPlainText(protocol.contractDate ?? '').trim();
-  const numText = num && !/не\s+указан/i.test(num) ? num : 'не указано в расшифровке';
-  const dateText = date && !/не\s+указан/i.test(date) ? date : 'не указано в расшифровке';
-  return `Договор №${numText} от ${dateText} г.`;
+  // Strip leading № to avoid "№№2"
+  const rawNum = prepareDecisionPlainText(protocol.contractNumber ?? '').trim().replace(/^№\s*/i, '');
+  const rawDate = prepareDecisionPlainText(protocol.contractDate ?? '').trim();
+
+  const hasNum = rawNum.length > 0 && !/не\s+указан/i.test(rawNum);
+  const hasDate = rawDate.length > 0 && !/не\s+указан/i.test(rawDate);
+
+  if (!hasNum && !hasDate) return 'Договор: не указан в расшифровке';
+  if (hasNum && hasDate) return `Договор №${rawNum} от ${rawDate} г.`;
+  if (hasNum) return `Договор №${rawNum}`;
+  return `Договор от ${rawDate} г.`;
 }
 
 function isGenericApprovalOrg(name: string): boolean {
