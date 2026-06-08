@@ -761,6 +761,18 @@ export default function ChatPage() {
         const nextConv = updated[0];
         setViewConversationId(nextConv.id ?? null);
         if (nextConv?.id) localStorage.setItem('activeConversationId', nextConv.id);
+        // Sync right panel to next conversation's document (or clear it)
+        const nextDocContent = stripDocxMeta(nextConv?.document_content || '');
+        if (nextDocContent) {
+          const derived = extractTitleFromMarkdown(nextDocContent);
+          setViewDocument({
+            title: nextConv.title || derived || 'Документ',
+            content: nextDocContent,
+            isStreaming: false,
+          });
+        } else {
+          setViewDocument({ title: '', content: '', isStreaming: false });
+        }
       } else {
         setViewConversationId(null);
         localStorage.removeItem('activeConversationId');
@@ -779,6 +791,18 @@ export default function ChatPage() {
         }
         if (nextConv?.id) {
           localStorage.setItem('activeConversationId', nextConv.id);
+        }
+        // Sync engine document to next conversation's document (or clear it)
+        const nextDocContent = stripDocxMeta(nextConv?.document_content || '');
+        if (nextDocContent) {
+          const derived = extractTitleFromMarkdown(nextDocContent);
+          const nextDoc = { title: nextConv.title || derived || 'Документ', content: nextDocContent, isStreaming: false } as DocumentState;
+          setDocument(nextDoc);
+          // Only overwrite view panel if it wasn't already handled by the viewConversationId block above
+          if (viewConversationId !== convId) setViewDocument(nextDoc);
+        } else {
+          setDocument({ title: '', content: '', isStreaming: false });
+          if (viewConversationId !== convId) setViewDocument({ title: '', content: '', isStreaming: false });
         }
       } else {
         setConversationId(null);
