@@ -52,6 +52,7 @@ export default function ChatPage() {
   const bootCompletedRef = useRef(false);
 
   const [input, setInput] = useState('');
+  const [quoteText, setQuoteText] = useState('');
   const [authUser, setAuthUser] = useState<{ id: string; username: string } | null>(null);
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
@@ -1132,6 +1133,8 @@ export default function ChatPage() {
                 className="w-full"
                 input={input}
                 setInput={setInput}
+                quoteText={quoteText}
+                setQuoteText={setQuoteText}
                 status={status}
                 authUser={authUser}
                 conversationId={conversationId}
@@ -1161,7 +1164,7 @@ export default function ChatPage() {
           onEdit={handleDocumentEdit}
           attachments={attachedFiles}
           onSendReview={(text) => setInput(text)}
-          onQuote={(text) => setInput(`> "${text}"\n\n`)}
+          onQuote={(text) => setQuoteText(text)}
           chatReviewBody={chatBody}
           collapsed={!isDocumentPanelVisible}
           onToggleCollapsed={() => setIsDocumentPanelVisible((v) => !v)}

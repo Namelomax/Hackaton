@@ -111,8 +111,12 @@ export function resolveApprovalForDocument(protocol: {
   };
   const pickSigs = (approvalSigs: string[], people: Array<{ fullName: string }>) => {
     const fromApproval = approvalSigs.map((s) => s.trim()).filter(Boolean);
+    const fromParticipants = people.map((p) => p.fullName.trim()).filter(Boolean);
+    // If participants table has more people than AI-generated signatories, use all participants
+    // (prevents the model from accidentally dropping team members)
+    if (fromParticipants.length > fromApproval.length) return fromParticipants;
     if (fromApproval.length > 0) return fromApproval;
-    return people.map((p) => p.fullName.trim()).filter(Boolean);
+    return fromParticipants;
   };
 
   return {

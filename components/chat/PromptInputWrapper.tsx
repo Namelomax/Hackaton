@@ -108,6 +108,8 @@ const ensureConversationCreated = async (
 type PromptInputWrapperProps = {
   input: string;
   setInput: Dispatch<SetStateAction<string>>;
+  quoteText?: string;
+  setQuoteText?: (text: string) => void;
   status: string;
   authUser: { id: string; username: string } | null;
   conversationId: string | null;
@@ -128,6 +130,8 @@ type PromptInputWrapperProps = {
 export const PromptInputWrapper = ({
   input,
   setInput,
+  quoteText,
+  setQuoteText,
   status,
   authUser,
   conversationId,
@@ -212,8 +216,11 @@ export const PromptInputWrapper = ({
         ? (message.files as FileUIPart[])
         : [];
       const trimmedText = (message.text || '').trim();
+      const textWithQuote = quoteText
+        ? `> "${quoteText}"\n\n${trimmedText}`
+        : trimmedText;
 
-      const hasPayload = Boolean(trimmedText) || preparedFiles.length > 0;
+      const hasPayload = Boolean(textWithQuote) || preparedFiles.length > 0;
       if (!hasPayload) return;
 
       // Сначала фиксируем id диалога (в т.ч. local- → серверный), чтобы индекс RAG совпадал с /query.
@@ -266,7 +273,7 @@ export const PromptInputWrapper = ({
       sendMessage(
         {
           id: clientMessageId,
-          text: trimmedText,
+          text: textWithQuote,
           files: finalFiles,
         } as any,
         {
@@ -280,6 +287,7 @@ export const PromptInputWrapper = ({
       );
 
       setInput('');
+      setQuoteText?.('');
     } finally {
       preSendAbortRef.current = null;
       setIsSubmitting(false);
@@ -304,6 +312,20 @@ return (
       multiple
       globalDrop
     >
+      {/* Quote attachment */}
+      {quoteText && (
+        <div className="flex items-start gap-2 rounded-md border-l-2 border-primary bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+          <span className="flex-1 line-clamp-2 italic">«{quoteText}»</span>
+          <button
+            type="button"
+            className="ml-1 shrink-0 text-muted-foreground hover:text-foreground leading-none"
+            onClick={() => setQuoteText?.('')}
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {/* Attachments*/}
       <AttachmentsSection />
 
