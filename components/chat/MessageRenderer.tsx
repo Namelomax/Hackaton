@@ -195,8 +195,8 @@ function renderUserTextWithCitation(text: string, key: string, renderText: (t: s
   return (
     <div key={key} className="flex flex-col gap-1.5">
       <div className="border-l-2 border-white/50 bg-white/10 rounded-r px-2 py-1">
-        <div className="text-[9px] font-semibold uppercase tracking-wide text-white/60 mb-0.5">Цитата из протокола</div>
-        <div className="text-xs italic text-white/80 line-clamp-3">«{cited}»</div>
+        <div className="text-[9px] font-semibold uppercase tracking-wide text-white/40 mb-0.5">Цитата из протокола</div>
+        <div className="text-xs italic text-white/50 line-clamp-3">«{cited}»</div>
       </div>
       {rest.trim() && renderText(rest.trim(), `${key}-rest`)}
     </div>
