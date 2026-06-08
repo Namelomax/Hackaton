@@ -186,6 +186,23 @@ const renderAttachment = (att: Attachment, index: number) => {
 };
 
 
+const CITATION_RX = /^\[Цитата из протокола\]:\s*«([\s\S]*?)»\s*([\s\S]*)$/;
+
+function renderUserTextWithCitation(text: string, key: string, renderText: (t: string, k: string) => React.ReactNode) {
+  const m = text.match(CITATION_RX);
+  if (!m) return renderText(text, key);
+  const [, cited, rest] = m;
+  return (
+    <div key={key} className="flex flex-col gap-1.5">
+      <div className="border-l-2 border-white/50 bg-white/10 rounded-r px-2 py-1">
+        <div className="text-[9px] font-semibold uppercase tracking-wide text-white/60 mb-0.5">Цитата из протокола</div>
+        <div className="text-xs italic text-white/80 line-clamp-3">«{cited}»</div>
+      </div>
+      {rest.trim() && renderText(rest.trim(), `${key}-rest`)}
+    </div>
+  );
+}
+
 export const MessageRenderer = ({
   message,
   isLastMessage,
@@ -328,7 +345,7 @@ export const MessageRenderer = ({
           try {
             const parsed = JSON.parse(part.text);
             if (parsed.text && !parsed.document && !parsed.results) {
-              return renderTextResponse(parsed.text, `${message.id}-text-${index}`);
+              return renderUserTextWithCitation(parsed.text, `${message.id}-text-${index}`, renderTextResponse);
             }
             if (parsed.results) {
               return (
@@ -346,9 +363,9 @@ export const MessageRenderer = ({
                 </div>
               );
             }
-            return renderTextResponse(part.text, `${message.id}-text-${index}`);
+            return renderUserTextWithCitation(part.text, `${message.id}-text-${index}`, renderTextResponse);
           } catch {
-            return renderTextResponse(part.text, `${message.id}-text-${index}`);
+            return renderUserTextWithCitation(part.text, `${message.id}-text-${index}`, renderTextResponse);
           }
         })}
 
