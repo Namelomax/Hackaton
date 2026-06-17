@@ -14,6 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Скрипты миграции/опса (явный COPY — чтобы не потерялись при сборке со старым кэшем слоя COPY .)
+COPY scripts/ ./scripts/
+RUN chmod +x ./scripts/*.sh 2>/dev/null || true
+
 COPY . .
 
 RUN mkdir -p /app/uploads /app/output /app/rag_storage

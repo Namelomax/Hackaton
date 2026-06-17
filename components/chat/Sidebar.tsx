@@ -1,6 +1,7 @@
 'use client';
 
 import { ChevronLeft, ChevronRight, Pencil, Trash2 } from 'lucide-react';
+import { formatChatListDate, getChatSidebarLabel } from '@/lib/chat-display';
 
 type Conversation = {
   id: string;
@@ -36,7 +37,7 @@ export const Sidebar = ({
       className={
         `border-r flex flex-col shrink-0 bg-muted/10 overflow-hidden ` +
         `transition-[width] duration-200 ease-in-out ` +
-        (collapsed ? 'w-10' : 'w-42')
+        (collapsed ? 'w-10' : 'w-56')
       }
     >
       <div className="relative p-2 flex items-center justify-between border-b">
@@ -96,8 +97,8 @@ export const Sidebar = ({
               }`}
               onClick={() => onSelect(conversation)}
             >
-              <div className="flex items-start gap-1" title={conversation.title || 'Чат'}>
-                <span className="flex-1 truncate">{conversation.title || 'Чат'}</span>
+              <div className="flex items-start gap-1" title={getChatSidebarLabel(conversation.title)}>
+                <span className="flex-1 truncate">{getChatSidebarLabel(conversation.title)}</span>
                 <div className="flex flex-col gap-1">
                   <button
                     className="shrink-0 p-0.5 rounded hover:bg-muted"
@@ -122,7 +123,7 @@ export const Sidebar = ({
                 </div>
               </div>
               <div className="text-[10px] opacity-60 truncate">
-                {conversation.created?.slice(0, 19)}
+                {formatChatListDate(conversation.created)}
               </div>
             </li>
           ))}

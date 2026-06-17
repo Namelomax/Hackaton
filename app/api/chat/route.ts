@@ -1,13 +1,20 @@
-import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { createOpenAI } from '@ai-sdk/openai';
 import {
   convertToModelMessages,
 } from 'ai';
 import crypto from 'crypto';
 import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation } from '@/lib/getPromt';
-import { parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
+import { resolveChatLanguageModel } from '@/lib/resolve-chat-model';
+import { PROTOCOL_CHAT_TIMECODE_APPENDIX } from '@/lib/protocol-timecodes';
 import { fetchRagSnippet } from '@/lib/rag-client';
-import { hydratedChatTranscriptForRag, stripTextForRagQuery } from '@/lib/rag-search-query';
+import {
+  buildUserProvidedSection1Appendix,
+  userProvidedSection1InTranscript,
+} from '@/lib/protocol-user-facts';
+import {
+  fallbackRagQuestion,
+  hydratedChatTranscriptForRag,
+  stripTextForRagQuery,
+} from '@/lib/rag-search-query';
 import { runMainAgent } from './agents/main-agent';
 import {
   generateRagSearchQueryLine,
@@ -21,54 +28,6 @@ export const maxDuration = 900;
 export const runtime = 'nodejs';
 
 let cachedPrompt: string | null = null;
-
-function createOpenRouterInstance() {
-  const apiKey = process.env.OPENROUTER_API_KEY ?? '';
-  return createOpenRouter({
-    apiKey,
-    baseURL: 'https://openrouter.ai/api/v1',
-    compatibility: 'strict',
-    headers: {
-      'X-Title': 'AISDK',
-    },
-  });
-}
-
-function resolveOpenRouterSlug(requestedRaw: string): string {
-  const fallback = process.env.OPENROUTER_MODEL_DEFAULT || 'nvidia/nemotron-3-super-120b-a12b:free';
-  const requested = requestedRaw.trim();
-  const allowedCsv = process.env.ALLOWED_OPENROUTER_MODELS?.trim();
-  if (!allowedCsv) {
-    if (requested && /^[\w\-./:]+$/.test(requested) && requested.length <= 160) return requested;
-    return fallback;
-  }
-  const allowed = allowedCsv.split(',').map((s) => s.trim()).filter(Boolean);
-  if (allowed.includes(requested)) return requested;
-  return allowed.includes(fallback) ? fallback : allowed[0]!;
-}
-
-function resolveLanguageModel(body: Record<string, unknown>) {
-  const provider = body.chatProvider === 'ollama' ? 'ollama' : 'openrouter';
-
-  if (provider === 'ollama') {
-    const allowed = parseAllowedOllamaModelsFromServerEnv(process.env.ALLOWED_OLLAMA_MODELS);
-    const requested = typeof body.chatModel === 'string' ? body.chatModel.trim() : '';
-    const modelId = allowed.includes(requested) ? requested : allowed[0]!;
-    const baseURL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434/v1';
-    const openai = createOpenAI({
-      baseURL,
-      apiKey: process.env.OLLAMA_API_KEY || 'ollama',
-    });
-    return openai.chat(modelId);
-  }
-
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    throw new Error('OPENROUTER_API_KEY is not set');
-  }
-  const slug = resolveOpenRouterSlug(typeof body.chatModel === 'string' ? body.chatModel : '');
-  return createOpenRouterInstance().chat(slug);
-}
 
 function buildSystemPrompt(
   userPrompt: string,
@@ -102,6 +61,7 @@ ${hiddenDocsContext}
         ? '\n4. Режим RAG: ниже могут быть только имена файлов без полного текста — опирайся на блок RAG выше.'
         : ''
     }
+${ragOmitsAttachmentBodies ? '5.' : '4.'} Если ниже полная расшифровка (строки «Спикер N:» и «ЧЧ:ММ:СС — текст») — диалог уже начался: не представляйся; сразу раздел 1; в чате у каждого факта — [ТС: ЧЧ:ММ:СС] из соответствующей строки расшифровки.
 ===== КОНЕЦ ВЛОЖЕНИЙ =====`;
 }
 
@@ -137,7 +97,21 @@ function collectUserAttachmentFilenames(msg: any): string[] {
  * Если пользователь прислал вложение(я) почти без текста — первый ответ без «Здравствуйте»,
  * сразу с подтверждением по шаблону из продукта.
  */
-function buildFileOnlyTurnAppendix(lastUserMessage: any): string {
+/** Полная расшифровка уже в системном блоке (не режим «только RAG»). */
+function hasSubstantialInlineTranscript(
+  hiddenDocsFull: string[],
+  hiddenDocsContext: string,
+): boolean {
+  const fullChars = hiddenDocsFull.reduce((s, d) => s + d.length, 0);
+  if (fullChars >= 4000) return true;
+  return hiddenDocsContext.trim().length >= 8000;
+}
+
+function buildFileOnlyTurnAppendix(
+  lastUserMessage: any,
+  options?: { protocolTranscriptReady?: boolean },
+): string {
+  if (options?.protocolTranscriptReady) return '';
   if (!lastUserMessage || lastUserMessage.role !== 'user') return '';
   const filenames = collectUserAttachmentFilenames(lastUserMessage);
   if (filenames.length === 0) return '';
@@ -389,6 +363,23 @@ async function extractPptxTextFromAttachment(att: any): Promise<string | null> {
   return bestEffortBinaryText(buf);
 }
 
+/** Дефолт 128k (как у qwen3.5:9b на ollama.com). */
+const DEFAULT_OLLAMA_CONTEXT_TOKENS = 131072;
+
+/** qwen3:14b в GGUF часто n_ctx_train≈40960 — Ollama не поднимет 128k. */
+function effectiveOllamaContextTokens(modelId: string): number {
+  const configured = Number(
+    process.env.OLLAMA_CONTEXT_LENGTH ?? DEFAULT_OLLAMA_CONTEXT_TOKENS,
+  );
+  if (!modelId) return configured;
+  const id = modelId.toLowerCase();
+  if (id.includes('qwen3.5:9b') || id.includes('qwen3.5-9b')) return configured;
+  if (id.includes('14b') && id.includes('qwen')) {
+    return Math.min(configured, 40960);
+  }
+  return configured;
+}
+
 // === MAIN HANDLER ===
 
 export async function POST(req: Request) {
@@ -626,22 +617,32 @@ export async function POST(req: Request) {
   // 4. Prepare Context for Agents
   const userPrompt = await resolveSystemPrompt(userId, selectedPromptId);
 
-  /** Полное тело вложения только в последнем user-сообщении с файлами (без RAG), чтобы не раздувать контекст. */
+  /**
+   * Полное тело вложения — только если сообщение с файлом находится в последних
+   * MAX_DOC_FRESHNESS_MSGS сообщениях. Иначе — краткая сноска «файл получен».
+   * Это предотвращает переполнение контекста при длинных диалогах с большими документами.
+   */
+  // 0 = документ сразу идёт в системный блок (не в историю сообщений).
+  // Это оптимально: история всегда компактна, документ всегда доступен модели.
+  const MAX_DOC_FRESHNESS_MSGS = 0;
   let lastUserWithAttachmentsIndex = -1;
   if (!ragOmitsAttachmentBodies) {
+    const cutoff = normalizedMessagesNonEmpty.length - MAX_DOC_FRESHNESS_MSGS;
     for (let i = normalizedMessagesNonEmpty.length - 1; i >= 0; i--) {
       const m = normalizedMessagesNonEmpty[i];
       if (m?.role !== 'user') continue;
       const ht = Array.isArray((m as any)?.metadata?.hiddenTexts) ? (m as any).metadata.hiddenTexts : [];
       if (ht.length > 0) {
-        lastUserWithAttachmentsIndex = i;
+        // Если вложение слишком старое — не включать полный текст (только ссылку)
+        lastUserWithAttachmentsIndex = i >= cutoff ? i : -1;
         break;
       }
     }
   }
 
   // Prepare hidden docs context and enrich messages with file content
-  const hiddenDocEntries: string[] = [];
+  const hiddenDocEntries: string[] = [];  // краткие сноски для системного блока
+  const hiddenDocsFull: string[] = [];    // полные тексты «устаревших» вложений для системного блока
   const messagesWithHidden: any[] = [];
 
   normalizedMessagesNonEmpty.forEach((msg, msgIdx) => {
@@ -666,7 +667,17 @@ export async function POST(req: Request) {
           `\n\n[Вложение «${attName || 'документ'}» — только имя; полный текст в промпт не передаётся (включён контекст из RAG).]`
         );
       } else {
-        fileContents.push(`\n\n---\nВложенный файл: ${attName || 'документ'}\n${cleaned}\n---`);
+        const isOldAttachment = msgIdx < (normalizedMessagesNonEmpty.length - MAX_DOC_FRESHNESS_MSGS);
+        const docForContext = cleaned;
+        if (isOldAttachment) {
+          // Документ слишком старый для истории — сохраним текст в системный контекст
+          hiddenDocsFull.push(`\n\n---\nВложенный файл: ${attName || 'документ'}\n${docForContext}\n---`);
+          fileContents.push(
+            `\n\n[Файл «${attName || 'документ'}» (${cleaned.length} симв.) приложен ранее; текст передан в системный блок «ВЛОЖЕНИЯ».]`
+          );
+        } else {
+          fileContents.push(`\n\n---\nВложенный файл: ${attName || 'документ'}\n${docForContext}\n---`);
+        }
       }
     });
 
@@ -696,16 +707,98 @@ export async function POST(req: Request) {
         parts: [{ type: 'text' as const, text: enrichedContent }],
       });
     } else {
-      messagesWithHidden.push(msg);
+      // Qwen3 best practice: удалять <think>...</think> из истории ассистента.
+      // Теги занимают сотни токенов и ухудшают качество следующего ответа.
+      if (msg.role === 'assistant' && typeof msg.content === 'string' && msg.content.includes('<think>')) {
+        const stripped = msg.content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        messagesWithHidden.push({
+          ...msg,
+          content: stripped,
+          parts: [{ type: 'text' as const, text: stripped }],
+        });
+      } else {
+        messagesWithHidden.push(msg);
+      }
     }
   });
 
-  const hiddenDocsContext = hiddenDocEntries.length
-    ? hiddenDocEntries.join('\n\n').slice(0, 4000)
-    : '';
+  const chatModelId =
+    typeof body.chatModel === 'string' ? body.chatModel.trim() : '';
+  const contextTokensLimit = effectiveOllamaContextTokens(chatModelId);
+  // До ~55% окна под полный текст расшифровки в системном блоке (рус. ≈2.34 симв/токен).
+  const maxHiddenDocsChars = Math.min(
+    320_000,
+    Math.floor(contextTokensLimit * 2.34 * 0.55),
+  );
 
-  const ragRetrievalEnabled =
+  // Системный блок: краткие сноски + полные тексты «устаревших» вложений (перемещённых из истории)
+  const hiddenDocsContext = [
+    ...hiddenDocEntries.map(e => e.slice(0, 1200)),
+    ...hiddenDocsFull,
+  ].join('\n\n').slice(0, maxHiddenDocsChars);
+
+  /**
+   * Динамическая обрезка истории — гарантирует, что диалог любой длины не вызовет переполнения.
+   *
+   * Алгоритм:
+   *  1. Оцениваем сколько токенов займут системный промт (с документом) + текущая история.
+   *  2. Если сумма > бюджет, удаляем самые старые сообщения (не первое — оно чаще всего несёт вложение).
+   *  3. Добавляем системное уведомление об усечении, чтобы модель знала о пропущенном контексте.
+   *
+   * Документ ВСЕГДА остаётся в системном блоке — не обрезается.
+   */
+  const CONTEXT_TOKENS_LIMIT = contextTokensLimit;
+  const CHARS_PER_TOKEN = 2.34; // для русского текста; EN ≈ 4
+  const RESERVE_RESPONSE_TOKENS = 6000;  // минимальный запас для ответа модели
+  const RESERVE_SYSTEM_BASE_TOKENS = 3000; // системный промт без документа
+  const docCharsTotal = hiddenDocsContext.length;
+  const docTokensEstimate = Math.ceil(docCharsTotal / CHARS_PER_TOKEN);
+  const availableForHistoryTokens =
+    CONTEXT_TOKENS_LIMIT - RESERVE_RESPONSE_TOKENS - RESERVE_SYSTEM_BASE_TOKENS - docTokensEstimate;
+  const availableForHistoryChars = Math.max(availableForHistoryTokens * CHARS_PER_TOKEN, 8000);
+
+  function msgChars(m: any): number {
+    if (typeof m?.content === 'string') return m.content.length;
+    return JSON.stringify(m?.content ?? '').length;
+  }
+
+  let finalMessages = messagesWithHidden;
+  const totalHistoryChars = finalMessages.reduce((s, m) => s + msgChars(m), 0);
+
+  if (totalHistoryChars > availableForHistoryChars && finalMessages.length > 2) {
+    // Удаляем сообщения с начала, пока не влезем в бюджет (минимум оставляем 2 сообщения)
+    let trimCount = 0;
+    while (
+      finalMessages.length > 2 &&
+      finalMessages.reduce((s, m) => s + msgChars(m), 0) > availableForHistoryChars
+    ) {
+      finalMessages = finalMessages.slice(1);
+      trimCount++;
+    }
+    // Вставляем в начало системное уведомление об усечении
+    const notice = {
+      role: 'system' as const,
+      content: `[Контекст: ${trimCount} ранних сообщений диалога удалены для предотвращения переполнения окна. Документ и текущий раздел протокола сохранены в системном блоке.]`,
+      id: '__trim_notice__',
+      parts: [{ type: 'text' as const, text: '' }],
+    };
+    finalMessages = [notice, ...finalMessages];
+    const usedChars = finalMessages.reduce((s, m) => s + msgChars(m), 0);
+    console.log(`✂️  history trimmed: removed ${trimCount} msgs, doc≈${docTokensEstimate}tok, history≈${Math.round(usedChars/CHARS_PER_TOKEN)}tok, budget=${availableForHistoryTokens}tok`);
+  }
+
+  const hasInlineTranscript =
+    !ragOmitsAttachmentBodies &&
+    hasSubstantialInlineTranscript(hiddenDocsFull, hiddenDocsContext);
+
+  let ragRetrievalEnabled =
     Boolean(useRagContext) && Boolean(process.env.RAG_API_URL?.trim());
+  if (ragRetrievalEnabled && hasInlineTranscript) {
+    console.log(
+      '📎 RAG tool off: full transcript already in system block (inline attachment)',
+    );
+    ragRetrievalEnabled = false;
+  }
   const ragModeStr =
     typeof ragMode === 'string' && ['hybrid', 'local', 'global'].includes(ragMode)
       ? ragMode
@@ -713,7 +806,11 @@ export async function POST(req: Request) {
 
   let languageModel;
   try {
-    languageModel = resolveLanguageModel(body as Record<string, unknown>);
+    languageModel = resolveChatLanguageModel({
+      chatProvider: (body as Record<string, unknown>).chatProvider as string | undefined,
+      chatModel: (body as Record<string, unknown>).chatModel as string | undefined,
+      useThinking: Boolean((body as Record<string, unknown>).useThinking),
+    });
   } catch (err) {
     console.error('Failed to resolve language model:', err);
     return new Response(
@@ -724,21 +821,9 @@ export async function POST(req: Request) {
     );
   }
 
-  /** Fallback для RAG, если генерация поисковой строки через LLM недоступна. */
-  let ragAutoQuery = '';
-  for (let i = messagesWithHidden.length - 1; i >= 0 && i >= messagesWithHidden.length - 8; i--) {
-    const m = messagesWithHidden[i];
-    if (m?.role !== 'user') continue;
-    const t = stripTextForRagQuery(
-      typeof m?.content === 'string' ? m.content.trim() : '',
-    );
-    if (t) {
-      ragAutoQuery = ragAutoQuery ? `${t}\n\n${ragAutoQuery}` : t;
-    }
-  }
-  ragAutoQuery = ragAutoQuery.replace(/\s+/g, ' ').trim().slice(0, 6000);
-
-  const ragTranscript = hydratedChatTranscriptForRag(messagesWithHidden, 12000);
+  const ragTranscript = hydratedChatTranscriptForRag(finalMessages, 12000);
+  /** Fallback: один вопрос по следующему разделу, не «суп» из всех реплик user. */
+  const ragAutoQueryFallback = fallbackRagQuestion();
 
   /** Не подставлять в системный промпт «пустой» RAG — модель начинает вести себя как без фактов из индекса. */
   const minRagContextChars = 80;
@@ -758,11 +843,14 @@ export async function POST(req: Request) {
         console.warn('📚 RAG query-line generation failed, using fallback text:', genErr);
       }
       const snippetQuery = stripTextForRagQuery(
-        queryLine.trim() ||
-          ragAutoQuery.trim() ||
-          ragTranscript.replace(/\s+/g, ' ').trim().slice(0, 6000),
+        queryLine.trim() || ragAutoQueryFallback,
       );
       if (snippetQuery) {
+        if (!conversationId) {
+          console.warn(
+            '📚 RAG auto: conversationId missing — запрос уйдёт в глобальный индекс (conv=default), не в индекс диалога',
+          );
+        }
         const rawSnippet = await fetchRagSnippet(snippetQuery, ragModeStr, conversationId);
         const trimmedSnippet = rawSnippet?.trim() ?? '';
         if (trimmedSnippet.length >= minRagContextChars) {
@@ -783,12 +871,35 @@ export async function POST(req: Request) {
   );
 
   const lastTurn =
-    messagesWithHidden.length > 0 ? messagesWithHidden[messagesWithHidden.length - 1] : null;
-  systemPrompt += buildFileOnlyTurnAppendix(lastTurn);
+    finalMessages.length > 0 ? finalMessages[finalMessages.length - 1] : null;
+  systemPrompt += buildFileOnlyTurnAppendix(lastTurn, {
+    protocolTranscriptReady: hasInlineTranscript,
+  });
+
+  const userSection1 = userProvidedSection1InTranscript(ragTranscript);
+  if (userSection1) {
+    systemPrompt += buildUserProvidedSection1Appendix(userSection1, {
+      ragToolEnabled: ragRetrievalEnabled,
+    });
+  }
 
   if (ragRetrievalEnabled) {
     systemPrompt += RAG_TOOL_MODE_SYSTEM_APPENDIX;
-    // RAG tool enabled log removed (verbose);
+  }
+
+  if (hasInlineTranscript) {
+    systemPrompt += PROTOCOL_CHAT_TIMECODE_APPENDIX;
+  }
+
+  // Inject current date + day-of-week so the LLM can resolve relative dates ("до конца недели" etc.)
+  {
+    const DAY_NAMES_RU = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
+    const now = new Date();
+    const dd = String(now.getDate()).padStart(2, '0');
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const yyyy = now.getFullYear();
+    const dayName = DAY_NAMES_RU[now.getDay()];
+    systemPrompt += `\n\n[КОНТЕКСТ ДАТЫ: Текущая дата — ${dd}.${mm}.${yyyy} (${dayName}). Используй для вычисления абсолютных дат из относительных выражений. Если выражение требует знания дня недели даты встречи и ты не можешь вычислить точную дату — задай уточняющий вопрос пользователю.]`;
   }
 
   // messages-prepared verbose log removed
@@ -796,7 +907,7 @@ export async function POST(req: Request) {
   // 5. Create Agent Context - with safety checks
   let coreMessages;
   try {
-    const messagesToConvert = messagesWithHidden.length > 0 ? messagesWithHidden : normalizedMessagesNonEmpty;
+    const messagesToConvert = finalMessages.length > 0 ? finalMessages : normalizedMessagesNonEmpty;
     if (!Array.isArray(messagesToConvert) || messagesToConvert.length === 0) {
       throw new Error('No valid messages to convert');
     }
@@ -824,8 +935,15 @@ export async function POST(req: Request) {
     model: languageModel,
     abortSignal: req.signal,
     ragRetrievalEnabled,
+    hasInlineTranscript,
+    useThinking: Boolean(body.useThinking),
     ragMode: ragModeStr,
   };
+
+  const systemPromptTokensEst = Math.ceil(systemPrompt.length / 2.34);
+  console.log(
+    `📐 context: system≈${systemPromptTokensEst}tok doc≈${docTokensEstimate}tok inline=${hasInlineTranscript} msgs=${finalMessages.length}`,
+  );
 
   // 6. Run Main Agent
   return runMainAgent(agentContext, systemPrompt, userPrompt);

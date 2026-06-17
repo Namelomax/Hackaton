@@ -1,27 +1,163 @@
 import { Document, Packer, Paragraph, TextRun, Table, TableCell, TableRow, AlignmentType, WidthType, BorderStyle } from 'docx';
 import type { Protocol } from './schemas/protocol-schema';
+import {
+  cleanProtocolText,
+  formatContractBlock,
+  parseInlineMarkdownBold,
+  resolveApprovalForDocument,
+  splitDecisionSegments,
+} from './protocol-markdown-format';
 
 /**
- * Генерирует .docx документ из структурированного протокола
+ * Renders a labeled block ("Обсудили:", "Решили:") with multiline support.
+ * Single-line text: label + text in one paragraph.
+ * Multi-line text: label paragraph, then each line as an indented paragraph.
  */
+function buildMultilineLabeledBlock(label: string, text: string, spacingAfter: number): Paragraph[] {
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length <= 1) {
+    return [
+      new Paragraph({
+        children: [
+          new TextRun({ text: `${label} `, bold: true }),
+          new TextRun(text),
+        ],
+        spacing: { after: spacingAfter },
+      }),
+    ];
+  }
+  return [
+    new Paragraph({
+      children: [new TextRun({ text: label, bold: true })],
+      spacing: { after: 60 },
+    }),
+    ...lines.map((line, idx) =>
+      new Paragraph({
+        children: [new TextRun(`• ${line}`)],
+        indent: { left: 360 },
+        spacing: { after: idx === lines.length - 1 ? spacingAfter : 60 },
+      }),
+    ),
+  ];
+}
+
+function normalizeDocxOrgName(org: string): string {
+  return org.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').replace(/^ООО\s+/, '').trim();
+}
+
+function docxRunsFromInlineMarkdown(
+  text: string,
+  options?: { defaultBold?: boolean; italics?: boolean },
+): TextRun[] {
+  const segments = parseInlineMarkdownBold(cleanProtocolText(text));
+  return segments
+    .filter((seg) => seg.text.length > 0)
+    .map(
+      (seg) =>
+        new TextRun({
+          text: seg.text,
+          bold: seg.bold || options?.defaultBold,
+          italics: options?.italics,
+        }),
+    );
+}
+
+function docxParagraphFromInlineMarkdown(
+  text: string,
+  options?: { defaultBold?: boolean; italics?: boolean; spacingAfter?: number },
+): Paragraph {
+  const runs = docxRunsFromInlineMarkdown(text, options);
+  return new Paragraph({
+    children: runs.length ? runs : [new TextRun('')],
+    ...(options?.spacingAfter != null ? { spacing: { after: options.spacingAfter } } : {}),
+  });
+}
+
+function isValidOrgDisplayName(name: string): boolean {
+  const s = name.trim();
+  if (!s) return false;
+  if (/^[-–—\s.]+$/.test(s)) return false;
+  if (/^(заказчик|исполнитель)$/i.test(s)) return false;
+  if (s.length > 100) return false;
+  return true;
+}
+
+/** Несколько Paragraph в ячейке таблицы — переносы сохраняются в DOCX; метки жирным через TextRun. */
+function decisionToDocxParagraphs(raw: string): Paragraph[] {
+  const segments = splitDecisionSegments(raw);
+  if (segments.length === 0) return [new Paragraph('')];
+
+  return segments.map((segment, index) => {
+    const m = segment.match(/^(Срок\s*:|Ответственн\w*\s*:)\s*([\s\S]*)/i);
+    if (m) {
+      const label = m[1].trim();
+      const rest = m[2].trim();
+      return new Paragraph({
+        children: [
+          new TextRun({ text: label, bold: true }),
+          ...(rest ? [new TextRun({ text: ` ${rest}` })] : []),
+        ],
+        spacing: { after: index < segments.length - 1 ? 80 : 0 },
+      });
+    }
+    return new Paragraph({
+      children: docxRunsFromInlineMarkdown(segment),
+      spacing: { after: index < segments.length - 1 ? 80 : 0 },
+    });
+  });
+}
+
 export async function generateProtocolDocx(protocol: Protocol): Promise<Buffer> {
+  const normalizedNumber = String(protocol.protocolNumber || '').trim().startsWith('№')
+    ? String(protocol.protocolNumber).trim()
+    : `№${String(protocol.protocolNumber || '').trim()}`;
+
   const doc = new Document({
     sections: [
       {
         properties: {},
         children: [
-          // Заголовок документа
+          // Заголовок: ПРОТОКОЛ № X ОТ DD.MM.YYYY
           new Paragraph({
-            text: `ПРОТОКОЛ ОБСЛЕДОВАНИЯ ${protocol.protocolNumber}`,
-            heading: 'Heading1',
+            children: [new TextRun({ text: `ПРОТОКОЛ ${normalizedNumber} ОТ ${protocol.meetingDate}`, bold: true })],
             alignment: AlignmentType.CENTER,
-            spacing: { after: 400 },
+            spacing: { after: 200 },
           }),
 
-          // 1. Дата встречи
+          // Название протокола
+          ...(protocol.protocolTitle
+            ? [
+                new Paragraph({
+                  children: [new TextRun({ text: cleanProtocolText(protocol.protocolTitle), bold: true })],
+                  alignment: AlignmentType.CENTER,
+                  spacing: { after: 300 },
+                }),
+              ]
+            : []),
+
+          // Договор — блок всегда (при отсутствии данных — «не указано в расшифровке»)
+          new Paragraph({
+            children: [new TextRun(formatContractBlock(protocol))],
+            spacing: { after: 100 },
+          }),
+
+          // Тема договора
+          ...(protocol.contractSubject
+            ? [
+                new Paragraph({
+                  children: [
+                    new TextRun('Тема договора: '),
+                    new TextRun({ text: cleanProtocolText(protocol.contractSubject), italics: true }),
+                  ],
+                  spacing: { after: 300 },
+                }),
+              ]
+            : []),
+
+          // 1. Дата собрания
           new Paragraph({
             children: [
-              new TextRun({ text: '1.\tДата встречи: ', bold: true }),
+              new TextRun({ text: '1.\tДата собрания: ', bold: true }),
               new TextRun(protocol.meetingDate),
             ],
             spacing: { after: 200 },
@@ -29,187 +165,96 @@ export async function generateProtocolDocx(protocol: Protocol): Promise<Buffer> 
 
           // 2. Повестка
           new Paragraph({
-            children: [
-              new TextRun({ text: '2.\tПовестка: ', bold: true }),
-              new TextRun(protocol.agenda.title),
-            ],
-            spacing: { after: 100 },
+            children: [new TextRun({ text: '2.\tПовестка:', bold: true })],
+            spacing: { before: 200, after: 100 },
           }),
           ...protocol.agenda.items.map(
-            (item) =>
+            (item, i) =>
               new Paragraph({
-                text: `•\t${item}`,
+                text: `${i + 1})\t${item}`,
                 spacing: { after: 100 },
-                indent: { left: 720 },
-              })
+                indent: { left: 360 },
+              }),
           ),
 
           // 3. Участники
           new Paragraph({
             children: [new TextRun({ text: '3.\tУчастники:', bold: true })],
-            spacing: { before: 200, after: 200 },
+            spacing: { before: 400, after: 200 },
           }),
 
           new Paragraph({
-            text: `Со стороны Заказчика ${protocol.participants.customer.organizationName}:`,
+            children: [
+              new TextRun({
+                text: `Заказчик${isValidOrgDisplayName(protocol.participants.customer.organizationName?.trim() ?? '') ? ` — ${protocol.participants.customer.organizationName.trim()}` : ''}`,
+                bold: true,
+              }),
+            ],
+            alignment: AlignmentType.CENTER,
             spacing: { after: 100 },
           }),
-
           createParticipantsTable(protocol.participants.customer.people),
 
           new Paragraph({
-            text: `Со стороны Исполнителя ${protocol.participants.executor.organizationName}:`,
-            spacing: { before: 200, after: 100 },
+            children: [
+              new TextRun({
+                text: `Исполнитель${isValidOrgDisplayName(protocol.participants.executor.organizationName?.trim() ?? '') ? ` — ${protocol.participants.executor.organizationName.trim()}` : ''}`,
+                bold: true,
+              }),
+            ],
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 300, after: 100 },
           }),
-
           createParticipantsTable(protocol.participants.executor.people),
 
-          // 4. Термины и определения
+          // 4. Содержание встречи
           new Paragraph({
-            children: [new TextRun({ text: '4.\tТермины и определения:', bold: true })],
+            children: [new TextRun({ text: '4.\tСодержание встречи:', bold: true })],
             spacing: { before: 400, after: 200 },
           }),
-          ...protocol.termsAndDefinitions.map(
-            (item) =>
-              new Paragraph({
-                children: [
-                  new TextRun({ text: `•\t${item.term}`, bold: true }),
-                  new TextRun(` – ${item.definition}`),
-                ],
-                spacing: { after: 100 },
-                indent: { left: 360 },
-              })
-          ),
 
-          // 5. Сокращения и обозначения
-          new Paragraph({
-            children: [new TextRun({ text: '5.\tСокращения и обозначения:', bold: true })],
-            spacing: { before: 400, after: 200 },
-          }),
-          ...protocol.abbreviations.map(
-            (item) =>
-              new Paragraph({
-                children: [
-                  new TextRun({ text: `•\t${item.abbreviation}`, bold: true }),
-                  new TextRun(` – ${item.fullForm}`),
-                ],
-                spacing: { after: 100 },
-                indent: { left: 360 },
-              })
-          ),
-
-          // 6. Содержание встречи
-          new Paragraph({
-            children: [new TextRun({ text: '6.\tСодержание встречи:', bold: true })],
-            spacing: { before: 400, after: 200 },
-          }),
-          ...(protocol.meetingContent.introduction
-            ? [
-                new Paragraph({
-                  text: protocol.meetingContent.introduction,
-                  spacing: { after: 200 },
-                }),
-              ]
-            : []),
-          ...protocol.meetingContent.topics.flatMap((topic) => [
+          ...protocol.meetingContent.topics.flatMap((topic, i) => [
             new Paragraph({
-              children: [new TextRun({ text: topic.title, bold: true })],
+              children: [new TextRun({ text: `${i + 1}) ${cleanProtocolText(topic.title)}`, bold: true })],
               spacing: { before: 200, after: 100 },
             }),
-            new Paragraph({
-              text: topic.content,
-              spacing: { after: 200 },
-            }),
-            ...(topic.subtopics || []).flatMap((sub) => [
-              ...(sub.title
-                ? [
-                    new Paragraph({
-                      children: [new TextRun({ text: sub.title, bold: true })],
-                      spacing: { before: 100, after: 100 },
-                      indent: { left: 360 },
-                    }),
-                  ]
-                : []),
-              new Paragraph({
-                text: sub.content,
-                spacing: { after: 100 },
-                indent: { left: 360 },
-              }),
-            ]),
+            ...(topic.listened
+              ? [
+                  new Paragraph({
+                    children: [
+                      new TextRun({ text: 'Слушали: ', bold: true }),
+                      new TextRun(cleanProtocolText(topic.listened)),
+                    ],
+                    spacing: { after: 100 },
+                  }),
+                ]
+              : []),
+            ...(topic.discussed
+              ? buildMultilineLabeledBlock('Обсудили:', cleanProtocolText(topic.discussed), 100)
+              : []),
+            ...(topic.decided
+              ? buildMultilineLabeledBlock('Решили:', cleanProtocolText(topic.decided), 200)
+              : []),
           ]),
 
+          // Резюме
+          ...(protocol.meetingContent.summary.length > 0
+            ? [
+                new Paragraph({
+                  children: [new TextRun({ text: 'Резюме:', bold: true })],
+                  spacing: { before: 300, after: 100 },
+                }),
+                createSummaryTable(protocol.meetingContent.summary),
+              ]
+            : []),
 
-          // 7. Вопросы
+          // 5. Согласовано
           new Paragraph({
-            children: [new TextRun({ text: '7.\tВопросы:', bold: true })],
-            spacing: { before: 400, after: 200 },
-          }),
-          ...protocol.questionsAndAnswers.flatMap((qa, index) => [
-            new Paragraph({
-              children: [
-                new TextRun({ text: `${index + 1}.\t`, bold: true }),
-                new TextRun(qa.question),
-              ],
-              spacing: { after: 100 },
-            }),
-          ]),
-          new Paragraph({
-            children: [new TextRun({ text: 'Ответы:', bold: true })],
-            spacing: { before: 200, after: 100 },
-          }),
-          ...protocol.questionsAndAnswers.flatMap((qa, index) => [
-            new Paragraph({
-              children: [
-                new TextRun({ text: `${index + 1}.\t`, bold: true }),
-                new TextRun(qa.answer),
-              ],
-              spacing: { after: 100 },
-            }),
-          ]),
-
-          // 8. Решения
-          new Paragraph({
-            children: [new TextRun({ text: '8.\tРешения:', bold: true })],
-            spacing: { before: 400, after: 200 },
-          }),
-          ...protocol.decisions.map(
-            (decision, index) =>
-              new Paragraph({
-                children: [
-                  new TextRun({ text: `${index + 1}.\t` }),
-                  new TextRun(decision.decision),
-                  new TextRun({ text: '\nОтветственный: ', bold: true }),
-                  new TextRun(decision.responsible),
-                ],
-                spacing: { after: 200 },
-              })
-          ),
-
-          // 9. Открытые вопросы
-          new Paragraph({
-            children: [new TextRun({ text: '9.\tОткрытые вопросы:', bold: true })],
-            spacing: { before: 400, after: 200 },
-          }),
-          ...protocol.openQuestions.map(
-            (question, index) =>
-              new Paragraph({
-                text: `${index + 1}.\t${question}`,
-                spacing: { after: 100 },
-              })
-          ),
-
-          // 10. Согласовано
-          new Paragraph({
-            children: [new TextRun({ text: '10.\tСогласовано:', bold: true })],
+            children: [new TextRun({ text: '5.\tСогласовано:', bold: true })],
             spacing: { before: 400, after: 200 },
           }),
 
-          new Paragraph({
-            text: '',
-            spacing: { after: 200 },
-          }),
-
-          createSignatureTable(protocol.approval),
+          createApprovalTable(protocol),
         ],
       },
     ],
@@ -218,14 +263,10 @@ export async function generateProtocolDocx(protocol: Protocol): Promise<Buffer> 
   return await Packer.toBuffer(doc);
 }
 
-/**
- * Создает таблицу участников
- */
 function createParticipantsTable(participants: Array<{ fullName: string; position: string }>): Table {
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
     rows: [
-      // Заголовок
       new TableRow({
         children: [
           new TableCell({
@@ -238,15 +279,14 @@ function createParticipantsTable(participants: Array<{ fullName: string; positio
           }),
         ],
       }),
-      // Строки данных
       ...participants.map(
         (p) =>
           new TableRow({
             children: [
-              new TableCell({ children: [new Paragraph(p.fullName)] }),
-              new TableCell({ children: [new Paragraph(p.position)] }),
+              new TableCell({ children: [docxParagraphFromInlineMarkdown(p.fullName)] }),
+              new TableCell({ children: [docxParagraphFromInlineMarkdown(p.position)] }),
             ],
-          })
+          }),
       ),
     ],
     borders: {
@@ -260,35 +300,30 @@ function createParticipantsTable(participants: Array<{ fullName: string; positio
   });
 }
 
-/**
- * Создает таблицу особенностей миграции
- */
-function createMigrationFeaturesTable(features: Array<{ tab: string; features: string }>): Table {
+function createSummaryTable(summary: Array<{ question: string; decision: string }>): Table {
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
     rows: [
-      // Заголовок
       new TableRow({
         children: [
           new TableCell({
-            children: [new Paragraph({ children: [new TextRun({ text: 'Вкладка', bold: true })] })],
+            children: [new Paragraph({ children: [new TextRun({ text: 'Обсуждаемые вопросы', bold: true })] })],
             shading: { fill: 'D9D9D9' },
           }),
           new TableCell({
-            children: [new Paragraph({ children: [new TextRun({ text: 'Особенности', bold: true })] })],
+            children: [new Paragraph({ children: [new TextRun({ text: 'Принятые решения', bold: true })] })],
             shading: { fill: 'D9D9D9' },
           }),
         ],
       }),
-      // Строки данных
-      ...features.map(
-        (f) =>
+      ...summary.map(
+        (row) =>
           new TableRow({
             children: [
-              new TableCell({ children: [new Paragraph(f.tab)] }),
-              new TableCell({ children: [new Paragraph(f.features)] }),
+              new TableCell({ children: [docxParagraphFromInlineMarkdown(row.question)] }),
+              new TableCell({ children: decisionToDocxParagraphs(row.decision) }),
             ],
-          })
+          }),
       ),
     ],
     borders: {
@@ -302,44 +337,84 @@ function createMigrationFeaturesTable(features: Array<{ tab: string; features: s
   });
 }
 
-/**
- * Создает таблицу для подписей
- */
-function createSignatureTable(approval: {
-  executorSignature: { organization: string; representative: string };
-  customerSignature: { organization: string; representative: string };
-}): Table {
-  return new Table({
-    width: { size: 100, type: WidthType.PERCENTAGE },
-    rows: [
+function formatApprovalOrgLine(org: string): string {
+  const n = normalizeDocxOrgName(org);
+  if (!n || /^(заказчик|исполнитель)$/i.test(n)) return 'не указано в расшифровке';
+  if (/^ООО\s/i.test(org.trim())) return `${org.trim()}:`;
+  return `ООО «${n}»:`;
+}
+
+function signatoryParagraph(name?: string): Paragraph {
+  const n = name?.trim();
+  return docxParagraphFromInlineMarkdown(
+    n ? `${n} /______________` : '______________________',
+    { spacingAfter: 80 },
+  );
+}
+
+function createApprovalTable(protocol: Protocol): Table {
+  const sides = resolveApprovalForDocument(protocol);
+  const sigLen = Math.max(
+    sides.customer.signatories.length,
+    sides.executor.signatories.length,
+    1,
+  );
+
+  const rows: TableRow[] = [
+    new TableRow({
+      children: [
+        new TableCell({
+          children: [
+            docxParagraphFromInlineMarkdown('**Со стороны Заказчика**', { defaultBold: true }),
+          ],
+        }),
+        new TableCell({
+          children: [
+            docxParagraphFromInlineMarkdown('**Со стороны Исполнителя**', { defaultBold: true }),
+          ],
+        }),
+      ],
+    }),
+    new TableRow({
+      children: [
+        new TableCell({
+          children: [
+            docxParagraphFromInlineMarkdown(formatApprovalOrgLine(sides.customer.organization), {
+              italics: true,
+            }),
+          ],
+        }),
+        new TableCell({
+          children: [
+            docxParagraphFromInlineMarkdown(formatApprovalOrgLine(sides.executor.organization), {
+              italics: true,
+            }),
+          ],
+        }),
+      ],
+    }),
+  ];
+
+  for (let i = 0; i < sigLen; i++) {
+    rows.push(
       new TableRow({
         children: [
-          new TableCell({
-            children: [
-              new Paragraph({ children: [new TextRun({ text: 'Со стороны Исполнителя:', bold: true })] }),
-              new Paragraph({ text: approval.executorSignature.organization }),
-              new Paragraph({ text: '' }),
-              new Paragraph({ text: `${approval.executorSignature.representative} /______________` }),
-            ],
-            width: { size: 50, type: WidthType.PERCENTAGE },
-          }),
-          new TableCell({
-            children: [
-              new Paragraph({ children: [new TextRun({ text: 'Со стороны Заказчика:', bold: true })] }),
-              new Paragraph({ text: approval.customerSignature.organization }),
-              new Paragraph({ text: '' }),
-              new Paragraph({ text: `${approval.customerSignature.representative} /______________` }),
-            ],
-            width: { size: 50, type: WidthType.PERCENTAGE },
-          }),
+          new TableCell({ children: [signatoryParagraph(sides.customer.signatories[i])] }),
+          new TableCell({ children: [signatoryParagraph(sides.executor.signatories[i])] }),
         ],
       }),
-    ],
+    );
+  }
+
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows,
     borders: {
       top: { style: BorderStyle.SINGLE, size: 1 },
       bottom: { style: BorderStyle.SINGLE, size: 1 },
       left: { style: BorderStyle.SINGLE, size: 1 },
       right: { style: BorderStyle.SINGLE, size: 1 },
+      insideHorizontal: { style: BorderStyle.SINGLE, size: 1 },
       insideVertical: { style: BorderStyle.SINGLE, size: 1 },
     },
   });

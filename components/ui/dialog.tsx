@@ -7,9 +7,10 @@ interface DialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   children: React.ReactNode;
+  panelClassName?: string;
 }
 
-export function Dialog({ open, onOpenChange, children }: DialogProps) {
+export function Dialog({ open, onOpenChange, children, panelClassName }: DialogProps) {
   // Close on Escape key
   React.useEffect(() => {
     if (!open) return;
@@ -24,7 +25,7 @@ export function Dialog({ open, onOpenChange, children }: DialogProps) {
     <AnimatePresence>
       {open && (
         <motion.div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -36,7 +37,7 @@ export function Dialog({ open, onOpenChange, children }: DialogProps) {
             animate={{ scale: 1, opacity: 1, y: 0 }}
             exit={{ scale: 0.95, opacity: 0, y: 20 }}
             transition={{ duration: 0.25 }}
-            className="bg-white text-black rounded-2xl shadow-lg p-6 w-full max-w-md mx-2"
+            className={`bg-white text-black rounded-2xl shadow-lg p-6 w-full mx-2 ${panelClassName ?? 'max-w-md'}`}
             // Stop propagation on mousedown so backdrop never sees it.
             onMouseDown={(e) => e.stopPropagation()}
           >

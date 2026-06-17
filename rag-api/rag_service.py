@@ -369,14 +369,20 @@ class RAGService:
                     api_key=LLM_API_KEY,
                     base_url=LLM_BASE_URL,
                     timeout=LLM_TIMEOUT,
+                    extra_body={"think": False, "reasoning_effort": "none"},
                 )
             except Exception as e:
                 logger.warning("LLM call failed (%s); returning empty completion", e)
                 return ""
 
+        # Embedding model context and dimension from env (override for different models):
+        #   qwen3-embedding:   RAG_EMBEDDING_DIM=4096, RAG_EMBEDDING_MAX_TOKENS=8000 (context 32k)
+        # IMPORTANT: changing the model requires wiping rag_storage (incompatible vectors).
+        _emb_dim = int(os.getenv("RAG_EMBEDDING_DIM", "1024"))
+        _emb_max_tokens = int(os.getenv("RAG_EMBEDDING_MAX_TOKENS", "512"))
         embedding_func = EmbeddingFunc(
-            embedding_dim=768,
-            max_token_size=2000,
+            embedding_dim=_emb_dim,
+            max_token_size=_emb_max_tokens,
             func=lambda texts: openai_embed.func(
                 texts,
                 model=EMBEDDING_MODEL,
@@ -391,9 +397,15 @@ class RAGService:
             embedding_func=embedding_func,
             lightrag_kwargs={
                 "llm_model_kwargs": {"timeout": 6000},
+<<<<<<< HEAD
                 "llm_model_max_async": 5,
                 "chunk_token_size": 200,
                 "chunk_overlap_token_size": 50,
+=======
+                "llm_model_max_async": 2,
+                "chunk_token_size": 2000,
+                "chunk_overlap_token_size": 150,
+>>>>>>> d44713e6e0a050c3ea88961005df854fdfabc4a9
                 "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.1},
                 "addon_params": {"language": "Russian"},
             },

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { toast } from 'sonner';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { PlusIcon, PencilIcon, Trash2Icon } from 'lucide-react';
@@ -205,7 +206,7 @@ export function PromptsManager({
 
   const save = async () => {
     if (!userId) {
-      alert('Необходимо войти, чтобы сохранять промпты');
+      toast.warning('Необходима авторизация', { description: 'Войдите, чтобы сохранять промпты.' });
       return;
     }
 
@@ -231,22 +232,30 @@ export function PromptsManager({
 
   const deletePrompt = async () => {
     if (!userId) {
-      alert('Необходимо войти, чтобы удалять промпты');
+      toast.warning('Необходима авторизация', { description: 'Войдите, чтобы удалять промпты.' });
       return;
     }
 
     const prompt = prompts.find(p => p.id === selectedId);
     if (!prompt || prompt.isDefault) return;
     if (prompt.ownerId && prompt.ownerId !== userId) return;
-    
-    if (confirm(`Удалить промпт "${prompt.title}"?`)) {
-      await fetch('/api/promts', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: selectedId, userId }),
-      });
-      await loadPrompts();
-    }
+
+    toast(`Удалить промпт «${prompt.title}»?`, {
+      description: 'Это действие нельзя отменить.',
+      action: {
+        label: 'Удалить',
+        onClick: async () => {
+          await fetch('/api/promts', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: selectedId, userId }),
+          });
+          toast.success('Промпт удалён');
+          await loadPrompts();
+        },
+      },
+      cancel: { label: 'Отмена', onClick: () => {} },
+    });
   };
 
   const selectedPrompt = prompts.find(p => p.id === selectedId);

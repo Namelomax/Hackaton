@@ -3,6 +3,11 @@
 @source "../node_modules/streamdown/dist/index.js";
 @custom-variant dark (&:is(.dark *));
 
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -253,4 +258,41 @@
 .table-container table {
   margin: 0;
   min-width: 100%;
+}
+
+/* --- Документ (правая панель): списки и таблицы без артефактов предыдущих блоков --- */
+.document-panel-markdown [data-streamdown='unordered-list'] {
+  margin-top: 0.35rem;
+  margin-bottom: 0.35rem;
+}
+
+/* Нумерованный блок с первым дочерним маркированным списком без содержимого — без точки-дубликата */
+.document-panel-markdown [data-streamdown='ordered-list']
+  > [data-streamdown='list-item']
+  > [data-streamdown='unordered-list']:first-child {
+  list-style: none;
+  padding-left: 0;
+  margin-left: 0;
+}
+.document-panel-markdown [data-streamdown='ordered-list']
+  > [data-streamdown='list-item']
+  > [data-streamdown='unordered-list']:first-child
+  > [data-streamdown='list-item'] {
+  list-style: none;
+  padding-left: 0;
+}
+.document-panel-markdown [data-streamdown='ordered-list']
+  > [data-streamdown='list-item']
+  > [data-streamdown='unordered-list']:first-child
+  > [data-streamdown='list-item']::marker {
+  content: none;
+}
+
+.document-panel-markdown [data-streamdown='list-item']:empty {
+  display: none;
+}
+
+/* Запасной вариант: панель управления таблицей Streamdown (если включится снова) */
+.document-panel-markdown [data-streamdown='table-wrapper'] > div.flex.items-center.justify-end {
+  display: none !important;
 }

@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Message, MessageContent } from '@/components/ai-elements/message';
 import { Loader } from '@/components/ai-elements/loader';
+import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning';
 import { Response } from '@/components/ai-elements/response';
 import { Actions, Action } from '@/components/ai-elements/actions';
 import { RefreshCcw, Copy, Check, Wrench, Paperclip, FileText, Image as ImageIcon, Pencil, X, Send } from 'lucide-react';
@@ -58,6 +59,23 @@ const sanitizeUserText = (text: string) => {
   return { visible, hadHidden };
 };
 
+/**
+ * Extracts <think>...</think> content from text into a separate reasoning string.
+ * Handles both complete tags and incomplete (streaming) open tags.
+ */
+function extractThinkingFromText(text: string): { thinking: string | null; isThinkingOpen: boolean; rest: string } {
+  // Complete: <think>...</think> at the start
+  const completeMatch = text.match(/^<think>([\s\S]*?)<\/think>\n?([\s\S]*)$/);
+  if (completeMatch) {
+    return { thinking: completeMatch[1].trim(), isThinkingOpen: false, rest: completeMatch[2] };
+  }
+  // Streaming: <think> without closing tag yet
+  if (text.startsWith('<think>')) {
+    return { thinking: text.slice('<think>'.length).trim(), isThinkingOpen: true, rest: '' };
+  }
+  return { thinking: null, isThinkingOpen: false, rest: text };
+}
+
 
 const renderTextResponse = (rawText: string, key: string) => {
   const { visible, hadHidden } = sanitizeUserText(rawText);
@@ -100,6 +118,29 @@ const getAttachmentExtension = (att: Attachment): string => {
   if (mt.startsWith('text/')) return 'txt';
 
   return 'file';
+};
+
+const getReasoningDurationSeconds = (part: any): number | undefined => {
+  const metadata = part?.metadata ?? {};
+  const directSeconds = [
+    metadata.durationSeconds,
+    metadata.duration,
+    metadata.thinkingDurationSeconds,
+    metadata.reasoning_duration_seconds,
+  ].find((v) => typeof v === 'number' && Number.isFinite(v) && v > 0);
+  if (typeof directSeconds === 'number') return Math.round(directSeconds);
+  const durationMs = [
+    metadata.durationMs,
+    metadata.thinkingDurationMs,
+    metadata.reasoning_duration_ms,
+  ].find((v) => typeof v === 'number' && Number.isFinite(v) && v > 0);
+  if (typeof durationMs === 'number') return Math.max(1, Math.round(durationMs / 1000));
+  return undefined;
+};
+
+const persistReasoningDuration = (part: any, seconds: number) => {
+  if (!part || !Number.isFinite(seconds)) return;
+  part.metadata = { ...(part.metadata ?? {}), durationSeconds: Math.max(1, Math.round(seconds)) };
 };
 
 const renderAttachment = (att: Attachment, index: number) => {
@@ -145,6 +186,23 @@ const renderAttachment = (att: Attachment, index: number) => {
 };
 
 
+const CITATION_RX = /^\[Цитата из протокола\]:\s*«([\s\S]*?)»\s*([\s\S]*)$/;
+
+function renderUserTextWithCitation(text: string, key: string, renderText: (t: string, k: string) => React.ReactNode) {
+  const m = text.match(CITATION_RX);
+  if (!m) return renderText(text, key);
+  const [, cited, rest] = m;
+  return (
+    <div key={key} className="flex flex-col gap-1.5">
+      <div className="border-l-2 border-black/50 bg-black/10 rounded-r px-2 py-1">
+        <div className="text-[9px] font-semibold uppercase tracking-wide text-black/40 mb-0.5">Цитата из протокола</div>
+        <div className="text-xs italic text-black/50 line-clamp-3">«{cited}»</div>
+      </div>
+      {rest.trim() && renderText(rest.trim(), `${key}-rest`)}
+    </div>
+  );
+}
+
 export const MessageRenderer = ({
   message,
   isLastMessage,
@@ -173,6 +231,7 @@ export const MessageRenderer = ({
   const textParts = rawParts.filter(
     (part: any): part is { type: 'text'; text: string } => part.type === 'text',
   );
+  const reasoningParts = rawParts.filter((part: any) => part.type === 'reasoning');
   const toolParts = rawParts.filter(
     (part: any) =>
       typeof part?.type === 'string' &&
@@ -206,15 +265,88 @@ export const MessageRenderer = ({
           </div>
         )}
 
+        {reasoningParts.map((part: any, index: number) => (
+          <Reasoning
+            key={`reasoning-${index}`}
+            className="w-full"
+            isStreaming={status === 'streaming' && index === reasoningParts.length - 1 && isLastMessage}
+            duration={getReasoningDurationSeconds(part)}
+            onDurationMeasured={(seconds) => persistReasoningDuration(part, seconds)}
+          >
+            <ReasoningTrigger />
+            <ReasoningContent>{part.text}</ReasoningContent>
+          </Reasoning>
+        ))}
+
         {/* Рендеринг текста только если не редактируем; до первого токена — кружок, а не пустой пузырь */}
         {!isEditing && !assistantStreamingAwaitingText && textParts.map((part: any, index: number) => {
-          try {
-            const parsed = JSON.parse(part.text);
+          // For assistant messages, extract <think>...</think> from the raw text before JSON parsing
+          if (message.role === 'assistant') {
+            const { thinking, isThinkingOpen, rest } = extractThinkingFromText(part.text ?? '');
+            const isStreaming = status === 'streaming' && index === textParts.length - 1 && isLastMessage;
 
-            if (parsed.text && !parsed.document && !parsed.results) {
-              return renderTextResponse(parsed.text, `${message.id}-text-${index}`);
+            const thinkingBlock = thinking !== null ? (
+              <Reasoning
+                key={`${message.id}-thinking-${index}`}
+                className="w-full"
+                isStreaming={isStreaming && isThinkingOpen}
+                duration={isThinkingOpen ? undefined : undefined}
+              >
+                <ReasoningTrigger />
+                <ReasoningContent>{thinking}</ReasoningContent>
+              </Reasoning>
+            ) : null;
+
+            if (!rest.trim() && thinking !== null) {
+              return thinkingBlock;
             }
 
+            const textToRender = rest || part.text;
+
+            let textBlock: React.ReactNode;
+            try {
+              const parsed = JSON.parse(textToRender);
+              if (parsed.text && !parsed.document && !parsed.results) {
+                textBlock = renderTextResponse(parsed.text, `${message.id}-text-${index}`);
+              } else if (parsed.results) {
+                textBlock = (
+                  <div key={`${message.id}-search-${index}`} className="space-y-2">
+                    {renderTextResponse(parsed.text || 'Результаты поиска:', `${message.id}-search-heading-${index}`)}
+                    <div className="mt-2 space-y-2 text-sm">
+                      {parsed.results.map((result: any, resultIndex: number) => (
+                        <div key={resultIndex} className="p-3 bg-muted/50 rounded-lg">
+                          <a href={result.link} target="_blank" rel="noopener noreferrer"
+                            className="font-medium text-blue-600 hover:underline">{result.title}</a>
+                          <p className="text-xs text-muted-foreground mt-1">{result.snippet}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              } else {
+                textBlock = renderTextResponse(textToRender, `${message.id}-text-${index}`);
+              }
+            } catch {
+              textBlock = renderTextResponse(textToRender, `${message.id}-text-${index}`);
+            }
+
+            if (thinkingBlock) {
+              return (
+                <div key={`${message.id}-block-${index}`} className="space-y-1">
+                  {thinkingBlock}
+                  {rest.trim() ? textBlock : null}
+                </div>
+              );
+            }
+            return textBlock;
+          }
+
+          // User messages — original logic
+          try {
+            const parsed = JSON.parse(part.text);
+            if (parsed.text && !parsed.document && !parsed.results) {
+              return renderUserTextWithCitation(parsed.text, `${message.id}-text-${index}`, renderTextResponse);
+            }
             if (parsed.results) {
               return (
                 <div key={`${message.id}-search-${index}`} className="space-y-2">
@@ -222,14 +354,8 @@ export const MessageRenderer = ({
                   <div className="mt-2 space-y-2 text-sm">
                     {parsed.results.map((result: any, resultIndex: number) => (
                       <div key={resultIndex} className="p-3 bg-muted/50 rounded-lg">
-                        <a
-                          href={result.link}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-medium text-blue-600 hover:underline"
-                        >
-                          {result.title}
-                        </a>
+                        <a href={result.link} target="_blank" rel="noopener noreferrer"
+                          className="font-medium text-blue-600 hover:underline">{result.title}</a>
                         <p className="text-xs text-muted-foreground mt-1">{result.snippet}</p>
                       </div>
                     ))}
@@ -237,19 +363,30 @@ export const MessageRenderer = ({
                 </div>
               );
             }
-
-            return renderTextResponse(part.text, `${message.id}-text-${index}`);
+            return renderUserTextWithCitation(part.text, `${message.id}-text-${index}`, renderTextResponse);
           } catch {
-            return renderTextResponse(part.text, `${message.id}-text-${index}`);
+            return renderUserTextWithCitation(part.text, `${message.id}-text-${index}`, renderTextResponse);
           }
         })}
 
         {assistantStreamingAwaitingText && (
           <div className="flex items-center gap-2 py-1 text-muted-foreground" aria-live="polite">
             <Loader size={18} />
-            <span className="text-xs">Генерация ответа…</span>
           </div>
         )}
+
+        {message.role === 'assistant' &&
+          status !== 'streaming' &&
+          !hasVisibleAssistantText &&
+          !assistantStreamingAwaitingText &&
+          (toolParts.length > 0 ||
+            reasoningParts.length > 0 ||
+            (isLastMessage && textParts.length === 0)) && (
+            <Response className="text-muted-foreground text-sm">
+              Ответ не удалось сформировать (модель исчерпала лимит или остановилась после
+              инструментов). Отправьте сообщение снова или нажмите «Повторить».
+            </Response>
+          )}
 
         {/* ToolsDisplay скрыт: tool-вызовы не показываем пользователю */}
 

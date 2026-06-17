@@ -10,18 +10,16 @@ import { Sidebar } from '@/components/chat/Sidebar';
 import { ConversationArea } from '@/components/chat/ConversationArea';
 import { PromptInputWrapper } from '@/components/chat/PromptInputWrapper';
 import { Loader } from '@/components/ai-elements/loader';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { parseModelsFromEnv, pickDefaultLocalChatModel } from '@/lib/chat-models';
+import { FIXED_CHAT_MODEL } from '@/lib/chat-models';
 import { copyTextToClipboard } from '@/lib/copyToClipboard';
+import { toast } from 'sonner';
 import { resolveMessagesFromRecord } from '@/lib/conversationMessages';
+import { GuestWelcomeGuide, shouldShowGuestWelcome } from '@/components/onboarding/GuestWelcomeGuide';
 
-const DEFAULT_OPENROUTER_MODEL = 'nvidia/nemotron-3-super-120b-a12b:free';
+/** Убирает бинарный DOCX-блок, который старые версии сохраняли в document_content */
+function stripDocxMeta(content: string): string {
+  return content.replace(/---DOCX_META---[\s\S]*?---DOCX_META_END---/g, '').trim();
+}
 
 /** Не передавать пустой documentContent в PUT — иначе БД перезапишет документ пустой строкой */
 function buildPersistPutBody(
@@ -37,33 +35,15 @@ function buildPersistPutBody(
 }
 
 export default function ChatPage() {
-  const localModels = useMemo(() => parseModelsFromEnv(process.env.NEXT_PUBLIC_LOCAL_MODELS), []);
-
-  const [chatProvider, setChatProvider] = useState<'openrouter' | 'ollama'>('ollama');
-  const [chatModel, setChatModel] = useState<string>(() =>
-    pickDefaultLocalChatModel(process.env.NEXT_PUBLIC_LOCAL_MODELS),
-  );
-
-  useEffect(() => {
-    if (chatProvider === 'ollama') {
-      setChatModel((prev) =>
-        localModels.includes(prev) ? prev : pickDefaultLocalChatModel(process.env.NEXT_PUBLIC_LOCAL_MODELS),
-      );
-    } else {
-      setChatModel(DEFAULT_OPENROUTER_MODEL);
-    }
-  }, [chatProvider, localModels]);
-
-  const [useRagContext, setUseRagContext] = useState(false);
-
   const chatBody = useMemo(
     () => ({
-      chatProvider,
-      chatModel,
-      useRagContext,
+      chatProvider: 'ollama' as const,
+      chatModel: FIXED_CHAT_MODEL,
+      useRagContext: false,
       ragMode: 'hybrid' as const,
+      useThinking: false,
     }),
-    [chatProvider, chatModel, useRagContext],
+    [],
   );
 
   const [authChecked, setAuthChecked] = useState(false);
@@ -72,12 +52,14 @@ export default function ChatPage() {
   const bootCompletedRef = useRef(false);
 
   const [input, setInput] = useState('');
+  const [quoteText, setQuoteText] = useState('');
   const [authUser, setAuthUser] = useState<{ id: string; username: string } | null>(null);
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [authOpen, setAuthOpen] = useState(false);
   const [authHintFromPrompt, setAuthHintFromPrompt] = useState(false);
+  const [guestGuideOpen, setGuestGuideOpen] = useState(false);
   const handleAuthOpenChange = (open: boolean) => {
     setAuthOpen(open);
     if (!open) setAuthHintFromPrompt(false);
@@ -102,6 +84,7 @@ export default function ChatPage() {
   const engineDocumentRef = useRef(document);
   engineDocumentRef.current = document;
   const [isChatsPanelVisible, setIsChatsPanelVisible] = useState(true);
+  const [isDocumentPanelVisible, setIsDocumentPanelVisible] = useState(true);
   const selectedPromptId: string | null = null;
 
   const handleRegenerate = (messageId: string) => {
@@ -247,7 +230,13 @@ export default function ChatPage() {
     const fallback = extractTitleFromMarkdown(conv?.document_content);
 
     // If title is missing or generic, use the document heading.
-    const isGeneric = !existing || existing.toLowerCase() === 'чат' || existing.toLowerCase() === 'chat';
+    const lower = existing.toLowerCase();
+    const isGeneric =
+      !existing ||
+      lower === 'чат' ||
+      lower === 'chat' ||
+      lower === 'new conversation' ||
+      lower.startsWith('conversation ');
     const nextTitle = isGeneric && fallback ? fallback : existing;
     return { ...conv, title: nextTitle || conv?.title };
   }
@@ -422,6 +411,7 @@ export default function ChatPage() {
           docxData: normalized.data,
         }));
       }
+
     },
   });
 
@@ -430,7 +420,7 @@ export default function ChatPage() {
     const localId = `local-${Date.now()}`;
     const localConv = {
       id: localId,
-      title: `Новый чат ${new Date().toLocaleTimeString()}`,
+      title: 'Чат',
       created: new Date().toISOString(),
       messages: [],
       local: true,
@@ -467,7 +457,7 @@ export default function ChatPage() {
 
     // If another chat is still streaming, block sending to avoid mixing contexts.
     if (status !== 'ready') {
-      alert('Сейчас ИИ отвечает в другом чате. Дождитесь завершения ответа, прежде чем отправлять сообщение здесь.');
+      toast.warning('ИИ ещё отвечает', { description: 'Дождитесь завершения ответа в текущем чате.' });
       return null;
     }
 
@@ -587,6 +577,15 @@ export default function ChatPage() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!authChecked) return;
+    if (authUser) {
+      setGuestGuideOpen(false);
+      return;
+    }
+    if (shouldShowGuestWelcome()) setGuestGuideOpen(true);
+  }, [authChecked, authUser]);
+
   // When authUser is present, fetch conversations
   useEffect(() => {
     if (!authChecked) return;
@@ -628,12 +627,13 @@ export default function ChatPage() {
               
               // Restore document content
               if (activeConv.document_content) {
-                const derived = extractTitleFromMarkdown(activeConv.document_content);
+                const cleanContent = stripDocxMeta(activeConv.document_content);
+                const derived = extractTitleFromMarkdown(cleanContent);
                 const nextDoc = {
                   title: (activeConv.title && String(activeConv.title).trim().toLowerCase() !== 'чат')
                     ? activeConv.title
-                    : (derived || 'Документ'),
-                  content: activeConv.document_content,
+                    : (derived || 'Протокол'),
+                  content: cleanContent,
                   isStreaming: false,
                 } as DocumentState;
                 setDocument(nextDoc);
@@ -693,8 +693,8 @@ export default function ChatPage() {
               // Restore document content on login
               if (first.document_content) {
                 const nextDoc = {
-                  title: first.title || 'Документ',
-                  content: first.document_content,
+                  title: first.title || 'Протокол',
+                  content: stripDocxMeta(first.document_content),
                   isStreaming: false,
                 } as DocumentState;
                 setDocument(nextDoc);
@@ -721,11 +721,11 @@ export default function ChatPage() {
             }
         }
       } else {
-        alert(json?.message || 'Auth failed');
+        toast.error('Ошибка входа', { description: json?.message || 'Неверный логин или пароль.' });
       }
     } catch (err) {
       console.error(err);
-      alert('Request failed');
+      toast.error('Ошибка сети', { description: 'Не удалось выполнить запрос. Проверьте соединение.' });
     }
   };
 
@@ -762,6 +762,18 @@ export default function ChatPage() {
         const nextConv = updated[0];
         setViewConversationId(nextConv.id ?? null);
         if (nextConv?.id) localStorage.setItem('activeConversationId', nextConv.id);
+        // Sync right panel to next conversation's document (or clear it)
+        const nextDocContent = stripDocxMeta(nextConv?.document_content || '');
+        if (nextDocContent) {
+          const derived = extractTitleFromMarkdown(nextDocContent);
+          setViewDocument({
+            title: nextConv.title || derived || 'Документ',
+            content: nextDocContent,
+            isStreaming: false,
+          });
+        } else {
+          setViewDocument({ title: '', content: '', isStreaming: false });
+        }
       } else {
         setViewConversationId(null);
         localStorage.removeItem('activeConversationId');
@@ -780,6 +792,18 @@ export default function ChatPage() {
         }
         if (nextConv?.id) {
           localStorage.setItem('activeConversationId', nextConv.id);
+        }
+        // Sync engine document to next conversation's document (or clear it)
+        const nextDocContent = stripDocxMeta(nextConv?.document_content || '');
+        if (nextDocContent) {
+          const derived = extractTitleFromMarkdown(nextDocContent);
+          const nextDoc = { title: nextConv.title || derived || 'Документ', content: nextDocContent, isStreaming: false } as DocumentState;
+          setDocument(nextDoc);
+          // Only overwrite view panel if it wasn't already handled by the viewConversationId block above
+          if (viewConversationId !== convId) setViewDocument(nextDoc);
+        } else {
+          setDocument({ title: '', content: '', isStreaming: false });
+          if (viewConversationId !== convId) setViewDocument({ title: '', content: '', isStreaming: false });
         }
       } else {
         setConversationId(null);
@@ -823,34 +847,37 @@ export default function ChatPage() {
 
   const handleDeleteConversation = async (conv: any) => {
     if (!conv?.id) return;
-    const confirmed = window.confirm('Удалить этот чат?');
-    if (!confirmed) return;
 
-    if (String(conv.id).startsWith('local-')) {
-      removeConversationFromState(conv.id);
-      return;
-    }
-
-    if (!authUser?.id) {
-      alert('Необходимо войти, чтобы удалить сохранённый чат');
-      return;
-    }
-
-    try {
-      const resp = await fetch('/api/conversations', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversationId: conv.id, userId: authUser.id }),
-      });
-      const j = await resp.json().catch(() => ({}));
-      if (!resp.ok || !j?.success) {
-        throw new Error(j?.message || 'delete failed');
+    const doDelete = async () => {
+      if (String(conv.id).startsWith('local-')) {
+        removeConversationFromState(conv.id);
+        return;
       }
-      removeConversationFromState(conv.id);
-    } catch (err) {
-      console.error('Failed to delete conversation', err);
-      alert('Не удалось удалить чат');
-    }
+      if (!authUser?.id) {
+        toast.warning('Необходима авторизация', { description: 'Войдите, чтобы удалять сохранённые чаты.' });
+        return;
+      }
+      try {
+        const resp = await fetch('/api/conversations', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversationId: conv.id, userId: authUser.id }),
+        });
+        const j = await resp.json().catch(() => ({}));
+        if (!resp.ok || !j?.success) throw new Error(j?.message || 'delete failed');
+        removeConversationFromState(conv.id);
+        toast.success('Чат удалён');
+      } catch (err) {
+        console.error('Failed to delete conversation', err);
+        toast.error('Не удалось удалить чат', { description: 'Попробуйте ещё раз.' });
+      }
+    };
+
+    toast('Удалить этот чат?', {
+      description: conv.title ? `«${conv.title}»` : undefined,
+      action: { label: 'Удалить', onClick: doDelete },
+      cancel: { label: 'Отмена', onClick: () => {} },
+    });
   };
 
   const handleCopy = async (text: string, id: string) => {
@@ -860,7 +887,7 @@ export default function ChatPage() {
       setTimeout(() => setCopiedId(null), 2000);
     } else {
       console.error('Clipboard: не удалось скопировать');
-      alert('Копирование недоступно в этом браузере (нужен HTTPS или разрешение на буфер).');
+      toast.error('Копирование недоступно', { description: 'Нужен HTTPS или разрешение браузера на буфер обмена.' });
     }
   };
 
@@ -959,7 +986,9 @@ export default function ChatPage() {
 
     // Обновляем conversation из conversationsList, чтобы получить актуальный document_content
     const conversationFromList = conversationsList.find((c) => c.id === conversation.id);
-    const documentContentToUse = conversationFromList?.document_content || conversation.document_content;
+    const documentContentToUse = stripDocxMeta(
+      conversationFromList?.document_content || conversation.document_content || ''
+    ) || undefined;
     
     console.log('[handleSelectConversation] Using documentContent:', {
       fromList: !!conversationFromList?.document_content,
@@ -1036,6 +1065,8 @@ export default function ChatPage() {
   return (
     <div className="h-screen flex flex-col bg-background">
 
+      <GuestWelcomeGuide open={guestGuideOpen} />
+
       {isBooting && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
           <div className="flex items-center gap-3 text-sm text-muted-foreground">
@@ -1073,8 +1104,13 @@ export default function ChatPage() {
           collapsed={!isChatsPanelVisible}
           onToggleCollapsed={() => setIsChatsPanelVisible((v) => !v)}
         />
-        {/* Центральная часть — чат */}
-        <div className="flex flex-col w-[600px] border-r shrink-0">
+        {/* Центральная часть — чат (расширяется, когда панель протокола свёрнута) */}
+        <div
+          className={
+            `flex flex-col border-r min-w-0 transition-[width,flex] duration-200 ease-in-out ` +
+            (isDocumentPanelVisible ? 'w-[600px] shrink-0' : 'flex-1')
+          }
+        >
           <ConversationArea
             chatKey={chatKey}
             messages={displayMessages}
@@ -1092,57 +1128,13 @@ export default function ChatPage() {
           />
           {/* Поле ввода и менеджер промптов */}
           <div className="border-t px-4 py-2 min-h-[104px]">
-            <div className="max-w-3xl mx-auto space-y-2">
-              <div className="flex flex-wrap gap-2 items-center text-xs text-neutral-700 pb-1">
-                <Select
-                  value={chatProvider}
-                  onValueChange={(v) => setChatProvider(v as 'openrouter' | 'ollama')}
-                >
-                  <SelectTrigger size="sm" className="h-8 min-w-[160px]">
-                    <SelectValue placeholder="Провайдер LLM" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="openrouter">Облако (OpenRouter)</SelectItem>
-                    <SelectItem value="ollama">Локально (Ollama)</SelectItem>
-                  </SelectContent>
-                </Select>
-
-                {chatProvider === 'ollama' ? (
-                  <Select value={chatModel} onValueChange={setChatModel}>
-                    <SelectTrigger size="sm" className="h-8 min-w-[140px]">
-                      <SelectValue placeholder="Модель" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {localModels.map((m) => (
-                        <SelectItem key={m} value={m}>
-                          {m}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <span
-                    className="rounded border px-2 py-1 bg-neutral-50 text-[11px] max-w-[240px] truncate"
-                    title={chatModel}
-                  >
-                    {chatModel}
-                  </span>
-                )}
-
-                <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    className="rounded border-neutral-300"
-                    checked={useRagContext}
-                    onChange={(e) => setUseRagContext(e.target.checked)}
-                  />
-                  Контекст из RAG
-                </label>
-              </div>
+            <div className="max-w-3xl mx-auto">
               <PromptInputWrapper
                 className="w-full"
                 input={input}
                 setInput={setInput}
+                quoteText={quoteText}
+                setQuoteText={setQuoteText}
                 status={status}
                 authUser={authUser}
                 conversationId={conversationId}
@@ -1156,7 +1148,6 @@ export default function ChatPage() {
                 prepareSend={prepareSend}
                 onUserMessageQueued={undefined}
                 chatBody={chatBody}
-                onRagIndexed={() => setUseRagContext(true)}
                 onOpenAuthDialog={() => {
                   setAuthMode('login');
                   setAuthHintFromPrompt(true);
@@ -1166,15 +1157,18 @@ export default function ChatPage() {
             </div>
           </div>
         </div>
-        {/* Правая часть — документ */}
-        <div className="flex-1 min-w-0">
-          <DocumentPanel 
-            document={viewDocument} 
-            onEdit={handleDocumentEdit} 
-            attachments={attachedFiles}
-            onSendReview={(text) => setInput(text)}
-          />
-        </div>
+        {/* Правая часть — протокол */}
+        <DocumentPanel
+          key={viewConversationId ?? 'no-conv'}
+          document={viewDocument}
+          onEdit={handleDocumentEdit}
+          attachments={attachedFiles}
+          onSendReview={(text) => setInput(text)}
+          onQuote={(text) => setQuoteText(text)}
+          chatReviewBody={chatBody}
+          collapsed={!isDocumentPanelVisible}
+          onToggleCollapsed={() => setIsDocumentPanelVisible((v) => !v)}
+        />
       </div>
     </div>
   );

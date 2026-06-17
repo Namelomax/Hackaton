@@ -1,39 +1,35 @@
 import { z } from 'zod';
+import { isValidParticipantRow } from '@/lib/protocol-markdown-format';
 
-// Участник (для таблиц)
 export const ParticipantSchema = z.object({
   fullName: z.string().describe('ФИО'),
   position: z.string().describe('Должность'),
 });
 
-// Вопрос с ответом
-export const QuestionAnswerSchema = z.object({
-  question: z.string().describe('Текст вопроса'),
-  answer: z.string().describe('Текст ответа'),
+export const MeetingTopicSchema = z.object({
+  title: z.string().describe('Название/номер вопроса повестки'),
+  listened: z.string().describe('Слушали: ФИО участников, принимавших участие в обсуждении'),
+  discussed: z.string().describe('Обсудили: что обсуждалось, с указанием конкретных ФИО'),
+  decided: z.string().describe('Решили: принятые решения, срок, ответственные (ФИО, Заказчик/Исполнитель)'),
 });
 
-// Решение с ответственным
-export const DecisionSchema = z.object({
-  decision: z.string().describe('Текст решения'),
-  responsible: z.string().describe('Ответственный (Исполнитель/Заказчик)'),
+export const SummaryRowSchema = z.object({
+  question: z.string().describe('Краткое описание обсуждаемого вопроса'),
+  decision: z.string().describe('Принятое решение с ответственными и сроками'),
 });
 
-// Таблица особенностей миграции
-export const MigrationFeatureSchema = z.object({
-  tab: z.string().describe('Название вкладки'),
-  features: z.string().describe('Описание особенностей'),
-});
-
-// Основная схема протокола обследования
 export const ProtocolSchema = z.object({
-  // 1. Номер и дата
+  // Шапка документа
   protocolNumber: z.string().describe('Номер протокола (например: №7)'),
   meetingDate: z.string().describe('Дата встречи в формате ДД.ММ.ГГГГ'),
+  protocolTitle: z.string().describe('Название протокола (краткая повестка)'),
+  contractNumber: z.string().optional().describe('Номер договора'),
+  contractDate: z.string().optional().describe('Дата договора в формате ДД.ММ.ГГГГ'),
+  contractSubject: z.string().optional().describe('Тема/предмет договора'),
 
   // 2. Повестка
   agenda: z.object({
-    title: z.string().describe('Основная тема встречи'),
-    items: z.array(z.string()).describe('Пункты повестки'),
+    items: z.array(z.string()).describe('Пункты повестки нумерованным списком'),
   }),
 
   // 3. Участники
@@ -48,58 +44,21 @@ export const ProtocolSchema = z.object({
     }),
   }),
 
-  // 4. Термины и определения
-  termsAndDefinitions: z.array(
-    z.object({
-      term: z.string().describe('Термин'),
-      definition: z.string().describe('Определение'),
-    })
-  ),
-
-  // 5. Сокращения и обозначения
-  abbreviations: z.array(
-    z.object({
-      abbreviation: z.string().describe('Сокращение'),
-      fullForm: z.string().describe('Полная форма'),
-    })
-  ),
-
-  // 6. Содержание встречи
+  // 4. Содержание встречи
   meetingContent: z.object({
-    introduction: z.string().optional().describe('Вводная часть'),
-    topics: z.array(
-      z.object({
-        title: z.string().describe('Название темы'),
-        content: z.string().describe('Содержание обсуждения'),
-        subtopics: z.array(
-          z.object({
-            title: z.string().optional(),
-            content: z.string(),
-          })
-        ).optional(),
-      })
-    ),
-    migrationFeatures: z.array(MigrationFeatureSchema).optional().describe('Особенности миграции (если применимо)'),
+    topics: z.array(MeetingTopicSchema),
+    summary: z.array(SummaryRowSchema).describe('Резюме встречи — таблица обсуждаемых вопросов и принятых решений'),
   }),
 
-  // 7. Вопросы и ответы
-  questionsAndAnswers: z.array(QuestionAnswerSchema),
-
-  // 8. Решения
-  decisions: z.array(DecisionSchema),
-
-  // 9. Открытые вопросы
-  openQuestions: z.array(z.string()),
-
-  // 10. Согласовано
+  // 5. Согласовано
   approval: z.object({
-    executorSignature: z.object({
-      organization: z.string(),
-      representative: z.string().describe('ФИО представителя'),
+    customer: z.object({
+      organization: z.string().describe('Название организации заказчика'),
+      signatories: z.array(z.string()).describe('ФИО подписантов со стороны заказчика'),
     }),
-    customerSignature: z.object({
-      organization: z.string(),
-      representative: z.string().describe('ФИО представителя'),
+    executor: z.object({
+      organization: z.string().describe('Название организации исполнителя'),
+      signatories: z.array(z.string()).describe('ФИО подписантов со стороны исполнителя'),
     }),
   }),
 });
@@ -108,34 +67,234 @@ export type Protocol = z.infer<typeof ProtocolSchema>;
 
 const toStr = (value: unknown) => (value == null ? '' : String(value));
 const toArr = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
+const isBlankStr = (v: unknown) => toStr(v).trim().length === 0;
 
-/** Приводит произвольный черновик (в т.ч. частичный от streamObject) к форме Protocol перед Zod-проверкой. */
-export function coerceProtocolPartial(partial: unknown): Protocol {
-  const p =
-    partial && typeof partial === 'object' && !Array.isArray(partial)
-      ? (partial as Record<string, unknown>)
-      : {};
+/** Убирает ```json … ``` вокруг ответа модели (Ollama часто так отдаёт structured output). */
+export function stripMarkdownCodeFence(raw: string): string {
+  let s = raw.trim();
+  const fenced = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/im);
+  if (fenced) return fenced[1].trim();
+  if (s.startsWith('```')) {
+    s = s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+  }
+  return s;
+}
 
-  const toPeople = (value: unknown) =>
-    toArr(value).map((row: unknown) => {
-      const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+/** JSON.parse с попыткой вырезать внешний мусор до первого `{` и после последнего `}`. */
+export function parseLooseJsonObject(raw: string): unknown | null {
+  const s = stripMarkdownCodeFence(raw);
+  try {
+    return JSON.parse(s);
+  } catch {
+    const start = s.indexOf('{');
+    const end = s.lastIndexOf('}');
+    if (start === -1 || end <= start) return null;
+    try {
+      return JSON.parse(s.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  }
+}
+
+/** Текст сырого ответа из цепочки AI_NoObjectGeneratedError / AI_JSONParseError. */
+export function extractNoObjectGeneratedText(err: unknown): string | null {
+  let cur: unknown = err;
+  for (let i = 0; i < 10 && cur && typeof cur === 'object'; i++) {
+    const t = (cur as Record<string, unknown>).text;
+    if (typeof t === 'string' && t.trim().length > 0) return t;
+    cur = (cur as Record<string, unknown>).cause;
+  }
+  return null;
+}
+
+/** Приводит типичные «креативные» формы JSON от LLM к полям новой схемы. */
+function preprocessLlmProtocolShape(input: unknown): Record<string, unknown> {
+  let root: unknown = input;
+  if (typeof root === 'string') root = parseLooseJsonObject(root);
+  if (!root || typeof root !== 'object' || Array.isArray(root)) return {};
+  let p = root as Record<string, unknown>;
+  if (p.protocol && typeof p.protocol === 'object' && !Array.isArray(p.protocol)) {
+    p = p.protocol as Record<string, unknown>;
+  }
+
+  const out: Record<string, unknown> = { ...p };
+
+  // Совместимость: старый protocolNumber/meetingDate
+  if (out.protocolNumber === undefined && p.number !== undefined) out.protocolNumber = p.number;
+  if (out.meetingDate === undefined && p.date !== undefined) out.meetingDate = p.date;
+
+  // protocolTitle из старого agenda.title или названия
+  if (!out.protocolTitle && p.agenda && typeof p.agenda === 'object' && !Array.isArray(p.agenda)) {
+    const ag = p.agenda as Record<string, unknown>;
+    if (ag.title) out.protocolTitle = ag.title;
+  }
+
+  // agenda: нормализовать items
+  if (typeof p.agenda === 'string') {
+    out.agenda = { items: [p.agenda] };
+  } else if (p.agenda && typeof p.agenda === 'object' && !Array.isArray(p.agenda)) {
+    const ag = p.agenda as Record<string, unknown>;
+    const items = toArr<string>(ag.items ?? ag.пункты).map(toStr);
+    out.agenda = { items };
+  }
+
+  // participants: совместимость client→customer
+  const po = p.participants as Record<string, unknown> | undefined;
+  if (po && !po.customer && Array.isArray((po as Record<string, unknown>).client)) {
+    const client = (po as Record<string, unknown>).client as unknown[];
+    const executorRaw = (po as Record<string, unknown>).executor;
+    const executor = Array.isArray(executorRaw) ? executorRaw : [];
+    const custOrg =
+      toStr((po as Record<string, unknown>).clientOrganization) || 'Заказчик';
+    const execOrg =
+      toStr((po as Record<string, unknown>).executorOrganization) || 'Исполнитель';
+    out.participants = {
+      customer: { organizationName: custOrg, people: client },
+      executor: { organizationName: execOrg, people: executor },
+    };
+  }
+
+  // meetingContent: совместимость старой структуры topics (content → discussed)
+  const mc = p.meetingContent as Record<string, unknown> | undefined;
+  if (mc && typeof mc === 'object' && !Array.isArray(mc)) {
+    const topics = toArr(mc.topics).map((t: unknown) => {
+      const row = t && typeof t === 'object' ? (t as Record<string, unknown>) : {};
       return {
-        fullName: toStr(r.fullName ?? r.name),
-        position: toStr(r.position ?? r.role),
+        title: toStr(row.title ?? row.тема),
+        listened: toStr(row.listened ?? row.слушали ?? ''),
+        discussed: toStr(row.discussed ?? row.обсудили ?? row.content ?? row.суть ?? ''),
+        decided: toStr(row.decided ?? row.решили ?? row.decision ?? ''),
       };
     });
+    const summary = toArr(mc.summary).map((s: unknown) => {
+      const row = s && typeof s === 'object' ? (s as Record<string, unknown>) : {};
+      return {
+        question: toStr(row.question ?? row.вопрос ?? ''),
+        decision: toStr(row.decision ?? row.решение ?? ''),
+      };
+    });
+    out.meetingContent = { topics, summary };
+  }
 
+  // approval: совместимость старого executorSignature/customerSignature
+  if (!out.approval && p.approval && typeof p.approval === 'object') {
+    const appr = p.approval as Record<string, unknown>;
+    // Старый формат: approval.executorSignature + approval.customerSignature
+    const execSig = appr.executorSignature as Record<string, unknown> | undefined;
+    const custSig = appr.customerSignature as Record<string, unknown> | undefined;
+    if (execSig || custSig) {
+      out.approval = {
+        executor: {
+          organization: toStr(execSig?.organization ?? 'Исполнитель'),
+          signatories: execSig?.representative ? [toStr(execSig.representative)] : [],
+        },
+        customer: {
+          organization: toStr(custSig?.organization ?? 'Заказчик'),
+          signatories: custSig?.representative ? [toStr(custSig.representative)] : [],
+        },
+      };
+    }
+  }
+
+  // approval: новый формат с signatories как массивы
+  if (out.approval && typeof out.approval === 'object') {
+    const appr = out.approval as Record<string, unknown>;
+    // Нормализовать customer/executor
+    for (const side of ['customer', 'executor'] as const) {
+      const s = appr[side] as Record<string, unknown> | undefined;
+      if (s && typeof s === 'object') {
+        // signatories может быть строкой
+        if (typeof s.signatories === 'string') {
+          s.signatories = s.signatories.trim() ? [s.signatories] : [];
+        } else if (!Array.isArray(s.signatories)) {
+          s.signatories = [];
+        }
+      }
+    }
+  }
+
+  // Заполнить approval из participants если пустое
+  if (out.approval && typeof out.approval === 'object' && out.participants && typeof out.participants === 'object') {
+    const appr = out.approval as Record<string, unknown>;
+    const par = out.participants as Record<string, unknown>;
+    const fillSide = (approvalKey: string, participantsKey: string) => {
+      const side = appr[approvalKey] as Record<string, unknown> | undefined;
+      if (!side) return;
+      const grp = par[participantsKey] as Record<string, unknown> | undefined;
+      if (!grp || typeof grp !== 'object' || Array.isArray(grp)) return;
+      const people = Array.isArray(grp.people) ? (grp.people as unknown[]) : [];
+      const namesFromPeople = people
+        .map((row) => {
+          const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+          return toStr(r.fullName ?? r.name ?? r.фамилия_имя).trim();
+        })
+        .filter(Boolean);
+      const existing = Array.isArray(side.signatories)
+        ? (side.signatories as unknown[]).map((s) => toStr(s).trim()).filter(Boolean)
+        : [];
+      if (existing.length === 0 && namesFromPeople.length > 0) {
+        side.signatories = namesFromPeople;
+      }
+      if (isBlankStr(side.organization) && !isBlankStr(grp.organizationName)) {
+        side.organization = toStr(grp.organizationName);
+      } else if (
+        /^исполнитель$|^заказчик$/i.test(toStr(side.organization)) &&
+        !isBlankStr(grp.organizationName)
+      ) {
+        side.organization = toStr(grp.organizationName);
+      }
+    };
+    fillSide('executor', 'executor');
+    fillSide('customer', 'customer');
+  }
+
+  return out;
+}
+
+/** Приводит произвольный черновик к форме Protocol перед Zod-проверкой. */
+export function coerceProtocolPartial(partial: unknown): Protocol {
+  const pre = preprocessLlmProtocolShape(partial);
+  const p = pre && typeof pre === 'object' && !Array.isArray(pre) ? pre : {};
+
+  const toPeople = (value: unknown) =>
+    toArr(value)
+      .map((row: unknown) => {
+        const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+        return {
+          fullName: toStr(r.fullName ?? r.name ?? r.фамилия_имя),
+          position: toStr(r.position ?? r.role ?? r.должность),
+        };
+      })
+      .filter((person) => isValidParticipantRow(person.fullName, person.position));
+
+  const agendaRaw = p.agenda as Record<string, unknown> | undefined;
   const meetingContentRaw =
     p.meetingContent && typeof p.meetingContent === 'object' && !Array.isArray(p.meetingContent)
       ? (p.meetingContent as Record<string, unknown>)
+      : {};
+  const approvalRaw =
+    p.approval && typeof p.approval === 'object' && !Array.isArray(p.approval)
+      ? (p.approval as Record<string, unknown>)
+      : {};
+  const custApproval =
+    approvalRaw.customer && typeof approvalRaw.customer === 'object'
+      ? (approvalRaw.customer as Record<string, unknown>)
+      : {};
+  const execApproval =
+    approvalRaw.executor && typeof approvalRaw.executor === 'object'
+      ? (approvalRaw.executor as Record<string, unknown>)
       : {};
 
   return {
     protocolNumber: toStr(p.protocolNumber),
     meetingDate: toStr(p.meetingDate),
+    protocolTitle: toStr(p.protocolTitle),
+    contractNumber: p.contractNumber !== undefined ? toStr(p.contractNumber) : undefined,
+    contractDate: p.contractDate !== undefined ? toStr(p.contractDate) : undefined,
+    contractSubject: p.contractSubject !== undefined ? toStr(p.contractSubject) : undefined,
     agenda: {
-      title: toStr((p.agenda as Record<string, unknown> | undefined)?.title),
-      items: toArr<string>((p.agenda as Record<string, unknown> | undefined)?.items).map(toStr),
+      items: toArr<string>(agendaRaw?.items ?? agendaRaw?.пункты).map(toStr),
     },
     participants: {
       customer: {
@@ -159,96 +318,45 @@ export function coerceProtocolPartial(partial: unknown): Protocol {
         ),
       },
     },
-    termsAndDefinitions: toArr(p.termsAndDefinitions).map((item: unknown) => {
-      const row = item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
-      return { term: toStr(row.term), definition: toStr(row.definition) };
-    }),
-    abbreviations: toArr(p.abbreviations).map((item: unknown) => {
-      const row = item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
-      return { abbreviation: toStr(row.abbreviation), fullForm: toStr(row.fullForm) };
-    }),
     meetingContent: {
-      introduction: meetingContentRaw.introduction !== undefined ? toStr(meetingContentRaw.introduction) : '',
       topics: toArr(meetingContentRaw.topics).map((topic: unknown) => {
         const t = topic && typeof topic === 'object' ? (topic as Record<string, unknown>) : {};
         return {
-          title: toStr(t.title),
-          content: toStr(t.content),
-          subtopics: toArr(t.subtopics).map((sub: unknown) => {
-            const s = sub && typeof sub === 'object' ? (sub as Record<string, unknown>) : {};
-            return { title: s.title !== undefined ? toStr(s.title) : '', content: toStr(s.content) };
-          }),
+          title: toStr(t.title ?? t.тема),
+          listened: toStr(t.listened ?? t.слушали ?? ''),
+          discussed: toStr(t.discussed ?? t.обсудили ?? t.content ?? ''),
+          decided: toStr(t.decided ?? t.решили ?? ''),
         };
       }),
-      migrationFeatures: toArr(meetingContentRaw.migrationFeatures).map((feat: unknown) => {
-        const f = feat && typeof feat === 'object' ? (feat as Record<string, unknown>) : {};
-        return { tab: toStr(f.tab), features: toStr(f.features) };
+      summary: toArr(meetingContentRaw.summary).map((row: unknown) => {
+        const r = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+        return {
+          question: toStr(r.question ?? r.вопрос ?? ''),
+          decision: toStr(r.decision ?? r.решение ?? ''),
+        };
       }),
     },
-    questionsAndAnswers: toArr(p.questionsAndAnswers).map((qa: unknown) => {
-      const row = qa && typeof qa === 'object' ? (qa as Record<string, unknown>) : {};
-      return { question: toStr(row.question), answer: toStr(row.answer) };
-    }),
-    decisions: toArr(p.decisions).map((decision: unknown) => {
-      const row = decision && typeof decision === 'object' ? (decision as Record<string, unknown>) : {};
-      return { decision: toStr(row.decision), responsible: toStr(row.responsible) };
-    }),
-    openQuestions: toArr<string>(p.openQuestions).map(toStr),
     approval: {
-      executorSignature: {
-        organization: toStr(
-          (
-            (p.approval as Record<string, unknown> | undefined)?.executorSignature as
-              | Record<string, unknown>
-              | undefined
-          )?.organization,
-        ),
-        representative: toStr(
-          (
-            (p.approval as Record<string, unknown> | undefined)?.executorSignature as
-              | Record<string, unknown>
-              | undefined
-          )?.representative,
-        ),
+      customer: {
+        organization: toStr(custApproval.organization ?? custApproval.организация ?? 'Заказчик'),
+        signatories: toArr<string>(custApproval.signatories ?? custApproval.подписанты).map(toStr).filter(Boolean),
       },
-      customerSignature: {
-        organization: toStr(
-          (
-            (p.approval as Record<string, unknown> | undefined)?.customerSignature as
-              | Record<string, unknown>
-              | undefined
-          )?.organization,
-        ),
-        representative: toStr(
-          (
-            (p.approval as Record<string, unknown> | undefined)?.customerSignature as
-              | Record<string, unknown>
-              | undefined
-          )?.representative,
-        ),
+      executor: {
+        organization: toStr(execApproval.organization ?? execApproval.организация ?? 'Исполнитель'),
+        signatories: toArr<string>(execApproval.signatories ?? execApproval.подписанты).map(toStr).filter(Boolean),
       },
     },
   };
 }
 
-/**
- * Жёсткая проверка соответствия `ProtocolSchema` после получения итогового JSON от модели.
- * Частичный поток streamObject не гарантирует валидность — всегда вызывать на финальном объекте.
- */
 export function parseProtocolStrict(input: unknown): Protocol {
   return ProtocolSchema.parse(coerceProtocolPartial(input));
 }
 
-/**
- * Тот же разбор без исключения — для логов и диагностики.
- */
 export function safeParseProtocol(input: unknown) {
   return ProtocolSchema.safeParse(coerceProtocolPartial(input));
 }
 
-/**
- * Схема для валидации и анализа исходной расшифровки встречи
- */
 export const TranscriptAnalysisSchema = z.object({
   hasContradictions: z.boolean().describe('Обнаружены ли противоречия'),
   contradictions: z.array(z.string()).describe('Список обнаруженных противоречий'),
@@ -260,7 +368,6 @@ export const TranscriptAnalysisSchema = z.object({
 
 export type TranscriptAnalysis = z.infer<typeof TranscriptAnalysisSchema>;
 
-// Схема инструкции по формированию протокола
 export const ProtocolInstructionSchema = z.object({
   instruction: z.string().describe('Подробная инструкция по созданию протокола'),
   openQuestions: z.array(z.string()).describe('Список вопросов для уточнения'),

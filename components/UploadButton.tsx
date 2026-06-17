@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { toast } from "sonner";
 
 export function UploadButton({ onUpload }: { onUpload: (fileId: string, name: string) => void }) {
   const [loading, setLoading] = useState(false);
@@ -22,11 +23,11 @@ export function UploadButton({ onUpload }: { onUpload: (fileId: string, name: st
       if (json.fileId) {
         onUpload(json.fileId, file.name);
       } else {
-        alert("Ошибка загрузки файла");
+        toast.error('Ошибка загрузки', { description: json?.error || 'Не удалось загрузить файл.' });
       }
     } catch (err) {
       console.error("Ошибка при загрузке файла:", err);
-      alert("Ошибка при загрузке файла");
+      toast.error('Ошибка загрузки', { description: String(err) });
     } finally {
       setLoading(false);
       // Очищаем значение input'а для возможности выбрать один и тот же файл снова

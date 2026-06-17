@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
+  ChevronLeft,
+  ChevronRight,
   Copy,
   Download,
   FileSpreadsheetIcon,
@@ -16,14 +18,14 @@ import {
   X,
   Shield,
 } from 'lucide-react';
-import remarkBreaks from 'remark-breaks';
-
+import { toast } from 'sonner';
 import { Response } from '@/components/ai-elements/response';
 import { Button } from '@/components/ui/button';
 import { DocumentReviewPanel } from '@/components/document/DocumentReviewPanel';
 import type { DocumentReview } from '@/app/api/chat/agents/review-agent';
 import type { Attachment, DocumentState } from '@/lib/document/types';
-import { buildDocxMarkdown, extractTitleFromMarkdown, formatDocumentContent, sanitizeFilename } from '@/lib/document/formatting';
+import type { ChatTransportBodyExtras } from '@/components/chat/PromptInputWrapper';
+import { buildDocxMarkdown, extractTitleFromMarkdown, formatDocumentContent, normalizeDocumentPanelMarkdown, sanitizeFilename } from '@/lib/document/formatting';
 import { copyTextToClipboard } from '@/lib/copyToClipboard';
 
 type DocumentPanelProps = {
@@ -32,6 +34,10 @@ type DocumentPanelProps = {
   onEdit?: (payload: DocumentState) => void;
   attachments?: Attachment[];
   onSendReview?: (text: string) => void;
+  onQuote?: (text: string) => void;
+  chatReviewBody?: Pick<ChatTransportBodyExtras, 'chatProvider' | 'chatModel' | 'useThinking'>;
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
 };
 
 function getFileExt(name: string) {
@@ -97,7 +103,17 @@ function isImageAttachment(att: Attachment) {
   );
 }
 
-export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendReview }: DocumentPanelProps) => {
+export const DocumentPanel = ({
+  document,
+  onCopy,
+  onEdit,
+  attachments,
+  onSendReview,
+  onQuote,
+  chatReviewBody,
+  collapsed,
+  onToggleCollapsed,
+}: DocumentPanelProps) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [isBundling, setIsBundling] = useState(false);
@@ -109,19 +125,42 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
   const [isReviewing, setIsReviewing] = useState(false);
   const [isReviewPanelOpen, setIsReviewPanelOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // RAF throttle: limit Streamdown re-renders to one per animation frame during streaming.
+  const displayContentRef = useRef(document.content);
+  const [displayContent, setDisplayContent] = useState(document.content);
+  const rafRef = useRef<number>(0);
+  // Quote tooltip: shown when user selects text inside the document panel
+  const [quoteTooltip, setQuoteTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    displayContentRef.current = document.content;
+    if (!document.isStreaming) {
+      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }
+      setDisplayContent(document.content);
+      return;
+    }
+    if (!rafRef.current) {
+      rafRef.current = requestAnimationFrame(() => {
+        setDisplayContent(displayContentRef.current);
+        rafRef.current = 0;
+      });
+    }
+  }, [document.content, document.isStreaming]);
+
+  useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
 
   useEffect(() => {
     if (!editing) {
       setLocalDoc(document);
       setDraftTitle(document.title);
       setDraftContent(document.content);
-      
+
       // Проверяем наличие .docx данных в документе
       if (document.docxData) {
         setDocxData(document.docxData);
       } else if (document.content.trim() && !docxData && !document.isStreaming) {
         // Автоматически генерируем docxData если контент есть, но docxData нет
-        buildDocxData(document.title || 'Документ', document.content)
+        buildDocxData(document.title || 'Протокол', document.content)
           .then(data => setDocxData(data))
           .catch(err => console.warn('Failed to auto-generate docx', err));
       }
@@ -129,16 +168,25 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
   }, [document, editing]);
 
   useEffect(() => {
-    if (document.isStreaming && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (!document.isStreaming || !scrollRef.current) return;
+    const el = scrollRef.current;
+    // Instant scroll (no smooth) — smooth scroll in tight loops constantly restarts
+    // and causes the viewport to jump to position 0. Only scroll if near bottom.
+    if (el.scrollHeight - el.scrollTop - el.clientHeight <= 80) {
+      el.scrollTop = el.scrollHeight;
     }
   }, [document.content, document.isStreaming]);
 
-  const isEmpty = !localDoc.isStreaming && !localDoc.title && !localDoc.content.trim().length;
+  // Use document prop (not localDoc) for empty/protocol checks to avoid a one-frame lag:
+  // localDoc is synced via useEffect which runs after paint, so on the render where the
+  // loading overlay disappears, localDoc can still be empty while document already has content.
+  const isEmpty = !document.isStreaming && !document.title && !document.content.trim().length;
+  /** Реальный протокол в документе (не плейсхолдер пустой панели). */
+  const hasProtocol = Boolean(document.content.trim());
 
   const displayTitle = (() => {
-    const raw = String(localDoc.title || '').trim();
-    if (localDoc.isStreaming) {
+    const raw = String(document.title || '').trim();
+    if (document.isStreaming) {
       return raw || 'Генерация документа…';
     }
 
@@ -146,16 +194,22 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
       !raw ||
       raw.toLowerCase() === 'чат' ||
       raw.toLowerCase() === 'документ' ||
+      raw.toLowerCase() === 'протокол' ||
       raw.toLowerCase() === 'пример документа';
-    const fromContent = extractTitleFromMarkdown(localDoc.content);
-    return generic && fromContent ? fromContent : raw || 'Пример документа';
+    const fromContent = extractTitleFromMarkdown(document.content);
+    return generic && fromContent ? fromContent : raw || 'Протокол';
   })();
 
-  const viewContent = isEmpty ? 'Описание: пример описания.' : localDoc.content;
-  const formattedContent = useMemo(() => formatDocumentContent(viewContent), [viewContent]);
+  const viewContent = isEmpty ? 'Здесь будет ваш протокол.' : (editing ? draftContent : (displayContent || document.content));
+  const formattedContent = useMemo(() => {
+    const normalized = normalizeDocumentPanelMarkdown(viewContent);
+    return formatDocumentContent(normalized);
+  }, [viewContent]);
 
   const handleCopy = async () => {
-    const formatted = `# ${displayTitle}\n\n${viewContent}`;
+    const raw = `# ${displayTitle}\n\n${viewContent}`;
+    // Strip HTML tags so <br> doesn't appear literally in the clipboard
+    const formatted = raw.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '');
 
     const ok = await copyTextToClipboard(formatted);
     if (ok) {
@@ -164,13 +218,15 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
       setTimeout(() => setCopied(false), 2000);
     } else {
       console.error('Ошибка при копировании: буфер недоступен');
-      alert('Копирование недоступно (HTTPS или разрешение браузера).');
+      toast.error('Копирование недоступно', { description: 'Требуется HTTPS или разрешение браузера на буфер обмена.' });
     }
   };
 
   const handleReview = async () => {
-    if (!localDoc.content.trim()) {
-      alert('Невозможно проверить пустой документ');
+    if (!hasProtocol) {
+      toast.warning('Протокол ещё не сформирован', {
+        description: 'Сначала сформируйте протокол в диалоге, затем проверьте его.',
+      });
       return;
     }
 
@@ -179,19 +235,27 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
       const response = await fetch('/api/review-document', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: localDoc.content }),
+        body: JSON.stringify({
+          content: localDoc.content,
+          ...(chatReviewBody ?? { chatProvider: 'ollama' as const }),
+        }),
       });
 
+      const result = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error('Ошибка при проверке документа');
+        const msg =
+          typeof result?.error === 'string'
+            ? result.error
+            : 'Ошибка при проверке документа';
+        throw new Error(msg);
       }
 
-      const result: DocumentReview = await response.json();
-      setReviewResult(result);
+      const review = result as DocumentReview;
+      setReviewResult(review);
       setIsReviewPanelOpen(true);
     } catch (error) {
       console.error('Review error:', error);
-      alert('Ошибка при проверке документа: ' + String(error));
+      toast.error('Ошибка проверки документа', { description: String(error) });
     } finally {
       setIsReviewing(false);
     }
@@ -212,7 +276,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
   };
 
   const handleDownloadBundle = async () => {
-    if (isBundling) return;
+    if (isBundling || !hasProtocol) return;
 
     setIsBundling(true);
     try {
@@ -306,7 +370,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
   };
 
   const handleDownloadDocx = async () => {
-    if (!docxData) return;
+    if (!hasProtocol || !docxData) return;
 
     try {
       void persistProtocolExample();
@@ -384,17 +448,58 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
     }
   };
 
+  if (collapsed) {
+    return (
+      <div
+        className={
+          'flex h-full w-10 shrink-0 flex-col border-l bg-background overflow-hidden ' +
+          'transition-[width] duration-200 ease-in-out'
+        }
+      >
+        <div className="flex flex-1 items-start justify-start border-b p-2 pl-1">
+          <button
+            type="button"
+            onClick={onToggleCollapsed}
+            className="p-1 border rounded shrink-0"
+            aria-label="Показать протокол"
+            title="Показать протокол"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex h-full flex-col border-l bg-background">
-      <div className="border-b px-4 py-3">
+    <div
+      className={
+        'flex h-full flex-1 min-w-[280px] flex-col border-l bg-background shrink-0 overflow-hidden ' +
+        'transition-[width] duration-200 ease-in-out'
+      }
+    >
+      <div className="border-b py-3 pl-2 pr-4">
         <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            {onToggleCollapsed && (
+              <button
+                type="button"
+                onClick={onToggleCollapsed}
+                className="shrink-0 p-1 border rounded"
+                aria-label="Скрыть протокол"
+                title="Скрыть протокол"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            )}
+            <div className="min-w-0">
             <div className="text-sm font-medium truncate">{displayTitle}</div>
             {localDoc.isStreaming && (
-              <div className="text-xs text-muted-foreground">Генерация документа…</div>
+              <div className="text-xs text-muted-foreground">Генерация протокола…</div>
             )}
+            </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             {!editing ? (
               <>
                 <Button
@@ -414,7 +519,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
                   type="button"
                   title={isReviewing ? "Проверка документа..." : "Проверить документ"}
                   aria-label={isReviewing ? "Проверка документа..." : "Проверить документ"}
-                  disabled={isReviewing || localDoc.isStreaming}
+                  disabled={!hasProtocol || isReviewing || localDoc.isStreaming}
                 >
                   {isReviewing ? (
                     <Loader className="size-4 animate-spin" />
@@ -441,7 +546,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
                   type="button"
                   title="Скачать протокол (.docx)"
                   aria-label="Скачать протокол (.docx)"
-                  disabled={!docxData || localDoc.isStreaming || !localDoc.content.trim()}
+                  disabled={!hasProtocol || !docxData || localDoc.isStreaming}
                 >
                   <FileText className="size-4" />
                 </Button>
@@ -452,7 +557,7 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
                   type="button"
                   title="Скачать ZIP (документ + вложения)"
                   aria-label="Скачать ZIP (документ + вложения)"
-                  disabled={!docxData || localDoc.isStreaming || !localDoc.content.trim() || isBundling}
+                  disabled={!hasProtocol || !docxData || localDoc.isStreaming || isBundling}
                 >
                   <Download className="size-4" />
                 </Button>
@@ -495,7 +600,41 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
         </div>
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-auto p-6">
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-auto p-6"
+        onMouseDown={() => setQuoteTooltip(null)}
+        onMouseUp={() => {
+          if (!onQuote || editing || document.isStreaming) return;
+          const sel = window.getSelection();
+          const text = sel?.toString().trim() ?? '';
+          if (!text || text.length > 600) return;
+          const range = sel!.getRangeAt(0);
+          const rect = range.getBoundingClientRect();
+          setQuoteTooltip({ text, x: rect.left + rect.width / 2, y: rect.top });
+        }}
+      >
+        {quoteTooltip && (
+          <div
+            className="fixed z-50 -translate-x-1/2 -translate-y-full pointer-events-auto"
+            style={{ left: quoteTooltip.x, top: quoteTooltip.y - 6 }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onMouseUp={(e) => e.stopPropagation()}
+          >
+            <Button
+              size="sm"
+              variant="default"
+              className="shadow-lg text-xs h-7 px-3"
+              onClick={() => {
+                onQuote?.(quoteTooltip.text);
+                setQuoteTooltip(null);
+                window.getSelection()?.removeAllRanges();
+              }}
+            >
+              Цитировать в чат
+            </Button>
+          </div>
+        )}
         {editing ? (
           <div className="space-y-3">
             <input
@@ -512,9 +651,20 @@ export const DocumentPanel = ({ document, onCopy, onEdit, attachments, onSendRev
             />
           </div>
         ) : (
-          <Response className="prose prose-sm max-w-none dark:prose-invert" remarkPlugins={[remarkBreaks]}>
-            {formattedContent}
-          </Response>
+          <div className="relative">
+            <Response
+              className="document-panel-markdown prose prose-sm max-w-none dark:prose-invert"
+              controls={{ table: false }}
+            >
+              {formattedContent}
+            </Response>
+            {document.isStreaming && (
+              <span
+                aria-hidden="true"
+                className="inline-block w-[2px] h-[1em] bg-current align-middle ml-[1px] animate-[blink_1s_step-end_infinite]"
+              />
+            )}
+          </div>
         )}
       </div>
 

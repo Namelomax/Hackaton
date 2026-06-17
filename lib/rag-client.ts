@@ -34,7 +34,7 @@ export async function fetchRagSnippet(
     }
     const data = (await res.json().catch(() => null)) as { answer?: string } | null;
     const answer = typeof data?.answer === 'string' ? data.answer : '';
-    return answer.trim().slice(0, 12000);
+    return answer.trim().slice(0, 6000);
   } catch {
     return '';
   }

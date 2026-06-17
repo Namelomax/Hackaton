@@ -62,7 +62,9 @@ docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml run --r
 
 ### Длина контекста (`OLLAMA_CONTEXT_LENGTH`)
 
-В [`docker-compose.yml`](docker-compose.yml) по умолчанию **16384**. Значения вроде **260000** на двух потребительских GPU заставляют Ollama вынести большинство слоёв и KV на **CPU** — ответ может не появляться долго, в логах **`POST /v1/chat/completions` → `500` ровно через `5m0s`**.
+В [`docker-compose.yml`](docker-compose.yml) по умолчанию **131072 (128k)** — под **qwen3.5:9b** с полной расшифровкой в промпте. Ответы **медленнее**, зато реже `reason=length` и пустые сообщения.
+
+**qwen3:14b** в Ollama обычно ограничен **~40960** (`n_ctx_train`); для 128k в чате выбирайте **qwen3.5:9b**. После смены `.env`: `docker compose up -d --force-recreate ollama web`.
 
 ### Почему `docker compose logs ollama -f` «не меняется» после правки `.env`
 
@@ -110,6 +112,37 @@ docker compose up -d
 ```
 
 Предупреждения про multimodal / «Missing required fields» связаны с тем, что в `rag-api` для LightRAG частично используется упрощённая LLM-заглушка; на работу поиска после успешных эмбеддингов это обычно не критично.
+
+### Пользователи «не сохраняются» / повторная регистрация того же логина
+
+Учётные записи лежат **только в SurrealDB** (таблица `users` в `SURREALDB_NAMESPACE` / `SURREALDB_DATABASE`), не в браузере. `localStorage` хранит лишь «кто вошёл» на этом устройстве.
+
+**Частые причины:**
+
+1. **Разные базы.** Регистрация с `npm run dev` на ПК при `SURREALDB_URL=ws://surrealdb:8000/rpc` не доходит до сервера (хост `surrealdb` существует только внутри Docker). Нужно `ws://127.0.0.1:8000/rpc` на хосте или вход через **тот же** URL, что у деплоя (`http://сервер:3000`).
+2. **Разные тома Docker.** Том `<compose_project>_surreal-data` зависит от имени проекта (`COMPOSE_PROJECT_NAME` или имя папки). `chatbot_surreal-data` и `chatbot2_surreal-data` — **разные** БД. В SQL: `SELECT * FROM users` пусто — это нормально для нового тома.
+3. **Пароль Surreal.** `SURREAL_ROOT_PASSWORD` у контейнера `surrealdb` и `SURREALDB_PASSWORD` у `web` должны совпадать.
+
+**Проверка с сервера** (один и тот же инстанс, что использует `web`):
+
+```bash
+curl -s http://127.0.0.1:3000/api/health/db | jq .
+```
+
+Смотрите `surreal.namespace`, `surreal.database`, `userCount`. После регистрации `userCount` должен стать ≥ 1. С другого ПК откройте **тот же** сайт и снова вызовите `/api/health/db` — значения должны совпасть.
+
+В Surreal CLI:
+
+```bash
+docker compose exec surrealdb /surreal sql \
+  --endpoint ws://127.0.0.1:8000/rpc \
+  --namespace chatbot --database main \
+  --username root --password root
+```
+
+```sql
+SELECT id, username, usernameLower FROM users;
+```
 
 ### SurrealDB: версия движка и npm-клиент
 

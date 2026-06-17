@@ -5,10 +5,26 @@ import {
   ProtocolSchema,
   coerceProtocolPartial,
   parseProtocolStrict,
+  extractNoObjectGeneratedText,
+  parseLooseJsonObject,
   type Protocol,
 } from '@/lib/schemas/protocol-schema';
 import { generateProtocolDocx } from '@/lib/docx-generator';
 import { SGR_DOCUMENT_AGENT_PROMPT } from '@/lib/prompts/sgr-prompts';
+import { PROTOCOL_REGULATION } from '@/lib/prompts/regulation';
+import { ollamaProtocolMaxOutputTokens } from '@/lib/ollama-limits';
+import {
+  buildProtocolDraftFromChat,
+  formatChatDraftForPrompt,
+} from '@/lib/protocol-chat-extract';
+import {
+  cleanProtocolText,
+  formatProtocolSectionHeading,
+  formatContractBlock,
+  formatSummaryDecisionForMarkdown,
+  isValidParticipantRow,
+  resolveApprovalForDocument,
+} from '@/lib/protocol-markdown-format';
 
 function extractMessageText(msg: any): string {
   if (!msg) return '';
@@ -33,6 +49,7 @@ function stripTimecodeMarkers(text: string): string {
   if (!text) return '';
   return text
     .replace(/\{\{ТС:\s*\d{1,2}:\d{2}(?::\d{2})?\}\}/gi, '')
+    .replace(/\[ТС:\s*\d{1,2}:\d{2}(?::\d{2})?\]/gi, '')
     .replace(/\[TC:\s*\d{1,2}:\d{2}(?::\d{2})?\]/gi, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
@@ -72,6 +89,10 @@ export async function runDocumentAgent(context: AgentContext) {
           0.1,
           abortSignal ?? undefined,
         );
+        const doneId = `done-${Date.now()}`;
+        writer.write({ type: 'text-start', id: doneId });
+        writer.write({ type: 'text-delta', id: doneId, delta: 'Протокол обследования сформирован.' });
+        writer.write({ type: 'text-end', id: doneId });
       } catch (error) {
         console.error('Document generation error:', error);
         writer.write({ type: 'text-start', id: 'error' });
@@ -149,26 +170,34 @@ export async function generateFinalDocument(
     ? `\n\nСУЩЕСТВУЮЩАЯ ВЕРСИЯ ДОКУМЕНТА (пользователь редактировал вручную):\n"""\n${existingDocument}\n"""\n\n`
     : '';
 
-  const progressId = `protocol-${crypto.randomUUID()}`;
-  dataStream.write({ type: 'text-start', id: progressId });
-
-  dataStream.write({
-    type: 'text-delta',
-    id: progressId,
-    delta: '📝 Формирование протокола обследования\n',
-  });
+  const chatDraft = buildProtocolDraftFromChat(uiMessages);
+  const agreedChatContext = formatChatDraftForPrompt(chatDraft);
+  if (Object.keys(chatDraft).length > 0) {
+    console.log(
+      `[generateFinalDocument] chat draft: topics=${chatDraft.meetingContent?.topics?.length ?? 0} summary=${chatDraft.meetingContent?.summary?.length ?? 0} approval_cust=${chatDraft.approval?.customer?.signatories?.length ?? 0}`,
+    );
+  }
 
   // Use SGR-enhanced document generation prompt
   const protocolPrompt = SGR_DOCUMENT_AGENT_PROMPT
+    .replace('{{REGULATION}}', PROTOCOL_REGULATION)
     .replace('{{CONVERSATION_CONTEXT}}', conversationContext)
-    .replace('{{EXISTING_DOCUMENT_CONTEXT}}', existingDocumentContext);
+    .replace('{{EXISTING_DOCUMENT_CONTEXT}}', existingDocumentContext)
+    .replace(
+      '{{AGREED_CHAT_CONTEXT}}',
+      agreedChatContext ||
+        '(Отдельный блок согласованных разделов не выделен — используйте подтверждённые пользователем формулировки из истории диалога.)',
+    );
 
   let markdownContent = '';
 
   try {
+    const maxOutputTokens = ollamaProtocolMaxOutputTokens();
+    console.log(`[generateFinalDocument] maxOutputTokens=${maxOutputTokens}`);
     const streamResult = streamObject({
       model,
       temperature,
+      maxOutputTokens,
       schema: ProtocolSchema,
       prompt: protocolPrompt,
       ...(abortSignal ? { abortSignal } : {}),
@@ -176,6 +205,10 @@ export async function generateFinalDocument(
 
     let lastMarkdown = '';
     let lastTitle = '';
+    // Track exactly what has been sent to the frontend to compute true deltas.
+    // Clear once upfront so the panel is blank before streaming begins.
+    writeData({ type: 'data-clear', data: null, transient: true });
+    let sentContent = '';
 
     for await (const partial of streamResult.partialObjectStream) {
       const safeProtocol = coerceProtocolPartial(partial);
@@ -197,16 +230,37 @@ export async function generateFinalDocument(
         }
       }
 
-      writeData({ type: 'data-clear', data: null, transient: true });
-      writeData({ type: 'data-documentDelta', data: nextMarkdown, transient: true });
+      // Send only the new delta so the frontend can append without clearing.
+      // If content was reorganized (doesn't start with what we sent), do a full reset.
+      if (nextMarkdown.startsWith(sentContent)) {
+        const delta = nextMarkdown.slice(sentContent.length);
+        if (delta) {
+          writeData({ type: 'data-documentDelta', data: delta, transient: true });
+          sentContent = nextMarkdown;
+        }
+      } else {
+        writeData({ type: 'data-clear', data: null, transient: true });
+        writeData({ type: 'data-documentDelta', data: nextMarkdown, transient: true });
+        sentContent = nextMarkdown;
+      }
 
       lastMarkdown = nextMarkdown;
       markdownContent = nextMarkdown;
     }
 
     let validated: Protocol;
+    let rawFinal: unknown;
     try {
-      validated = parseProtocolStrict(await streamResult.object);
+      rawFinal = await streamResult.object;
+    } catch (objErr) {
+      const fallbackText = extractNoObjectGeneratedText(objErr);
+      const recovered = fallbackText ? parseLooseJsonObject(fallbackText) : null;
+      if (!recovered) throw objErr;
+      rawFinal = recovered;
+      console.warn('[generateFinalDocument] recovered JSON from fenced / non-schema LLM output');
+    }
+    try {
+      validated = parseProtocolStrict(rawFinal);
     } catch (validationErr) {
       console.error('[generateFinalDocument] Protocol schema validation failed:', validationErr);
       throw new Error(
@@ -216,8 +270,16 @@ export async function generateFinalDocument(
 
     const finalMarkdown = protocolToMarkdown(validated);
     markdownContent = finalMarkdown;
-    writeData({ type: 'data-clear', data: null, transient: true });
-    writeData({ type: 'data-documentDelta', data: finalMarkdown, transient: true });
+    // Append only what hasn't been sent yet; full reset if final was restructured.
+    if (finalMarkdown !== sentContent) {
+      if (finalMarkdown.startsWith(sentContent)) {
+        const remaining = finalMarkdown.slice(sentContent.length);
+        if (remaining) writeData({ type: 'data-documentDelta', data: remaining, transient: true });
+      } else {
+        writeData({ type: 'data-clear', data: null, transient: true });
+        writeData({ type: 'data-documentDelta', data: finalMarkdown, transient: true });
+      }
+    }
 
     writeData({ type: 'data-finish', data: null, transient: true });
 
@@ -232,130 +294,135 @@ export async function generateFinalDocument(
     });
   } catch (error) {
     console.error('Protocol generation error:', error);
-    dataStream.write({
-      type: 'text-delta',
-      id: progressId,
-      delta: '❌ Ошибка при формировании протокола. Проверьте полноту данных в расшифровке.\n',
-    });
-    dataStream.write({ type: 'text-end', id: progressId });
     throw error;
   }
 
-  dataStream.write({ type: 'text-end', id: progressId });
   return markdownContent;
+}
+
+/** Проверяет, что название организации — реальное имя, а не заглушка или мусор из LLM. */
+function isValidOrgDisplayName(name: string): boolean {
+  const s = name.trim();
+  if (!s) return false;
+  if (/^[-–—\s.]+$/.test(s)) return false;         // только дефисы/тире/точки
+  if (/^(заказчик|исполнитель)$/i.test(s)) return false;
+  if (s.length > 100) return false;                 // слишком длинно — попал контент встречи
+  return true;
+}
+
+/** Converts a multiline string to a markdown bullet list. Single-line text is returned as-is. */
+function formatMultilineField(text: string): string {
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length <= 1) return text;
+  return lines.map((l) => `- ${l}`).join('\n');
 }
 
 function protocolToMarkdown(protocol: Protocol): string {
   const normalizedNumber = String(protocol.protocolNumber || '').trim().startsWith('№')
     ? String(protocol.protocolNumber).trim()
     : `№${String(protocol.protocolNumber || '').trim()}`;
-  let md = `ПРОТОКОЛ ОБСЛЕДОВАНИЯ ${normalizedNumber}\n\n`;
 
-  md += `1.\tДата встречи: ${protocol.meetingDate}\n\n`;
+  let md = `ПРОТОКОЛ ${normalizedNumber} ОТ ${protocol.meetingDate}\n\n`;
 
-  md += `2.\tПовестка: ${protocol.agenda.title}\n`;
+  const title = cleanProtocolText(protocol.protocolTitle);
+  if (title) md += `**${title}**\n\n`;
+
+  md += `${formatContractBlock(protocol)}\n\n`;
+  if (protocol.contractSubject) {
+    md += `Тема договора: ${cleanProtocolText(protocol.contractSubject)}\n\n`;
+  }
+
+  md += '---\n\n';
+
+  // 1. Дата собрания
+  md += formatProtocolSectionHeading(1, `Дата собрания: ${protocol.meetingDate}`);
+
+  // 2. Повестка
+  md += formatProtocolSectionHeading(2, 'Повестка:');
   if (protocol.agenda.items.length > 0) {
-    protocol.agenda.items.forEach((item) => {
-      md += `- ${item}\n`;
+    protocol.agenda.items.forEach((item, i) => {
+      md += `${i + 1}) ${cleanProtocolText(item)};\n`;
     });
   }
   md += '\n\n';
 
-  md += `3.\tУчастники:\n\n`;
-  md += `**Со стороны Заказчика ${protocol.participants.customer.organizationName}:**\n\n`;
+  // 3. Участники
+  md += formatProtocolSectionHeading(3, 'Участники:');
+
+  const custOrg = protocol.participants.customer.organizationName.trim();
+  md += `**Заказчик${isValidOrgDisplayName(custOrg) ? ` — ${custOrg}` : ''}**\n\n`;
   md += '| ФИО | Должность |\n';
   md += '| --- | --- |\n';
-  protocol.participants.customer.people.forEach((p) => {
-    md += `| ${p.fullName} | ${p.position} |\n`;
-  });
+  protocol.participants.customer.people
+    .filter((p) => isValidParticipantRow(p.fullName, p.position))
+    .forEach((p) => { md += `| ${p.fullName} | ${p.position} |\n`; });
 
   md += '\n\n';
-  md += `**Со стороны Исполнителя ${protocol.participants.executor.organizationName}:**\n\n`;
-  md += '| ФИО | Должность/роль |\n';
+
+  const execOrg = protocol.participants.executor.organizationName.trim();
+  md += `**Исполнитель${isValidOrgDisplayName(execOrg) ? ` — ${execOrg}` : ''}**\n\n`;
+  md += '| ФИО | Должность |\n';
   md += '| --- | --- |\n';
-  protocol.participants.executor.people.forEach((p) => {
-    md += `| ${p.fullName} | ${p.position} |\n`;
-  });
+  protocol.participants.executor.people
+    .filter((p) => isValidParticipantRow(p.fullName, p.position))
+    .forEach((p) => { md += `| ${p.fullName} | ${p.position} |\n`; });
 
   md += '\n\n';
 
-  md += `4.\tТермины и определения:\n\n`;
-  protocol.termsAndDefinitions.forEach((term) => {
-    md += `- ${term.term} – ${term.definition}\n`;
+  // 4. Содержание встречи
+  md += formatProtocolSectionHeading(4, 'Содержание встречи:');
+  protocol.meetingContent.topics.forEach((topic, i) => {
+    md += `**${i + 1}) ${cleanProtocolText(topic.title)}**\n\n`;
+    const listened = cleanProtocolText(topic.listened);
+    const discussed = cleanProtocolText(topic.discussed);
+    const decided = cleanProtocolText(topic.decided);
+    if (listened) md += `**Слушали:** ${listened}\n\n`;
+    if (discussed) md += `**Обсудили:**\n\n${formatMultilineField(discussed)}\n\n`;
+    if (decided) md += `**Решили:**\n\n${formatMultilineField(decided)}\n\n`;
   });
 
-  md += '\n\n';
-
-  md += `5.\tСокращения и обозначения:\n\n`;
-  protocol.abbreviations.forEach((abbr) => {
-    md += `- ${abbr.abbreviation} – ${abbr.fullForm}\n`;
-  });
-
-  md += '\n\n';
-
-  md += `6.\tСодержание встречи:\n\n`;
-  md += 'В ходе встречи обсуждались следующие вопросы:\n\n';
-  if (protocol.meetingContent.introduction) {
-    md += `${protocol.meetingContent.introduction}\n\n`;
-  }
-  protocol.meetingContent.topics.forEach((topic) => {
-    md += `- ${topic.title}\n`;
-    md += `  ${topic.content}\n`;
-    if (topic.subtopics && topic.subtopics.length > 0) {
-      topic.subtopics.forEach((sub) => {
-        if (sub.title) {
-          md += `  - ${sub.title}\n`;
-        }
-        md += `    ${sub.content}\n`;
-      });
-    }
-  });
-  md += '\n\n';
-  if (protocol.meetingContent.migrationFeatures && protocol.meetingContent.migrationFeatures.length > 0) {
-    md += '| Вкладка | Особенности |\n';
+  if (protocol.meetingContent.summary.length > 0) {
+    md += '**Резюме:**\n\n';
+    md += '| **Обсуждаемые вопросы** | **Принятые решения** |\n';
     md += '| --- | --- |\n';
-    protocol.meetingContent.migrationFeatures.forEach((feat) => {
-      md += `| ${feat.tab} | ${feat.features} |\n`;
+    protocol.meetingContent.summary.forEach((row) => {
+      const q = cleanProtocolText(row.question);
+      const d = formatSummaryDecisionForMarkdown(row.decision);
+      if (q || d) md += `| ${q} | ${d} |\n`;
     });
     md += '\n';
   }
 
   md += '\n\n';
 
-  md += `7.\tВопросы:\n\n`;
-  protocol.questionsAndAnswers.forEach((qa, i) => {
-    md += `- ${i + 1}. ${qa.question}\n`;
-  });
+  // 5. Согласовано — двухколоночная таблица
+  md += formatProtocolSectionHeading(5, 'Согласовано:');
 
-  // 3 пустые строки для разрыва между списками
-  md += '\n\n\n';
-  md += `**Ответы**:\n\n`;
-  protocol.questionsAndAnswers.forEach((qa, i) => {
-    md += `- ${i + 1}. ${qa.answer}\n`;
-  });
+  const approval = resolveApprovalForDocument(protocol);
+  const formatApprOrg = (org: string) => {
+    const t = org.trim();
+    if (!t || /^(заказчик|исполнитель)$/i.test(t)) return 'не указано в расшифровке';
+    if (/^ООО\s/i.test(t)) return `${t}:`;
+    // If value was wrapped in ООО «...», keep that form
+    const inner = t.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').trim();
+    if (inner !== t) return `ООО «${inner}»:`;
+    // Non-ООО entity (hackathon teams, consortia, etc.) — use as-is
+    return `${t}:`;
+  };
 
-  md += '\n\n\n';
+  const custSigs = approval.customer.signatories;
+  const execSigs = approval.executor.signatories;
+  const sigLen = Math.max(custSigs.length, execSigs.length, 1);
 
-  md += `8.\tРешения:\n\n`;
-  protocol.decisions.forEach((decision, i) => {
-    md += `- ${i + 1}. ${decision.decision}\n`;
-    md += `  Ответственный: ${decision.responsible}\n`;
-  });
+  md += `| **Со стороны Заказчика** | **Со стороны Исполнителя** |\n`;
+  md += `| --- | --- |\n`;
+  md += `| ${formatApprOrg(approval.customer.organization)} | ${formatApprOrg(approval.executor.organization)} |\n`;
 
-  md += '\n\n\n';
-
-  md += `9.\tОткрытые вопросы:\n\n`;
-  protocol.openQuestions.forEach((q, i) => {
-    md += `- ${i + 1}. ${q}\n`;
-  });
-
-  md += '\n\n\n';
-
-  md += '10.\tСогласовано:\n\n';
-  md += '| Со стороны Исполнителя | Со стороны Заказчика |\n';
-  md += '| --- | --- |\n';
-  md += `| ${protocol.approval.executorSignature.organization} | ${protocol.approval.customerSignature.organization} |\n`;
-  md += `| ${protocol.approval.executorSignature.representative} /______________ | ${protocol.approval.customerSignature.representative} /______________ |\n`;
+  for (let i = 0; i < sigLen; i++) {
+    const cust = custSigs[i] ? `${custSigs[i].trim()} /______________` : '______________________';
+    const exec = execSigs[i] ? `${execSigs[i].trim()} /______________` : '______________________';
+    md += `| ${cust} | ${exec} |\n`;
+  }
   md += '\n';
 
   return md;

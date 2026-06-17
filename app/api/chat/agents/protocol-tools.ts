@@ -55,8 +55,6 @@ export function createPublishInvestigationProtocolTool(
       return {
         ok: true as const,
         reasonBrief,
-        message:
-          "Протокол обследования сформирован и отправлен в правую панель документа.",
       };
     },
   });
