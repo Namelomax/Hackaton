@@ -19,64 +19,6 @@ services:
       - surreal-data:/data
     ports:
       - "${SURREAL_PORT:-8000}:8000"
-
-  # Ollama в той же сети, что rag-api/web — надёжнее, чем host.docker.internal на Linux.
-  ollama:
-    image: ollama/ollama:latest
-    restart: unless-stopped
-    # Том по умолчанию: <имя_проекта>_ollama_data (у chatbot2 — свой пустой том).
-    # Чтобы использовать уже скачанные модели из chatbot_ollama_data:
-    #   cp docker-compose.override.example.yml docker-compose.override.yml
-    # или: docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml up -d
-    environment:
-      # Все GPU видны внутри контейнера (RTX 3070 + 3080 и т.д.). Ограничить: NVIDIA_VISIBLE_DEVICES=0 или 0,1
-      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
-      # Одновременно держать только одну «большую» загрузку модели: иначе классификатор + чат + RAG/embeddings
-      # конкурируют за VRAM → eviction / зависание без новых строк в логе. 0 в Ollama = без лимита.
-      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-1}
-      # См. DEPLOY.md: 200k+ на 3080/3070 → почти всё на CPU и ответ «висит»; в логах часто 500 ровно через 5 мин.
-      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-65384}
-      # 0 = без лимита на «зависшую» загрузку весов (иначе дефолт 5m у Ollama).
-      OLLAMA_LOAD_TIMEOUT: ${OLLAMA_LOAD_TIMEOUT:-0}
-      # true — пишет тела запросов во временный каталог для отладки (см. логи при старте).
-      OLLAMA_DEBUG_LOG_REQUESTS: ${OLLAMA_DEBUG_LOG_REQUESTS:-false}
-    volumes:
-      - ollama_data:/root/.ollama
-    ports:
-      - "${OLLAMA_HOST_PORT:-127.0.0.1:11434}:11434"
-    # NVIDIA Container Toolkit на хосте: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
-    # Как в классическом compose: все GPU (3070 + 3080). Ограничить: gpus: '"device=0"' или device=0,1
-    gpus: all
-
-  rag-api:
-    build:
-      context: ./rag-api
-      dockerfile: Dockerfile
-    depends_on:
-      - ollama
-    environment:
-      # Только URL, доступный ИЗ контейнера rag-api. По умолчанию сервис ollama в той же сети.
-      # Переопределение: RAG_LOCAL_OPENAI_BASE_URL=http://ollama:11434/v1
-      # Не используйте 127.0.0.1 — внутри контейнера это не хост с Ollama.
-      LOCAL_OPENAI_BASE_URL: ${RAG_LOCAL_OPENAI_BASE_URL:-http://ollama:11434/v1}
-      LOCAL_OPENAI_API_KEY: ${OLLAMA_API_KEY:-ollama}
-      LOCAL_OPENAI_EMBEDDING_MODEL: ${LOCAL_OPENAI_EMBEDDING_MODEL:-nomic-embed-text}
-      # Реальная LLM для LightRAG (entity/relation extraction при индексации). Без этого граф пустой
-      # и retrieval всегда возвращает 0 vector chunks. Модель должна быть скачана: docker compose exec ollama ollama pull qwen3:14b
-      RAG_OLLAMA_BASE_URL: ${RAG_OLLAMA_BASE_URL:-${RAG_LOCAL_OPENAI_BASE_URL:-http://ollama:11434/v1}}
-      RAG_OLLAMA_API_KEY: ${RAG_OLLAMA_API_KEY:-${OLLAMA_API_KEY:-ollama}}
-      RAG_OLLAMA_LLM_MODEL: ${RAG_OLLAMA_LLM_MODEL:-qwen3:14b}
-      RAG_OLLAMA_LLM_TIMEOUT: ${RAG_OLLAMA_LLM_TIMEOUT:-600}
-      RAG_CORS_ORIGINS: ${RAG_CORS_ORIGINS:-http://localhost:3000}
-    volumes:
-      - rag-uploads:/app/uploads
-      - rag-output:/app/output
-      - rag-storage:/app/rag_storage
-    ports:
-      - "${RAG_API_PORT:-8001}:8000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
   web:
     build:
       context: .
@@ -84,22 +26,14 @@ services:
     depends_on:
       surrealdb:
         condition: service_started
-      ollama:
-        condition: service_started
-      rag-api:
-        condition: service_started
     environment:
       SURREALDB_URL: ${SURREALDB_URL:-ws://surrealdb:8000/rpc}
       SURREALDB_NAMESPACE: ${SURREALDB_NAMESPACE:-chatbot}
       SURREALDB_DATABASE: ${SURREALDB_DATABASE:-main}
       SURREALDB_USER: ${SURREALDB_USER:-root}
       SURREALDB_PASSWORD: ${SURREALDB_PASSWORD:-root}
-      RAG_API_URL: ${RAG_API_URL:-http://rag-api:8000}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       OPENROUTER_MODEL_DEFAULT: ${OPENROUTER_MODEL_DEFAULT:-arcee-ai/trinity-large-preview:free}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434/v1}
-      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-ollama}
-      ALLOWED_OLLAMA_MODELS: ${ALLOWED_OLLAMA_MODELS:-}
       NEXT_PUBLIC_LOCAL_MODELS: ${NEXT_PUBLIC_LOCAL_MODELS:-}
       GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY:-}
     ports:
@@ -109,9 +43,3 @@ services:
 
 volumes:
   surreal-data:
-  # Отдельный том проекта: chatbot2_ollama_data и т.д. Чтобы подключить старый том с моделями,
-  # используйте второй файл: docker compose -f docker-compose.yml -f docker-compose.ollama-shared.yml up -d
-  ollama_data:
-  rag-uploads:
-  rag-output:
-  rag-storage:
