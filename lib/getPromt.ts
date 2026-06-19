@@ -1,5 +1,4 @@
-import Surreal, { u } from "surrealdb";
-import { RecordId } from "surrealdb";
+import { Surreal, RecordId, u } from "surrealdb";
 import crypto from 'crypto';
 import { DEFAULT_PROMPT } from '@/lib/db/repositories/default-promt';
 import { messagesArrayLooksCorrupt, resolveMessagesFromRecord } from '@/lib/conversationMessages';
@@ -119,22 +118,7 @@ async function connectDB() {
       DEFINE FIELD openQuestions ON protocol_instructions TYPE array<string> DEFAULT [];
       DEFINE FIELD updated ON protocol_instructions TYPE datetime VALUE time::now();
 
-DEFINE TABLE conversations SCHEMAFULL;
-
--- ссылка на пользователей
-DEFINE FIELD user ON conversations TYPE record<users>;
-
--- массив объектов — разрешено!
-DEFINE FIELD messages ON conversations TYPE array<object> DEFAULT [];
-
--- сохраняем "сырые" сообщения для fallback
-DEFINE FIELD messages_raw ON conversations TYPE string;
-
--- заголовок (опционально)
-DEFINE FIELD title ON conversations TYPE string;
-
--- контент документа (опционально)
-DEFINE FIELD document_content ON conversations TYPE option<string>;
+DEFINE TABLE conversations SCHEMALESS;
 
 DEFINE FIELD created ON conversations TYPE datetime DEFAULT time::now() READONLY;
 

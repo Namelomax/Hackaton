@@ -9,10 +9,8 @@ export function applyOllamaOpenAiCompatOptions(
 ): void {
   if (useThinking) {
     body.think = true;
-    body.reasoning_effort = "medium";
   } else {
     body.think = false;
-    body.reasoning_effort = "none";
   }
 }
 

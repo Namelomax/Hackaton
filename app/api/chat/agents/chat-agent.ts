@@ -17,7 +17,6 @@ import {
   ollamaStreamHeartbeatMs,
   pickChatMaxOutputTokens,
 } from "@/lib/ollama-limits";
-import { PROTOCOL_REGULATION } from "@/lib/prompts/regulation";
 
 const PROTOCOL_TOOL_SYSTEM_APPENDIX = `
 
@@ -233,11 +232,6 @@ export async function runChatAgent(
     });
   }
 
-  messagesWithUserPrompt.push({
-    role: "system",
-    content: PROTOCOL_REGULATION,
-  });
-
   const lastUserMessage = messages[messages.length - 1];
   let lastUserText = "";
 
@@ -340,7 +334,7 @@ export async function runChatAgent(
       };
 
       let continueMessages: ModelMessage[] = messagesWithUserPrompt;
-      const MAX_CONTINUATIONS = 2;
+      const MAX_CONTINUATIONS = 0;
 
       for (let attempt = 0; attempt <= MAX_CONTINUATIONS; attempt++) {
         const result = streamText({
@@ -354,7 +348,7 @@ export async function runChatAgent(
           messages: continueMessages,
           system: adaptedSystemPrompt,
           tools,
-          stopWhen: stepCountIs(ragRetrievalEnabled ? 14 : 8),
+          stopWhen: stepCountIs(ragRetrievalEnabled ? 4 : 3),
           ...(abortSignal ? { abortSignal } : {}),
           onChunk: ({ chunk }) => {
             if (chunk.type === "text-delta" && "text" in chunk && chunk.text) {

@@ -10,7 +10,21 @@
       "Bash(Remove-Item \"d:\\\\Jacob\\\\Hakaton\\\\lib\\\\uploadGeminiFile.ts\")",
       "Bash(mkdir -p \"d:\\\\Jacob\\\\Hakaton\\\\.claude\")",
       "Bash(Get-ChildItem -Path \"d:\\\\Jacob\\\\Hakaton\" -Recurse -Directory -Filter \"app\")",
-      "Bash(Select-Object -First 5)"
+      "Bash(Select-Object -First 5)",
+      "Bash(docker compose *)",
+      "Bash(node -e \"const p = require\\('./node_modules/surrealdb/package.json'\\); console.log\\(p.version\\); console.log\\(Object.keys\\(p.exports || {}\\).slice\\(0,5\\)\\);\")",
+      "Bash(node -e \"const s = require\\('surrealdb'\\); console.log\\(Object.keys\\(s\\)\\);\")",
+      "Bash(node -e \"const s = require\\('surrealdb'\\); console.log\\('default:', typeof s.default\\); console.log\\('Surreal:', typeof s.Surreal\\); console.log\\('u:', typeof s.u\\);\")",
+      "Bash(node -e \"const s = require\\('surrealdb'\\); const db = new s.Surreal\\(\\); console.log\\(Object.getOwnPropertyNames\\(Object.getPrototypeOf\\(db\\)\\).filter\\(n=>n!=='constructor'\\)\\);\")",
+      "Bash(node -e ' *)",
+      "Bash(powershell -command \"\\(Get-Content 'd:/Jacob/Programming/Hakaton/lib/prompts/regulation.ts' -Raw\\).Length\")",
+      "Bash(powershell -command \"\\(Get-Content 'd:/Jacob/Programming/Hakaton/lib/prompts/sgr-prompts.ts' -Raw\\).Length\")",
+      "Bash(powershell -command \"\\(Get-Content 'd:/Jacob/Programming/Hakaton/lib/db/repositories/default-promt.ts' -Raw\\).Length\")",
+      "Bash(powershell -command \"\\(Get-Content 'd:/Jacob/Programming/Hakaton/lib/config/prompt-config.ts' -Raw\\).Length\")",
+      "Bash(node -e \"const {DEFAULT_PROMPT} = require\\('./lib/config/prompt-config.ts'\\); console.log\\('len:', DEFAULT_PROMPT?.length\\);\")",
+      "Bash(node --require ts-node/register -e \"\")",
+      "Bash(powershell -command \"\\(Select-String -Path 'd:/Jacob/Programming/Hakaton/lib/prompts/sgr-prompts.ts' -Pattern 'SGR_MAIN_AGENT_PROMPT'\\).LineNumber\")",
+      "Bash(powershell -command \"\\(Get-Content 'd:/Jacob/Programming/Hakaton/lib/prompts/sgr-prompts.ts'\\).Count\")"
     ],
     "additionalDirectories": [
       "d:\\Jacob\\Hakaton\\.claude"
