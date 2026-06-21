@@ -2,6 +2,7 @@
 
 import { Dispatch, FormEvent, SetStateAction, useEffect } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { ModelSwitcher } from './ModelSwitcher';
 
 type AuthUser = { id: string; username: string } | null;
 
@@ -20,6 +21,8 @@ type HeaderProps = {
   toggleAuthMode: () => void;
   brandLabel?: string;
   showAuthHint?: boolean;
+  selectedModel?: string;
+  onModelChange?: (model: string) => void;
 };
 
 export const Header = ({
@@ -37,6 +40,8 @@ export const Header = ({
   toggleAuthMode,
   brandLabel = 'Протоколёр',
   showAuthHint = false,
+  selectedModel = 'qwen3.5:9b',
+  onModelChange,
 }: HeaderProps) => {
   useEffect(() => {
     if (authUser) {
@@ -56,7 +61,7 @@ export const Header = ({
 
   return (
     <div className="p-3 border-b bg-muted/5">
-      <div className="w-full flex items-center justify-between gap-4">
+      <div className="w-full flex items-center justify-between gap-4 mb-2">
         <div className="flex items-center gap-2">
           <div className="h-8 w-90 shrink-0 overflow-visible">
             <img
@@ -67,7 +72,15 @@ export const Header = ({
           </div>
           <div className="text-sm text-foreground font-semibold">{brandLabel}</div>
         </div>
-        <div>
+        <div className="flex items-center gap-4">
+          {onModelChange && (
+            <ModelSwitcher 
+              value={selectedModel} 
+              onChange={onModelChange}
+              disabled={false}
+            />
+          )}
+          <div>
           {authUser ? (
             <div className="flex items-center gap-3">
               <div className="text-sm">
@@ -92,7 +105,7 @@ export const Header = ({
                 Регистрация
               </button>
             </div>
-          )}
+          </div>
         </div>
       </div>
 

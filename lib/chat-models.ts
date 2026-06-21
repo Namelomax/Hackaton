@@ -1,13 +1,13 @@
-/** Единственная модель чата (пока без выбора в UI). */
+/** Модель по умолчанию для чата (может быть переключена пользователем). */
 export const FIXED_CHAT_MODEL = 'qwen3.5:9b';
 
 /** Allowed local chat models (must match `ollama list` names). */
-export const DEFAULT_LOCAL_CHAT_MODELS = ['qwen3.5:9b', 'qwen3:14b'] as const;
+export const DEFAULT_LOCAL_CHAT_MODELS = ['qwen3.5:9b', 'qwen3.6:27b'] as const;
 
 /** Короткие подписи для селектора моделей в UI */
 export const LOCAL_MODEL_LABELS: Record<string, string> = {
-  'qwen3:14b': 'Qwen3 14B',
-  'qwen3.5:9b': 'Qwen3.5 9B',
+  'qwen3.5:9b': 'Qwen3.5 9B (быстро)',
+  'qwen3.6:27b': 'Qwen3.6 27B (точнее)',
 };
 
 /** Available OpenRouter cloud models (optional admin UI / env). */
