@@ -24,7 +24,7 @@ import {
 import { AgentContext } from './agents/types';
 
 // Должно быть ≥ таймаута прокси/Ollama для длинных ответов (300s совпадало с 5m и обрывом стрима).
-export const maxDuration = 900;
+export const maxDuration = 300;
 export const runtime = 'nodejs';
 
 let cachedPrompt: string | null = null;
