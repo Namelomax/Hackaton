@@ -35,43 +35,15 @@ function buildPersistPutBody(
 }
 
 export default function ChatPage() {
-  // Инициализируем выбор модели из localStorage
-  const [selectedModel, setSelectedModelState] = useState<string>(FIXED_CHAT_MODEL);
-  const [modelInitialized, setModelInitialized] = useState(false);
-
-  // Инициализируем модель из localStorage
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem('selectedChatModel');
-      if (stored) {
-        setSelectedModelState(stored);
-      }
-    } catch (e) {
-      console.warn('Failed to load model from localStorage:', e);
-    } finally {
-      setModelInitialized(true);
-    }
-  }, []);
-
-  // Обработчик изменения модели
-  const handleModelChange = useCallback((newModel: string) => {
-    setSelectedModelState(newModel);
-    try {
-      localStorage.setItem('selectedChatModel', newModel);
-    } catch (e) {
-      console.warn('Failed to save model to localStorage:', e);
-    }
-  }, []);
-
   const chatBody = useMemo(
     () => ({
       chatProvider: 'ollama' as const,
-      chatModel: selectedModel,
+      chatModel: FIXED_CHAT_MODEL,
       useRagContext: false,
       ragMode: 'hybrid' as const,
       useThinking: false,
     }),
-    [selectedModel],
+    [],
   );
 
   const [authChecked, setAuthChecked] = useState(false);
@@ -1118,8 +1090,6 @@ export default function ChatPage() {
         setAuthMode={setAuthMode}
         toggleAuthMode={toggleAuthMode}
         showAuthHint={authHintFromPrompt}
-        selectedModel={selectedModel}
-        onModelChange={handleModelChange}
       />
 
       {/* Основная область */}
