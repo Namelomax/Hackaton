@@ -128,7 +128,11 @@ function resolveOpenRouterSlug(requestedRaw: string): string {
 
 /** Та же логика выбора модели, что и в /api/chat — Ollama или OpenRouter. */
 export function resolveChatLanguageModel(options: ResolveChatModelOptions = {}) {
-  const provider: ChatProviderId = options.chatProvider === 'openrouter' ? 'openrouter' : 'ollama';
+  const envDefault = (process.env.CHAT_PROVIDER_DEFAULT?.trim() || 'ollama') as ChatProviderId;
+  const provider: ChatProviderId =
+    options.chatProvider === 'openrouter' || options.chatProvider === 'ollama'
+      ? (options.chatProvider as ChatProviderId)
+      : envDefault;
 
   if (provider === 'ollama') {
     const allowed = parseAllowedOllamaModelsFromServerEnv(process.env.ALLOWED_OLLAMA_MODELS);
@@ -154,7 +158,8 @@ export function resolveChatLanguageModel(options: ResolveChatModelOptions = {}) 
             Object.assign(patchedHeaders, h);
           }
         }
-        // Ollama validates OLLAMA_API_KEY against "Bearer" prefix
+        // JupyterHub proxy accepts "Bearer <key>" and forwards to Ollama.
+        // Ollama itself ignores the auth header when OLLAMA_API_KEY is not set.
         for (const key of Object.keys(patchedHeaders)) {
           if (key.toLowerCase() === 'authorization') delete patchedHeaders[key];
         }

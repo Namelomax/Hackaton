@@ -749,7 +749,7 @@ export async function POST(req: Request) {
    */
   const CONTEXT_TOKENS_LIMIT = contextTokensLimit;
   const CHARS_PER_TOKEN = 2.34; // для русского текста; EN ≈ 4
-  const RESERVE_RESPONSE_TOKENS = 6000;  // минимальный запас для ответа модели
+  const RESERVE_RESPONSE_TOKENS = Number(process.env.OLLAMA_MAX_OUTPUT_TOKENS ?? 8192);
   const RESERVE_SYSTEM_BASE_TOKENS = 3000; // системный промт без документа
   const docCharsTotal = hiddenDocsContext.length;
   const docTokensEstimate = Math.ceil(docCharsTotal / CHARS_PER_TOKEN);
