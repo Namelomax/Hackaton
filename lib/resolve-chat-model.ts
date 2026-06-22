@@ -203,10 +203,16 @@ export function resolveChatLanguageModel(options: ResolveChatModelOptions = {}) 
               const choices = completion.choices as any[] | undefined;
               const choice = choices?.[0] ?? {};
               const message = (choice.message ?? {}) as Record<string, unknown>;
-              const content = String(message.content ?? '');
               const finishReason = choice.finish_reason ?? 'stop';
               const base = { id: completion.id, object: 'chat.completion.chunk', created: completion.created, model: completion.model };
-              const deltaChunk = { ...base, choices: [{ index: 0, delta: { role: message.role ?? 'assistant', content }, finish_reason: null }] };
+
+              // Build delta — must include tool_calls when present so AI SDK can execute tools.
+              const delta: Record<string, unknown> = { role: message.role ?? 'assistant' };
+              if (message.content != null) delta.content = String(message.content);
+              const toolCalls = (message as any).tool_calls as any[] | undefined;
+              if (toolCalls?.length) delta.tool_calls = toolCalls;
+
+              const deltaChunk = { ...base, choices: [{ index: 0, delta, finish_reason: null }] };
               const finishChunk = { ...base, choices: [{ index: 0, delta: {}, finish_reason: finishReason }], usage: completion.usage };
               sseBody = `data: ${JSON.stringify(deltaChunk)}\n\ndata: ${JSON.stringify(finishChunk)}\n\ndata: [DONE]\n\n`;
             } catch {
