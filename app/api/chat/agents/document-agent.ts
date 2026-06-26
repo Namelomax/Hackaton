@@ -10,12 +10,14 @@ import {
   type Protocol,
 } from '@/lib/schemas/protocol-schema';
 import { generateProtocolDocx } from '@/lib/docx-generator';
+import { verifyProtocolSections } from '@/lib/protocol-verify';
 import { SGR_DOCUMENT_AGENT_PROMPT } from '@/lib/prompts/sgr-prompts';
 import { PROTOCOL_REGULATION } from '@/lib/prompts/regulation';
 import { ollamaProtocolMaxOutputTokens } from '@/lib/ollama-limits';
 import {
   buildProtocolDraftFromChat,
   formatChatDraftForPrompt,
+  extractLatestUserCorrections,
 } from '@/lib/protocol-chat-extract';
 import {
   cleanProtocolText,
@@ -171,10 +173,11 @@ export async function generateFinalDocument(
     : '';
 
   const chatDraft = buildProtocolDraftFromChat(uiMessages);
-  const agreedChatContext = formatChatDraftForPrompt(chatDraft);
-  if (Object.keys(chatDraft).length > 0) {
+  const userCorrections = extractLatestUserCorrections(uiMessages);
+  const agreedChatContext = formatChatDraftForPrompt(chatDraft, userCorrections);
+  if (Object.keys(chatDraft).length > 0 || userCorrections.length > 0) {
     console.log(
-      `[generateFinalDocument] chat draft: topics=${chatDraft.meetingContent?.topics?.length ?? 0} summary=${chatDraft.meetingContent?.summary?.length ?? 0} approval_cust=${chatDraft.approval?.customer?.signatories?.length ?? 0}`,
+      `[generateFinalDocument] chat draft: agenda=${chatDraft.agenda?.items?.length ?? 0} topics=${chatDraft.meetingContent?.topics?.length ?? 0} summary=${chatDraft.meetingContent?.summary?.length ?? 0} approval_cust=${chatDraft.approval?.customer?.signatories?.length ?? 0} corrections=${userCorrections.length}`,
     );
   }
 
@@ -292,6 +295,29 @@ export async function generateFinalDocument(
         filename: `Протокол_обследования_${validated.protocolNumber.replace(/[^0-9]/g, '')}_${validated.meetingDate.replace(/\./g, '-')}.docx`,
       },
     });
+
+    // Чанкованная верификация — включается через ENABLE_PROTOCOL_VERIFY=true
+    if (process.env.ENABLE_PROTOCOL_VERIFY === 'true') {
+      try {
+        console.log('[verify] Запуск проверки протокола по секциям...');
+        const checks = await verifyProtocolSections(validated, conversationContext, model, abortSignal ?? undefined);
+        const found = checks.filter((c) => c.hasIssues);
+        if (found.length > 0) {
+          const warnText =
+            `⚠️ Автопроверка нашла возможные несоответствия:\n` +
+            found.map((f) => `• ${f.section}: ${f.issues}`).join('\n');
+          const warnId = `verify-${Date.now()}`;
+          dataStream.write({ type: 'text-start', id: warnId });
+          dataStream.write({ type: 'text-delta', id: warnId, delta: warnText });
+          dataStream.write({ type: 'text-end', id: warnId });
+          console.log(`[verify] Найдено проблем: ${found.length}`);
+        } else {
+          console.log('[verify] Все секции OK');
+        }
+      } catch (verifyErr) {
+        console.warn('[verify] Проверка не выполнена:', verifyErr);
+      }
+    }
   } catch (error) {
     console.error('Protocol generation error:', error);
     throw error;

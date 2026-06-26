@@ -56,14 +56,13 @@ export function collectUserConfirmedAssistantBlocks(uiMessages: unknown[]): stri
   return blocks;
 }
 
-/** Извлекает темы содержания встречи в формате Слушали/Обсудили/Решили. */
+/** Извлекает темы содержания встречи в формате Слушали/Обсудили/Решили. Возвращает из ПОСЛЕДНЕГО подходящего блока. */
 function parseMeetingTopicsFromBlocks(blocks: string[]): Protocol['meetingContent']['topics'] {
-  let best: Protocol['meetingContent']['topics'] = [];
-  for (const block of blocks) {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const block = blocks[i];
     if (!/содержание встречи|слушали|обсудили|решили|раздел\s*4/i.test(block)) continue;
     const topics: Protocol['meetingContent']['topics'] = [];
 
-    // Ищем блоки: "1) Вопрос\nСлушали: ...\nОбсудили: ...\nРешили: ..."
     const topicBlocks = block.split(/\n(?=\d+\))/);
     for (const tb of topicBlocks) {
       const titleM = tb.match(/^(\d+\)\s*.+?)(?:\n|$)/);
@@ -79,18 +78,17 @@ function parseMeetingTopicsFromBlocks(blocks: string[]): Protocol['meetingConten
         topics.push({ title, listened, discussed, decided });
       }
     }
-    if (topics.length > best.length) best = topics;
+    if (topics.length > 0) return topics;
   }
-  return best;
+  return [];
 }
 
-/** Извлекает резюме встречи. */
+/** Извлекает резюме встречи. Возвращает из ПОСЛЕДНЕГО подходящего блока. */
 function parseSummaryFromBlocks(blocks: string[]): Protocol['meetingContent']['summary'] {
-  let best: Protocol['meetingContent']['summary'] = [];
-  for (const block of blocks) {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const block = blocks[i];
     if (!/резюме|обсуждаемые вопросы|принятые решения/i.test(block)) continue;
     const rows: Protocol['meetingContent']['summary'] = [];
-    // Парсим строки таблицы Markdown
     for (const line of block.split('\n')) {
       const cells = line.split('|').map((c) => c.trim()).filter(Boolean);
       if (cells.length < 2) continue;
@@ -101,9 +99,57 @@ function parseSummaryFromBlocks(blocks: string[]): Protocol['meetingContent']['s
         rows.push({ question, decision });
       }
     }
-    if (rows.length > best.length) best = rows;
+    if (rows.length > 0) return rows;
   }
-  return best;
+  return [];
+}
+
+/** Извлекает пункты повестки из подтверждённых блоков. Возвращает из ПОСЛЕДНЕГО подходящего блока. */
+function parseAgendaFromBlocks(blocks: string[]): string[] {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const block = blocks[i];
+    if (!/повестк|раздел\s*2/i.test(block)) continue;
+    const items: string[] = [];
+    for (const line of block.split('\n')) {
+      // Нумерованные пункты: "1) Текст", "1. Текст", "1. **Текст**"
+      const m = line.trim().match(/^\d+[.)]\s+\*{0,2}(.+?)\*{0,2}([;.]?\s*)$/);
+      if (m) {
+        const item = stripTimecodes(m[1].trim()).replace(/[;.]$/, '').trim();
+        if (item.length > 3 && !/^(верно|да|ок|подтвержд)/i.test(item)) {
+          items.push(item);
+        }
+      }
+    }
+    if (items.length > 0) return items;
+  }
+  return [];
+}
+
+/**
+ * Возвращает сообщения пользователя, пришедшие ПОСЛЕ последнего подтверждения «Верно»/«ок» и т.п.
+ * Это правки/дополнения, которые должны перекрывать ранее согласованные блоки.
+ */
+export function extractLatestUserCorrections(uiMessages: unknown[]): string[] {
+  const turns = uiMessagesToTurns(uiMessages);
+
+  let lastConfirmIdx = -1;
+  for (let i = 0; i < turns.length; i++) {
+    if (turns[i].role === 'user' && USER_CONFIRM_RX.test(turns[i].text.trim())) {
+      lastConfirmIdx = i;
+    }
+  }
+  if (lastConfirmIdx < 0) return [];
+
+  const corrections: string[] = [];
+  for (let i = lastConfirmIdx + 1; i < turns.length; i++) {
+    const turn = turns[i];
+    if (turn.role !== 'user') continue;
+    const text = turn.text.trim();
+    // Пропускаем пустые, слишком короткие и повторные подтверждения
+    if (text.length < 15 || USER_CONFIRM_RX.test(text)) continue;
+    corrections.push(text);
+  }
+  return corrections;
 }
 
 function parseApprovalFromBlocks(blocks: string[]): Protocol['approval'] | undefined {
@@ -224,8 +270,12 @@ export function buildProtocolDraftFromChat(uiMessages: unknown[]): Partial<Proto
   const summary = parseSummaryFromBlocks(blocks);
   const approval = parseApprovalFromBlocks(blocks);
   const participants = parseParticipantsFromBlocks(blocks);
+  const agendaItems = parseAgendaFromBlocks(blocks);
 
   const draft: Partial<Protocol> = {};
+  if (agendaItems.length) {
+    draft.agenda = { items: agendaItems };
+  }
   if (topics.length || summary.length) {
     draft.meetingContent = { topics, summary };
   }
@@ -291,15 +341,27 @@ export function mergeProtocolWithChatDraft(model: Protocol, chatDraft: Partial<P
   return merged;
 }
 
-/** Краткая выжимка для промпта document-agent (контекст, но НЕ дословно). */
-export function formatChatDraftForPrompt(draft: Partial<Protocol>): string {
-  if (!draft || Object.keys(draft).length === 0) return '';
+/**
+ * Краткая выжимка для промпта document-agent.
+ * @param userCorrections — правки пользователя после последнего подтверждения; имеют приоритет над согласованными блоками
+ */
+export function formatChatDraftForPrompt(draft: Partial<Protocol>, userCorrections?: string[]): string {
+  const hasContent = draft && Object.keys(draft).length > 0;
+  const hasCorrections = userCorrections && userCorrections.length > 0;
+  if (!hasContent && !hasCorrections) return '';
 
   const lines: string[] = [
     '### ПОДТВЕРЖДЁННЫЕ ПОЛЬЗОВАТЕЛЕМ РАЗДЕЛЫ — используй как основу фактов, но ОБЯЗАТЕЛЬНО переформулируй согласно регламенту (официально-деловой стиль, без жаргона, без разговорной речи)',
   ];
 
-  if (draft.meetingContent?.topics?.length) {
+  if (draft?.agenda?.items?.length) {
+    lines.push('\n**Раздел 2 — повестка (подтверждённые пункты):**');
+    draft.agenda.items.forEach((item, i) => {
+      lines.push(`${i + 1}) ${item}`);
+    });
+  }
+
+  if (draft?.meetingContent?.topics?.length) {
     lines.push('\n**Раздел 4 — содержание встречи (темы):**');
     draft.meetingContent.topics.forEach((t, i) => {
       lines.push(`${i + 1}) ${t.title}`);
@@ -308,16 +370,25 @@ export function formatChatDraftForPrompt(draft: Partial<Protocol>): string {
       if (t.decided) lines.push(`  Решили: ${t.decided}`);
     });
   }
-  if (draft.meetingContent?.summary?.length) {
+  if (draft?.meetingContent?.summary?.length) {
     lines.push('\n**Раздел 4 — резюме:**');
     draft.meetingContent.summary.forEach((r) => {
       lines.push(`- ${r.question} | ${r.decision}`);
     });
   }
-  if (draft.approval) {
+  if (draft?.approval) {
     lines.push('\n**Раздел 5 — согласование:**');
     lines.push(`Заказчик (${draft.approval.customer.organization}): ${draft.approval.customer.signatories.join(', ')}`);
     lines.push(`Исполнитель (${draft.approval.executor.organization}): ${draft.approval.executor.signatories.join(', ')}`);
+  }
+
+  if (hasCorrections) {
+    lines.push(
+      '\n### ⚠️ ПРАВКИ ПОЛЬЗОВАТЕЛЯ (применить ПОВЕРХ согласованных разделов — приоритет выше):',
+    );
+    userCorrections!.forEach((c, i) => {
+      lines.push(`[Правка ${i + 1}]: ${c}`);
+    });
   }
 
   return lines.join('\n');
