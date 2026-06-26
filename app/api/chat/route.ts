@@ -24,7 +24,7 @@ import {
 import { AgentContext } from './agents/types';
 
 // Должно быть ≥ таймаута прокси/Ollama для длинных ответов (300s совпадало с 5m и обрывом стрима).
-export const maxDuration = 900;
+export const maxDuration = 300;
 export const runtime = 'nodejs';
 
 let cachedPrompt: string | null = null;
@@ -641,11 +641,11 @@ export async function POST(req: Request) {
   }
 
   // Prepare hidden docs context and enrich messages with file content
-  const hiddenDocEntries: string[] = [];  // краткие сноски для системного блока
-  const hiddenDocsFull: string[] = [];    // полные тексты «устаревших» вложений для системного блока
+  const hiddenDocsFull: string[] = [];  // полные тексты для системного блока
   const messagesWithHidden: any[] = [];
+  const DOC_MARKER = '---\nВложенный файл:'; // сохраняем маркер для совместимости
 
-  normalizedMessagesNonEmpty.forEach((msg, msgIdx) => {
+  normalizedMessagesNonEmpty.forEach((msg) => {
     const hiddenTexts: string[] = Array.isArray((msg as any)?.metadata?.hiddenTexts)
       ? (msg as any).metadata.hiddenTexts
       : [];
@@ -653,54 +653,32 @@ export async function POST(req: Request) {
       ? (msg as any).metadata.attachments
       : [];
 
-    const fileContents: string[] = [];
     hiddenTexts.forEach((hidden, attIdx) => {
       const cleaned = String(hidden ?? '').trim();
       if (!cleaned) return;
       const attName = attachmentsMeta[attIdx]?.name || attachmentsMeta[attIdx]?.filename;
-      const label = attName ? `Документ "${attName}"` : `Документ ${hiddenDocEntries.length + 1}`;
-      const snippet = cleaned.length > 1200 ? `${cleaned.slice(0, 1200)} …` : cleaned;
-      hiddenDocEntries.push(`${label}:\n${snippet}`);
+      const label = attName ? `Документ "${attName}"` : `Документ ${hiddenDocsFull.length + 1}`;
 
       if (ragOmitsAttachmentBodies) {
-        fileContents.push(
-          `\n\n[Вложение «${attName || 'документ'}» — только имя; полный текст в промпт не передаётся (включён контекст из RAG).]`
-        );
+        hiddenDocsFull.push(`${label}: [только имя; полный текст не передаётся (включён контекст из RAG)]`);
       } else {
-        const isOldAttachment = msgIdx < (normalizedMessagesNonEmpty.length - MAX_DOC_FRESHNESS_MSGS);
-        const docForContext = cleaned;
-        if (isOldAttachment) {
-          // Документ слишком старый для истории — сохраним текст в системный контекст
-          hiddenDocsFull.push(`\n\n---\nВложенный файл: ${attName || 'документ'}\n${docForContext}\n---`);
-          fileContents.push(
-            `\n\n[Файл «${attName || 'документ'}» (${cleaned.length} симв.) приложен ранее; текст передан в системный блок «ВЛОЖЕНИЯ».]`
-          );
-        } else {
-          fileContents.push(`\n\n---\nВложенный файл: ${attName || 'документ'}\n${docForContext}\n---`);
-        }
+        // Полный текст документа идёт в системный блок
+        hiddenDocsFull.push(`${label}:\n${cleaned}`);
       }
     });
 
-    if (fileContents.length > 0) {
-      let attachmentSection: string;
-      if (ragOmitsAttachmentBodies) {
-        attachmentSection = fileContents.join('');
-      } else {
-        const useFullAttachmentBodies = msgIdx === lastUserWithAttachmentsIndex;
-        attachmentSection = useFullAttachmentBodies
-          ? fileContents.join('')
-          : hiddenTexts
-              .map((hidden, attIdx) => {
-                const cleaned = String(hidden ?? '').trim();
-                if (!cleaned) return '';
-                const name =
-                  attachmentsMeta[attIdx]?.name || attachmentsMeta[attIdx]?.filename || 'документ';
-                return `\n\n[Файл «${name}» (${cleaned.length} симв.) — полный текст в истории не дублируется; краткая выжимка в системном блоке «ВЛОЖЕНИЯ».]`;
-              })
-              .filter(Boolean)
-              .join('');
-      }
-      const enrichedContent = `${msg.content}${attachmentSection}`;
+    if (hiddenTexts.length > 0) {
+      // В user-сообщении оставляем только плейсхолдер — полный текст в системном блоке
+      const placeholders = hiddenTexts
+        .map((hidden, attIdx) => {
+          const cleaned = String(hidden ?? '').trim();
+          if (!cleaned) return '';
+          const name = attachmentsMeta[attIdx]?.name || attachmentsMeta[attIdx]?.filename || 'документ';
+          return `\n\n[Файл «${name}» (${cleaned.length} симв.) прикреплён — полный текст в системном блоке.]`;
+        })
+        .filter(Boolean)
+        .join('');
+      const enrichedContent = `${msg.content}${placeholders}`;
       messagesWithHidden.push({
         ...msg,
         content: enrichedContent,
@@ -708,7 +686,6 @@ export async function POST(req: Request) {
       });
     } else {
       // Qwen3 best practice: удалять <think>...</think> из истории ассистента.
-      // Теги занимают сотни токенов и ухудшают качество следующего ответа.
       if (msg.role === 'assistant' && typeof msg.content === 'string' && msg.content.includes('<think>')) {
         const stripped = msg.content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
         messagesWithHidden.push({
@@ -725,34 +702,24 @@ export async function POST(req: Request) {
   const chatModelId =
     typeof body.chatModel === 'string' ? body.chatModel.trim() : '';
   const contextTokensLimit = effectiveOllamaContextTokens(chatModelId);
-  // До ~55% окна под полный текст расшифровки в системном блоке (рус. ≈2.34 симв/токен).
-  const maxHiddenDocsChars = Math.min(
-    320_000,
-    Math.floor(contextTokensLimit * 2.34 * 0.55),
-  );
-
-  // Системный блок: краткие сноски + полные тексты «устаревших» вложений (перемещённых из истории)
-  const hiddenDocsContext = [
-    ...hiddenDocEntries.map(e => e.slice(0, 1200)),
-    ...hiddenDocsFull,
-  ].join('\n\n').slice(0, maxHiddenDocsChars);
+  // Системный блок: полные тексты документов
+  const hiddenDocsContext = hiddenDocsFull.join('\n\n');
 
   /**
    * Динамическая обрезка истории — гарантирует, что диалог любой длины не вызовет переполнения.
    *
    * Алгоритм:
-   *  1. Оцениваем сколько токенов займут системный промт (с документом) + текущая история.
-   *  2. Если сумма > бюджет, удаляем самые старые сообщения (не первое — оно чаще всего несёт вложение).
-   *  3. Добавляем системное уведомление об усечении, чтобы модель знала о пропущенном контексте.
+   *  1. Оцениваем бюджет: контекст − ответ − системный промпт (без документа).
+   *  2. Если история превышает бюджет — удаляем старые сообщения, пропуская сообщения с документами.
+   *  3. Добавляем системное уведомление об усечении.
    *
-   * Документ ВСЕГДА остаётся в системном блоке — не обрезается.
+   * Документы ВСЕГДА остаются в user-сообщениях — никогда не вырезаются при тримминге.
    */
   const CONTEXT_TOKENS_LIMIT = contextTokensLimit;
   const CHARS_PER_TOKEN = 2.34; // для русского текста; EN ≈ 4
-  const RESERVE_RESPONSE_TOKENS = 6000;  // минимальный запас для ответа модели
-  const RESERVE_SYSTEM_BASE_TOKENS = 3000; // системный промт без документа
-  const docCharsTotal = hiddenDocsContext.length;
-  const docTokensEstimate = Math.ceil(docCharsTotal / CHARS_PER_TOKEN);
+  const RESERVE_RESPONSE_TOKENS = Number(process.env.OLLAMA_MAX_OUTPUT_TOKENS ?? 8192);
+  const RESERVE_SYSTEM_BASE_TOKENS = 9000; // системный промт (SGR + полный документ)
+  const docTokensEstimate = Math.ceil(hiddenDocsContext.length / CHARS_PER_TOKEN);
   const availableForHistoryTokens =
     CONTEXT_TOKENS_LIMIT - RESERVE_RESPONSE_TOKENS - RESERVE_SYSTEM_BASE_TOKENS - docTokensEstimate;
   const availableForHistoryChars = Math.max(availableForHistoryTokens * CHARS_PER_TOKEN, 8000);
@@ -761,32 +728,40 @@ export async function POST(req: Request) {
     if (typeof m?.content === 'string') return m.content.length;
     return JSON.stringify(m?.content ?? '').length;
   }
+  const isDocMsg = (m: any) =>
+    typeof m?.content === 'string' && m.content.includes(DOC_MARKER);
 
   let finalMessages = messagesWithHidden;
   const totalHistoryChars = finalMessages.reduce((s, m) => s + msgChars(m), 0);
 
   if (totalHistoryChars > availableForHistoryChars && finalMessages.length > 2) {
-    // Удаляем сообщения с начала, пока не влезем в бюджет (минимум оставляем 2 сообщения)
     let trimCount = 0;
     while (
       finalMessages.length > 2 &&
       finalMessages.reduce((s, m) => s + msgChars(m), 0) > availableForHistoryChars
     ) {
-      finalMessages = finalMessages.slice(1);
+      // Пропускаем сообщения с документами — они защищены от удаления
+      const trimIdx = finalMessages.findIndex(
+        (m, idx) => idx < finalMessages.length - 2 && !isDocMsg(m),
+      );
+      if (trimIdx === -1) break;
+      finalMessages = [...finalMessages.slice(0, trimIdx), ...finalMessages.slice(trimIdx + 1)];
       trimCount++;
     }
-    // Вставляем в начало системное уведомление об усечении
-    const notice = {
-      role: 'system' as const,
-      content: `[Контекст: ${trimCount} ранних сообщений диалога удалены для предотвращения переполнения окна. Документ и текущий раздел протокола сохранены в системном блоке.]`,
-      id: '__trim_notice__',
-      parts: [{ type: 'text' as const, text: '' }],
-    };
-    finalMessages = [notice, ...finalMessages];
-    const usedChars = finalMessages.reduce((s, m) => s + msgChars(m), 0);
-    console.log(`✂️  history trimmed: removed ${trimCount} msgs, doc≈${docTokensEstimate}tok, history≈${Math.round(usedChars/CHARS_PER_TOKEN)}tok, budget=${availableForHistoryTokens}tok`);
+    if (trimCount > 0) {
+      const notice = {
+        role: 'system' as const,
+        content: `[Контекст: ${trimCount} ранних сообщений диалога удалены для предотвращения переполнения окна. Прикреплённые документы сохранены в истории.]`,
+        id: '__trim_notice__',
+        parts: [{ type: 'text' as const, text: '' }],
+      };
+      finalMessages = [notice, ...finalMessages];
+      const usedChars = finalMessages.reduce((s, m) => s + msgChars(m), 0);
+      console.log(`✂️  history trimmed: removed ${trimCount} msgs, history≈${Math.round(usedChars/CHARS_PER_TOKEN)}tok, budget=${availableForHistoryTokens}tok`);
+    }
   }
 
+  // Есть ли существенный документ в системном блоке (> 8 кБ)?
   const hasInlineTranscript =
     !ragOmitsAttachmentBodies &&
     hasSubstantialInlineTranscript(hiddenDocsFull, hiddenDocsContext);

@@ -24,7 +24,12 @@
       "Bash(node -e \"const {DEFAULT_PROMPT} = require\\('./lib/config/prompt-config.ts'\\); console.log\\('len:', DEFAULT_PROMPT?.length\\);\")",
       "Bash(node --require ts-node/register -e \"\")",
       "Bash(powershell -command \"\\(Select-String -Path 'd:/Jacob/Programming/Hakaton/lib/prompts/sgr-prompts.ts' -Pattern 'SGR_MAIN_AGENT_PROMPT'\\).LineNumber\")",
-      "Bash(powershell -command \"\\(Get-Content 'd:/Jacob/Programming/Hakaton/lib/prompts/sgr-prompts.ts'\\).Count\")"
+      "Bash(powershell -command \"\\(Get-Content 'd:/Jacob/Programming/Hakaton/lib/prompts/sgr-prompts.ts'\\).Count\")",
+      "Bash(curl -sk \"https://wild-mountain-06cupioiq9vpbadmqsbcb609a8.aws-euw1.surreal.cloud/health\")",
+      "Bash(curl -sk -o /dev/null -w \"%{http_code}\" \"https://wild-mountain-06cupioiq9vpbadmqsbcb609a8.aws-euw1.surreal.cloud/health\")",
+      "Bash(curl -sk -X POST \"https://wild-mountain-06cupioiq9vpbadmqsbcb609a8.aws-euwl.surreal.cloud/sql\" -H \"Accept: application/json\" -H \"surreal-ns: demo\" -H \"surreal-db: wild_mountain\" -u \"admin:90522468q_Q\" -d \"SELECT * FROM prompt LIMIT 1\")",
+      "Bash(curl -sk -X POST \"https://wild-mountain-06cupioiq9vpbadmqsbcb609a8.aws-euw1.surreal.cloud/sql\" -H \"Accept: application/json\" -H \"surreal-ns: demo\" -H \"surreal-db: wild_mountain\" -u \"admin:90522468q_Q\" -d \"SELECT * FROM prompt LIMIT 1\")",
+      "Bash(findstr /r /s \"initializeDatabase\\\\|initDB\\\\|seedDefault\" *.ts app\\\\*.ts lib\\\\*.ts)"
     ],
     "additionalDirectories": [
       "d:\\Jacob\\Hakaton\\.claude"

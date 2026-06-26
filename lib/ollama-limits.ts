@@ -17,13 +17,13 @@ export function applyOllamaOpenAiCompatOptions(
 /** Лимит токенов ответа чата (streamText → max_tokens в Ollama). */
 export function ollamaChatMaxOutputTokens(): number {
   const n = Number(process.env.OLLAMA_MAX_OUTPUT_TOKENS);
-  return Number.isFinite(n) && n > 0 ? n : 32768;
+  return Number.isFinite(n) && n > 0 ? n : 327680;
 }
 
 /** Короткий ответ после загрузки файла / уточняющий вопрос по разделу 1. */
 export function ollamaFileTurnMaxOutputTokens(): number {
   const n = Number(process.env.OLLAMA_FILE_TURN_MAX_OUTPUT_TOKENS);
-  return Number.isFinite(n) && n > 0 ? n : 2048;
+  return Number.isFinite(n) && n > 0 ? n : 204800;
 }
 
 export function ollamaProtocolMaxOutputTokens(): number {

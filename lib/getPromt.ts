@@ -1,6 +1,7 @@
 import { Surreal, RecordId, u } from "surrealdb";
 import crypto from 'crypto';
 import { DEFAULT_PROMPT } from '@/lib/db/repositories/default-promt';
+import { SGR_MAIN_AGENT_PROMPT } from '@/lib/prompts/sgr-prompts';
 import { messagesArrayLooksCorrupt, resolveMessagesFromRecord } from '@/lib/conversationMessages';
 import {
   readSurrealConnectionEnv,
@@ -1062,25 +1063,9 @@ export async function getProtocolInstruction(conversationId: string): Promise<Pr
 
 // Получить дефолтный промпт
 export async function getPrompt(): Promise<string> {
-  await connectDB();
-  const result = (await db.query(`SELECT * FROM prompts WHERE isDefault = true LIMIT 1;`)) as [any[]];
-  const records = result?.[0] ?? [];
-  const record = records[0];
-
-  if (!record) {
-    const [newPrompt] = await db.create("prompts", {
-      title: "Default Assistant",
-      content: DEFAULT_PROMPT,
-      isDefault: true,
-    });
-    return convertToPrompt(newPrompt).content;
-  }
-  const content = String(record.content ?? "");
-  if (record.isDefault === true && record.title === "Default Assistant" && !content.includes("Файл без текста:")) {
-    await db.merge(record.id.toString(), { content: DEFAULT_PROMPT });
-    return DEFAULT_PROMPT;
-  }
-  return content || DEFAULT_PROMPT;
+  // ВСЕГДА возвращаем промпт из файла (SGR_MAIN_AGENT_PROMPT), не из БД
+  // БД больше не используется для хранения промптов
+  return SGR_MAIN_AGENT_PROMPT;
 }
 
 // Обновить дефолтный промпт
