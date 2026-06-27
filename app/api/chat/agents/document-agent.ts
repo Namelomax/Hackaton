@@ -18,7 +18,9 @@ import {
   buildProtocolDraftFromChat,
   formatChatDraftForPrompt,
   extractLatestUserCorrections,
+  mergeProtocolWithChatDraft,
 } from '@/lib/protocol-chat-extract';
+import { applyGlossaryToProtocol } from '@/lib/prompts/glossary';
 import {
   cleanProtocolText,
   formatProtocolSectionHeading,
@@ -145,7 +147,12 @@ export async function generateFinalDocument(
     });
   };
 
-  // Извлекаем всю историю диалога (расшифровку встречи) из uiMessages
+  // Извлекаем всю историю диалога (расшифровку встречи) из uiMessages.
+  // ВАЖНО: текст загруженных файлов (расшифровка) лежит НЕ в content, а в
+  // metadata.hiddenTexts (см. route.ts «3. Process Attachments»). Раньше агент
+  // документа его не читал — поэтому в документ не попадала расшифровка и
+  // разделы 2/4 оказывались пустыми или выдуманными. Теперь подмешиваем её явно.
+  const MAX_TRANSCRIPT_CHARS = Number(process.env.DOC_MAX_TRANSCRIPT_CHARS ?? 60000);
   const conversationContext = uiMessages
     .map((msg) => {
       // Extract text from uiMessages format (parts array)
@@ -160,8 +167,26 @@ export async function generateFinalDocument(
       if (!text && typeof msg?.content === 'string') {
         text = msg.content;
       }
-      
-      const cleaned = stripTimecodeMarkers(text);
+
+      // Текст вложений (расшифровка встречи) из metadata.hiddenTexts
+      const hiddenTexts: string[] = Array.isArray((msg as any)?.metadata?.hiddenTexts)
+        ? (msg as any).metadata.hiddenTexts.filter(
+            (h: unknown) => typeof h === 'string' && h.trim().length > 0,
+          )
+        : [];
+      let transcriptBlock = '';
+      if (hiddenTexts.length > 0) {
+        let joined = hiddenTexts.join('\n\n');
+        if (joined.length > MAX_TRANSCRIPT_CHARS) {
+          joined =
+            joined.slice(0, MAX_TRANSCRIPT_CHARS) +
+            '\n…(расшифровка обрезана по лимиту DOC_MAX_TRANSCRIPT_CHARS)…';
+        }
+        transcriptBlock = `\n[РАСШИФРОВКА ВСТРЕЧИ — первоисточник фактов для разделов 2 и 4]:\n${joined}`;
+      }
+
+      const combined = [text, transcriptBlock].filter(Boolean).join('\n');
+      const cleaned = stripTimecodeMarkers(combined);
       return cleaned ? `${msg.role}: ${cleaned}` : '';
     })
     .filter(Boolean)
@@ -270,6 +295,15 @@ export async function generateFinalDocument(
         'Итоговый протокол не прошёл проверку структуры (protocol-schema). Сформируйте документ повторно или дополните расшифровку.',
       );
     }
+
+    // Страховка от пустых разделов: если модель вернула пустую повестку/участников/
+    // содержание/подписи, добиваем их согласованными в чате блоками (ранее эта
+    // функция существовала, но не вызывалась — пустые разделы уходили в документ).
+    validated = mergeProtocolWithChatDraft(validated, chatDraft);
+
+    // Детерминированная зачистка жаргона/разговорных слов перед выводом в документ.
+    // Не трогает ФИО и названия организаций — только содержательные поля.
+    validated = applyGlossaryToProtocol(validated);
 
     const finalMarkdown = protocolToMarkdown(validated);
     markdownContent = finalMarkdown;

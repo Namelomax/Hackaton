@@ -1,8 +1,4 @@
-/**
- * Параметры thinking для OpenAI-совместимого `/v1/chat/completions` Ollama.
- * `think: false` на этом эндпоинте часто не отключает reasoning (весь ответ в `reasoning`, content пустой).
- * Рабочий вариант: `reasoning_effort: "none"` (см. docs.ollama.com/api/openai-compatibility).
- */
+
 export function applyOllamaOpenAiCompatOptions(
   body: Record<string, unknown>,
   useThinking: boolean,
@@ -11,25 +7,37 @@ export function applyOllamaOpenAiCompatOptions(
     body.think = true;
   } else {
     body.think = false;
+    body.reasoning_effort = 'none';
   }
 }
 
-/** Лимит токенов ответа чата (streamText → max_tokens в Ollama). */
+/** Лимит токенов обычного ответа чата (один уточняющий вопрос / небольшой блок). */
 export function ollamaChatMaxOutputTokens(): number {
   const n = Number(process.env.OLLAMA_MAX_OUTPUT_TOKENS);
-  return Number.isFinite(n) && n > 0 ? n : 327680;
+  return Number.isFinite(n) && n > 0 ? n : 4096;
 }
 
 /** Короткий ответ после загрузки файла / уточняющий вопрос по разделу 1. */
 export function ollamaFileTurnMaxOutputTokens(): number {
   const n = Number(process.env.OLLAMA_FILE_TURN_MAX_OUTPUT_TOKENS);
-  return Number.isFinite(n) && n > 0 ? n : 204800;
+  return Number.isFinite(n) && n > 0 ? n : 2048;
 }
 
+/** Полный JSON протокола может быть объёмным — отдельный, больший лимит. */
 export function ollamaProtocolMaxOutputTokens(): number {
   const protocol = Number(process.env.OLLAMA_PROTOCOL_MAX_OUTPUT_TOKENS);
   if (Number.isFinite(protocol) && protocol > 0) return protocol;
-  return ollamaChatMaxOutputTokens();
+  return 8192;
+}
+
+/**
+ * Глобальный жёсткий потолок max_tokens на стороне fetch-обёртки.
+ * Это НЕ дефолт ответа, а предохранитель: не даёт ни одному запросу попросить
+ * абсурдно много. Должен быть ≥ ollamaProtocolMaxOutputTokens().
+ */
+export function ollamaHardCapOutputTokens(): number {
+  const n = Number(process.env.OLLAMA_HARD_MAX_OUTPUT_TOKENS);
+  return Number.isFinite(n) && n > 0 ? n : 16384;
 }
 
 export function pickChatMaxOutputTokens(options: {

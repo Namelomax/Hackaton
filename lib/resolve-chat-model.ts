@@ -1,7 +1,7 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { createOpenAI } from '@ai-sdk/openai';
 import { FIXED_CHAT_MODEL, parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
-import { applyOllamaOpenAiCompatOptions, ollamaChatMaxOutputTokens } from '@/lib/ollama-limits';
+import { applyOllamaOpenAiCompatOptions, ollamaHardCapOutputTokens } from '@/lib/ollama-limits';
 import https from 'node:https';
 import http from 'node:http';
 import { Readable } from 'node:stream';
@@ -170,16 +170,30 @@ export function resolveChatLanguageModel(options: ResolveChatModelOptions = {}) 
             const parsed = JSON.parse(init.body) as Record<string, unknown>;
             const useThinking = Boolean(options.useThinking);
             applyOllamaOpenAiCompatOptions(parsed, useThinking);
-            const cap = ollamaChatMaxOutputTokens();
+            // Жёсткий потолок (предохранитель), а не дефолт ответа: per-call
+            // maxOutputTokens задаётся в chat/document агентах.
+            const cap = ollamaHardCapOutputTokens();
             const requestedMax =
               typeof parsed.max_tokens === 'number' ? parsed.max_tokens : cap;
             parsed.max_tokens = Math.min(requestedMax, cap);
             // Keep model loaded in GPU memory indefinitely (default Ollama keep_alive is 5 min)
             parsed.keep_alive = -1;
 
-            // Force non-streaming: JupyterHub proxy reliably handles plain HTTP responses,
-            // SSE streams often get buffered or timed out. We wrap the JSON response in
-            // SSE format ourselves so the AI SDK receives what it expects.
+            // Стриминг. Через прокси JupyterHub SSE часто буферизуется/обрывается,
+            // поэтому по умолчанию форсим non-stream и сами заворачиваем ответ в SSE
+            // (минус: пользователь видит ответ только в конце). При работе через
+            // vLLM/нормальный прокси выставьте LLM_FORCE_NONSTREAM=false — тогда
+            // используется нативный стриминг и текст появляется по мере генерации.
+            const forceNonStream =
+              (process.env.LLM_FORCE_NONSTREAM ?? 'true') !== 'false';
+            if (!forceNonStream) {
+              return insecureFetch(url, {
+                ...init,
+                headers: patchedHeaders,
+                body: JSON.stringify(parsed),
+              });
+            }
+
             parsed.stream = false;
 
             if (process.env.OLLAMA_LOG_CHAT_REQUEST === '1') {

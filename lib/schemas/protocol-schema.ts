@@ -286,6 +286,14 @@ export function coerceProtocolPartial(partial: unknown): Protocol {
       ? (approvalRaw.executor as Record<string, unknown>)
       : {};
 
+  const topicsForFallback = toArr(meetingContentRaw.topics).map((topic: unknown) => {
+    const t = topic && typeof topic === 'object' ? (topic as Record<string, unknown>) : {};
+    return toStr(t.title ?? t.тема).trim();
+  }).filter(Boolean);
+
+  const agendaItemsRaw = toArr<string>(agendaRaw?.items ?? agendaRaw?.пункты).map(toStr).filter(Boolean);
+  const agendaItems = agendaItemsRaw.length > 0 ? agendaItemsRaw : topicsForFallback;
+
   return {
     protocolNumber: toStr(p.protocolNumber),
     meetingDate: toStr(p.meetingDate),
@@ -294,7 +302,7 @@ export function coerceProtocolPartial(partial: unknown): Protocol {
     contractDate: p.contractDate !== undefined ? toStr(p.contractDate) : undefined,
     contractSubject: p.contractSubject !== undefined ? toStr(p.contractSubject) : undefined,
     agenda: {
-      items: toArr<string>(agendaRaw?.items ?? agendaRaw?.пункты).map(toStr),
+      items: agendaItems,
     },
     participants: {
       customer: {

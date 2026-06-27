@@ -306,6 +306,13 @@ export function mergeProtocolWithChatDraft(model: Protocol, chatDraft: Partial<P
 
   const merged: Protocol = { ...model };
 
+  // Повестка (раздел 2) — самая частая жалоба на «пустой раздел». Раньше merge её
+  // НЕ добивал. Если модель вернула пустую повестку, а в чате она подтверждена —
+  // подставляем из черновика.
+  if ((!merged.agenda || merged.agenda.items.length === 0) && chatDraft.agenda?.items?.length) {
+    merged.agenda = { items: chatDraft.agenda.items };
+  }
+
   if (!hasTopics(merged) && chatDraft.meetingContent?.topics?.length) {
     merged.meetingContent = {
       ...merged.meetingContent,
@@ -379,7 +386,7 @@ export function formatChatDraftForPrompt(draft: Partial<Protocol>, userCorrectio
   if (draft?.approval) {
     lines.push('\n**Раздел 5 — согласование:**');
     lines.push(`Заказчик (${draft.approval.customer.organization}): ${draft.approval.customer.signatories.join(', ')}`);
-    lines.push(`Исполнитель (${draft.approval.executor.organization}): ${draft.approval.executor.signatories.join(', ')}`);
+        lines.push(`Исполнитель (${draft.approval.executor.organization}): ${draft.approval.executor.signatories.join(', ')}`);
   }
 
   if (hasCorrections) {
