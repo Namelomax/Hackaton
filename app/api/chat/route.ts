@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation } from '@/lib/getPromt';
 import { resolveChatLanguageModel } from '@/lib/resolve-chat-model';
 import { PROTOCOL_CHAT_TIMECODE_APPENDIX } from '@/lib/protocol-timecodes';
+import { analyzeTranscriptSlots, formatSlotScanForPrompt } from '@/lib/protocol-slot-scan';
 import { fetchRagSnippet } from '@/lib/rag-client';
 import {
   buildUserProvidedSection1Appendix,
@@ -864,6 +865,11 @@ export async function POST(req: Request) {
 
   if (hasInlineTranscript) {
     systemPrompt += PROTOCOL_CHAT_TIMECODE_APPENDIX;
+    // Детерминированный слот-скан расшифровки → якорь для блока «Не хватает».
+    if (hiddenDocsContext.trim()) {
+      systemPrompt +=
+        '\n' + formatSlotScanForPrompt(analyzeTranscriptSlots(hiddenDocsContext));
+    }
   }
 
   // Inject current date + day-of-week so the LLM can resolve relative dates ("до конца недели" etc.)

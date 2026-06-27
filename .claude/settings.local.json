@@ -30,7 +30,8 @@
       "Bash(curl -sk -X POST \"https://wild-mountain-06cupioiq9vpbadmqsbcb609a8.aws-euwl.surreal.cloud/sql\" -H \"Accept: application/json\" -H \"surreal-ns: demo\" -H \"surreal-db: wild_mountain\" -u \"admin:90522468q_Q\" -d \"SELECT * FROM prompt LIMIT 1\")",
       "Bash(curl -sk -X POST \"https://wild-mountain-06cupioiq9vpbadmqsbcb609a8.aws-euw1.surreal.cloud/sql\" -H \"Accept: application/json\" -H \"surreal-ns: demo\" -H \"surreal-db: wild_mountain\" -u \"admin:90522468q_Q\" -d \"SELECT * FROM prompt LIMIT 1\")",
       "Bash(findstr /r /s \"initializeDatabase\\\\|initDB\\\\|seedDefault\" *.ts app\\\\*.ts lib\\\\*.ts)",
-      "Bash(curl -sk -H 'Authorization: Bearer 1913de7b07f34d61a28792a88f613767' https://jh.interfonica.cloud/user/ts-bdfzametjv73gxxu/proxy/11434/api/tags)"
+      "Bash(curl -sk -H 'Authorization: Bearer 1913de7b07f34d61a28792a88f613767' https://jh.interfonica.cloud/user/ts-bdfzametjv73gxxu/proxy/11434/api/tags)",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:3000/api/chat\" -Method GET -UseBasicParsing -TimeoutSec 3; \"Server up: $\\($r.StatusCode\\)\" } catch { \"Server not running: $_\" })"
     ],
     "additionalDirectories": [
       "d:\\Jacob\\Hakaton\\.claude"
