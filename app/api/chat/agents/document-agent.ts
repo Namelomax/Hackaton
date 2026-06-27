@@ -22,6 +22,12 @@ import {
 } from '@/lib/protocol-chat-extract';
 import { applyGlossaryToProtocol } from '@/lib/prompts/glossary';
 import {
+  stripProtocolTimecodes,
+  carryOverParticipantRoles,
+  enforceDateProvenance,
+  reconcileWithApproved,
+} from '@/lib/protocol-guards';
+import {
   cleanProtocolText,
   formatProtocolSectionHeading,
   formatContractBlock,
@@ -305,6 +311,16 @@ export async function generateFinalDocument(
     // Не трогает ФИО и названия организаций — только содержательные поля.
     validated = applyGlossaryToProtocol(validated);
 
+    // Код-гарды: то, в чём слабая модель регулярно ошибается (промптом не лечится).
+    validated = stripProtocolTimecodes(validated); // тайм-кодов в финале быть не должно
+    validated = carryOverParticipantRoles(validated, conversationContext); // не терять должность
+    const dateGuard = enforceDateProvenance(validated, conversationContext); // выдуманные даты → «подлежит уточнению»
+    validated = dateGuard.protocol;
+    const guardWarnings = [
+      ...dateGuard.unresolved,
+      ...reconcileWithApproved(validated, chatDraft, userCorrections),
+    ];
+
     const finalMarkdown = protocolToMarkdown(validated);
     markdownContent = finalMarkdown;
     // Append only what hasn't been sent yet; full reset if final was restructured.
@@ -329,6 +345,19 @@ export async function generateFinalDocument(
         filename: `Протокол_обследования_${validated.protocolNumber.replace(/[^0-9]/g, '')}_${validated.meetingDate.replace(/\./g, '-')}.docx`,
       },
     });
+
+    // Финальная сверка (детерминированная): неподтверждённые сроки, расхождения с
+    // согласованным в чате, напоминание о поздних правках — показываем в чате.
+    if (guardWarnings.length > 0) {
+      const warnId = `guard-${Date.now()}`;
+      const warnText =
+        '⚠️ Финальная сверка протокола (проверьте перед отправкой):\n' +
+        guardWarnings.map((w) => `• ${w}`).join('\n');
+      dataStream.write({ type: 'text-start', id: warnId });
+      dataStream.write({ type: 'text-delta', id: warnId, delta: warnText });
+      dataStream.write({ type: 'text-end', id: warnId });
+      console.log(`[guards] предупреждений финальной сверки: ${guardWarnings.length}`);
+    }
 
     // Чанкованная верификация — включается через ENABLE_PROTOCOL_VERIFY=true
     if (process.env.ENABLE_PROTOCOL_VERIFY === 'true') {
@@ -463,10 +492,8 @@ function protocolToMarkdown(protocol: Protocol): string {
     const t = org.trim();
     if (!t || /^(заказчик|исполнитель)$/i.test(t)) return 'не указано в расшифровке';
     if (/^ООО\s/i.test(t)) return `${t}:`;
-    // If value was wrapped in ООО «...», keep that form
     const inner = t.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').trim();
     if (inner !== t) return `ООО «${inner}»:`;
-    // Non-ООО entity (hackathon teams, consortia, etc.) — use as-is
     return `${t}:`;
   };
 

@@ -221,6 +221,5 @@ Respond ONLY with valid JSON (no markdown, no code blocks, no comments):
 
 ## CRITICAL RULES
 - Base decision on schema completeness, not just conversation length
-- Prioritize sections that are essential for a meaningful protocol
-- Consider user's explicit statements about readiness
+- Consider user's explicit statements - Consider user's explicit statements about readiness
 - Factor in the quality and substance of information provided`;

@@ -92,7 +92,6 @@ const prompt = SGR_DOCUMENT_AGENT_PROMPT
   chk('жаргон вычищен (нет «доделывается»/«тайм-код»)', !/доделывается|тайм-код/.test(all));
   chk('нет англоязычных заглушек', !/n\/a|not provided|tbd/i.test(all));
   console.log('\n--- ИТОГОВЫЙ ПРОТОКОЛ (JSON) ---');
-  console.log(JSON.stringify(proto, null, 2));
   console.log(`\n${ok} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();
