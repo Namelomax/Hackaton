@@ -300,49 +300,85 @@ function hasApproval(p: Protocol): boolean {
   );
 }
 
-/** Подмешивает в итоговый протокол согласованные в чате разделы, если модель вернула пустые поля. */
+/** Нормализует заголовок темы для сопоставления (без номера, регистра, пунктуации). */
+function normTopicTitle(t: string): string {
+  return String(t || '')
+    .toLowerCase()
+    .replace(/^\s*\d+[).]\s*/, '')
+    .replace(/[^а-яёa-z0-9 ]/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Реальное значение: непустое и не «не указан…». */
+function isRealValue(v: string): boolean {
+  return Boolean(v && v.trim() && !/^не\s+указан/i.test(v.trim()));
+}
+
+/**
+ * Сливает протокол модели с подтверждённым в чате черновиком.
+ * ПРИОРИТЕТ у чата: пользователь видел и правил эти блоки в чате. Модель —
+ * только фолбэк для полей, которых в чате нет. Это устраняет потерю роли,
+ * договора и «откат» исправленного «Слушали» при повторной генерации.
+ */
 export function mergeProtocolWithChatDraft(model: Protocol, chatDraft: Partial<Protocol>): Protocol {
   if (!chatDraft || Object.keys(chatDraft).length === 0) return model;
-
   const merged: Protocol = { ...model };
+  const pick = (a: string, b: string): string => (isRealValue(a) ? a : (b ?? ''));
 
-  // Повестка (раздел 2) — самая частая жалоба на «пустой раздел». Раньше merge её
-  // НЕ добивал. Если модель вернула пустую повестку, а в чате она подтверждена —
-  // подставляем из черновика.
-  if ((!merged.agenda || merged.agenda.items.length === 0) && chatDraft.agenda?.items?.length) {
+  // Повестка: чат в приоритете.
+  if (chatDraft.agenda?.items?.length) {
     merged.agenda = { items: chatDraft.agenda.items };
   }
 
-  if (!hasTopics(merged) && chatDraft.meetingContent?.topics?.length) {
-    merged.meetingContent = {
-      ...merged.meetingContent,
-      topics: chatDraft.meetingContent.topics,
-    };
+  // Содержание: чат в приоритете; пустые поля добираем из модели по совпадению заголовка.
+  if (chatDraft.meetingContent?.topics?.length) {
+    const modelTopics = merged.meetingContent.topics;
+    const topics = chatDraft.meetingContent.topics.map((c, idx) => {
+      const m =
+        modelTopics.find((x) => normTopicTitle(x.title) === normTopicTitle(c.title)) ??
+        modelTopics[idx];
+      return {
+        title: pick(c.title, m?.title ?? ''),
+        listened: pick(c.listened, m?.listened ?? ''),
+        discussed: pick(c.discussed, m?.discussed ?? ''),
+        decided: pick(c.decided, m?.decided ?? ''),
+      };
+    });
+    merged.meetingContent = { ...merged.meetingContent, topics };
   }
-  if (!hasSummary(merged) && chatDraft.meetingContent?.summary?.length) {
-    merged.meetingContent = {
-      ...merged.meetingContent,
-      summary: chatDraft.meetingContent.summary,
-    };
+  if (chatDraft.meetingContent?.summary?.length) {
+    merged.meetingContent = { ...merged.meetingContent, summary: chatDraft.meetingContent.summary };
   }
-  if (!hasApproval(merged) && chatDraft.approval) {
+
+  // Согласование: чат в приоритете, если есть подписанты.
+  if (
+    chatDraft.approval &&
+    (chatDraft.approval.customer.signatories.length || chatDraft.approval.executor.signatories.length)
+  ) {
     merged.approval = chatDraft.approval;
   }
+
+  // Участники: чат в приоритете; должность добираем по имени из модели, если в чате пусто.
   if (chatDraft.participants) {
-    const cp = chatDraft.participants.customer.people;
-    const ep = chatDraft.participants.executor.people;
-    if (cp.length && !merged.participants.customer.people.some((p) => p.fullName.trim())) {
-      merged.participants.customer = { ...merged.participants.customer, people: cp };
-    }
-    if (ep.length && !merged.participants.executor.people.some((p) => p.fullName.trim())) {
-      merged.participants.executor = { ...merged.participants.executor, people: ep };
-    }
-    if (chatDraft.participants.customer.organizationName.trim()) {
-      merged.participants.customer.organizationName = chatDraft.participants.customer.organizationName;
-    }
-    if (chatDraft.participants.executor.organizationName.trim()) {
-      merged.participants.executor.organizationName = chatDraft.participants.executor.organizationName;
-    }
+    const mergeSide = (side: 'customer' | 'executor') => {
+      const chatGrp = chatDraft.participants![side];
+      const modelGrp = merged.participants[side];
+      const people = chatGrp.people.length
+        ? chatGrp.people.map((cp) => {
+            const mp = modelGrp.people.find(
+              (x) => x.fullName.trim().toLowerCase() === cp.fullName.trim().toLowerCase(),
+            );
+            return { fullName: cp.fullName, position: pick(cp.position, mp?.position ?? '') };
+          })
+        : modelGrp.people;
+      merged.participants[side] = {
+        organizationName: pick(chatGrp.organizationName, modelGrp.organizationName),
+        people,
+      };
+    };
+    mergeSide('customer');
+    mergeSide('executor');
   }
 
   return merged;

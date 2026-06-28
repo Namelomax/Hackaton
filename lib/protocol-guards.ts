@@ -60,8 +60,24 @@ export interface DateProvenanceResult { protocol: Protocol; unresolved: string[]
 export function enforceDateProvenance(p: Protocol, sourceText: string): DateProvenanceResult {
   const src = sourceText || '';
   const unresolved: string[] = [];
+
+  // Дата встречи и дата договора ЗАПРЕЩЕНЫ как срок решения (даже если они есть в источнике).
+  const forbidden = new Set<string>();
+  const addForbidden = (d?: string) => {
+    const m = String(d || '').match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+    if (m) forbidden.add(`${Number(m[1])}.${Number(m[2])}.${m[3]}`);
+  };
+  addForbidden(p.meetingDate);
+  addForbidden(p.contractDate);
+  const isForbidden = (dd: string, mm: string, yy: string) =>
+    forbidden.has(`${Number(dd)}.${Number(mm)}.${yy}`);
+
   const fix = (text: string, label: string): string =>
     (text || '').replace(FULL_DATE_RX, (whole, dd, mm, yy) => {
+      if (isForbidden(dd, mm, yy)) {
+        unresolved.push(`${label}: дата встречи/договора (${whole}) использована как срок — заменена на «подлежит уточнению»`);
+        return 'подлежит уточнению';
+      }
       if (dateInSource(dd, mm, yy, src)) return whole;
       unresolved.push(`${label}: дата ${whole} отсутствует в расшифровке/ответах — заменена на «подлежит уточнению»`);
       return 'подлежит уточнению';
@@ -114,6 +130,11 @@ export function reconcileWithApproved(
   const warnings: string[] = [];
   const allText = JSON.stringify(p).toLowerCase();
 
+  // Договор обязателен в шапке.
+  const hasContract = (p.contractNumber && p.contractNumber.trim() && !/^№?\s*$/.test(p.contractNumber.trim())) ||
+    (p.contractSubject && p.contractSubject.trim().length > 0);
+  if (!hasContract) warnings.push('В документе не заполнен договор (№ и/или тема) — уточните и заполните шапку.');
+
   // 1. Подтверждённые пункты повестки на месте?
   for (const item of chatDraft.agenda?.items ?? []) {
     const head = item.trim().toLowerCase().slice(0, 25);
@@ -139,4 +160,34 @@ export function reconcileWithApproved(
     warnings.push(`После согласования были правки пользователя (${userCorrections.length}) — проверьте, что они учтены.`);
   }
   return warnings;
+}
+
+const REAL_RX = /\S/;
+function realStr(v?: string): boolean {
+  return Boolean(v && REAL_RX.test(v) && !/^не\s+указан/i.test(v.trim()));
+}
+
+/**
+ * Если модель «потеряла» договор, достаём его из ответов пользователя в диалоге.
+ * Ищем в окне вокруг слова «договор». Только ЗАПОЛНЯЕМ пустое, не перезаписываем.
+ */
+export function fillContractFromDialogue(p: Protocol, dialogueText: string): Protocol {
+  const t = String(dialogueText || '');
+  const out: Protocol = { ...p };
+  const win = (t.match(/догов[а-яёА-ЯЁ]*[\s\S]{0,120}/i) || [''])[0];
+  if (!win) return out;
+
+  if (!realStr(out.contractNumber)) {
+    const m = win.match(/догов[а-яёА-ЯЁ]*\s*(?:№|n|номер[а-яёА-ЯЁ]*)?\s*[:\-]?\s*(\d{1,6})/i);
+    if (m) out.contractNumber = `№${m[1]}`;
+  }
+  if (!realStr(out.contractDate)) {
+    const m = win.match(/(?:дата|от)\s*[:\-]?\s*(\d{2})[.\-/]?(\d{2})[.\-/]?(\d{4})/i);
+    if (m) out.contractDate = `${m[1]}.${m[2]}.${m[3]}`;
+  }
+  if (!realStr(out.contractSubject)) {
+    const m = win.match(/тема\s*(?:догов[а-яёА-ЯЁ]*)?\s*[:\-]?\s*([^.\n;]{3,80})/i);
+    if (m) out.contractSubject = m[1].trim();
+  }
+  return out;
 }

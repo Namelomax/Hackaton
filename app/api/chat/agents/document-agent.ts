@@ -26,6 +26,7 @@ import {
   carryOverParticipantRoles,
   enforceDateProvenance,
   reconcileWithApproved,
+  fillContractFromDialogue,
 } from '@/lib/protocol-guards';
 import {
   cleanProtocolText,
@@ -314,6 +315,7 @@ export async function generateFinalDocument(
     // Код-гарды: то, в чём слабая модель регулярно ошибается (промптом не лечится).
     validated = stripProtocolTimecodes(validated); // тайм-кодов в финале быть не должно
     validated = carryOverParticipantRoles(validated, conversationContext); // не терять должность
+    validated = fillContractFromDialogue(validated, conversationContext); // не терять договор
     const dateGuard = enforceDateProvenance(validated, conversationContext); // выдуманные даты → «подлежит уточнению»
     validated = dateGuard.protocol;
     const guardWarnings = [
