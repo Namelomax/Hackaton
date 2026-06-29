@@ -692,7 +692,7 @@ export const DocumentPanel = ({
           </div>
           <div className="mt-2 max-h-40 overflow-y-auto no-scrollbar pr-1">
             <div className="flex flex-wrap gap-2">
-              {attachments.map((att, idx) => {
+              {(attachments || []).map((att, idx) => {
                 const name = att?.name || 'attachment';
                 const canDownload = Boolean(att?.url);
                 const extension = (att?.name || '').split('.').pop()?.toUpperCase();
