@@ -11,12 +11,14 @@ import {
 } from '@/lib/getPromt';
 import { anonymizeRemote, AnonymizerUnavailableError } from './remote-client';
 import { applyMappingForward, countersFromMapping, mergeRemoteResult } from './merge';
+import { scrubStructured } from './scrub';
 import { deanonymize, deepDeanonymize } from './deanonymize';
 import type { ConversationMapping, Mapping } from './types';
 
 export { AnonymizerUnavailableError };
 export { deanonymize, deepDeanonymize };
-export { applyMappingForward };
+export { applyMappingForward, countersFromMapping };
+export { scrubStructured };
 export type { Mapping, ConversationMapping };
 
 async function loadConversation(conversationId?: string | null): Promise<ConversationMapping> {
@@ -78,4 +80,16 @@ export async function loadConversationMapping(
 ): Promise<Mapping> {
   const conv = await loadConversation(conversationId);
   return conv.mapping;
+}
+
+/** Сохранить канонический mapping диалога (mapping + counters). */
+export async function persistConversationMapping(
+  conversationId: string | null | undefined,
+  conv: ConversationMapping,
+): Promise<void> {
+  if (!conversationId) return;
+  await saveConversationMapping(conversationId, {
+    mapping: conv.mapping,
+    counters: conv.counters,
+  });
 }

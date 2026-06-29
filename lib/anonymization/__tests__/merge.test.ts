@@ -68,3 +68,28 @@ describe('образец mapping (Чебурашка)', () => {
     expect(real).not.toMatch(/\[[A-Z_]+_\d+\]/); // не осталось плейсхолдеров
   });
 });
+
+
+import { scrubStructured } from '../scrub';
+
+describe('scrubStructured — защитный фильтр', () => {
+  it('маскирует email/телефон/длинный ID, пропущенные NER', () => {
+    const conv = { mapping: {}, counters: {} };
+    const text = 'Контакт ivan@example.com, тел +7 999 123 45 67, ИНН 7707083893.';
+    const res = scrubStructured(text, conv);
+    expect(res.text).not.toContain('ivan@example.com');
+    expect(res.text).not.toMatch(/\+7 999 123 45 67/);
+    expect(res.text).not.toContain('7707083893');
+    expect(res.text).toMatch(/\[EMAIL_1\]/);
+    expect(res.text).toMatch(/\[PHONE_1\]/);
+    expect(res.added).toBeGreaterThanOrEqual(3);
+    // обратимость
+    expect(res.conversation.mapping['[EMAIL_1]']).toBe('ivan@example.com');
+  });
+  it('не трогает плейсхолдеры и обычный текст', () => {
+    const conv = { mapping: { '[PERSON_1]': 'Иван' }, counters: { PERSON: 1 } };
+    const res = scrubStructured('[PERSON_1] обсудил 3 вопроса за 2 часа.', conv);
+    expect(res.text).toBe('[PERSON_1] обсудил 3 вопроса за 2 часа.');
+    expect(res.added).toBe(0);
+  });
+});

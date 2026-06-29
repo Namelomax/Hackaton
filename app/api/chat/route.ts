@@ -27,13 +27,18 @@ import {
   anonymizeNewText,
   anonymizeWithMapping,
   loadConversationMapping,
+  countersFromMapping,
+  scrubStructured,
+  persistConversationMapping,
   AnonymizerUnavailableError,
   type Mapping,
+  type ConversationMapping,
 } from '@/lib/anonymization';
 import {
   wrapResponseWithDeanonymization,
   prependNoticeToResponse,
 } from '@/lib/anonymization/sse-deanonymize';
+import { ANONYMIZE_MODE_SYSTEM_APPENDIX } from '@/lib/anonymization/prompt';
 
 // Должно быть ≥ таймаута прокси/Ollama для длинных ответов (300s совпадало с 5m и обрывом стрима).
 export const maxDuration = 300;
@@ -809,16 +814,30 @@ export async function POST(req: Request) {
         mapping = r2.mapping;
       }
 
-      anonymizeMapping = mapping;
-      anonymizationActive = true;
-
-      // Локальная детерминированная подстановка (быстро) для документа и всей истории.
-      anonymizedDocsContext = anonymizeWithMapping(hiddenDocsContext, mapping);
+      // Финальная зачистка всего, что уходит в облако:
+      //   applyMappingForward (подстановка известных значений) → scrubStructured
+      //   (защитный фильтр email/телефонов/длинных ID, что мог пропустить NER).
+      let conv: ConversationMapping = { mapping, counters: countersFromMapping(mapping) };
+      {
+        const docLocal = anonymizeWithMapping(hiddenDocsContext, conv.mapping);
+        const sc = scrubStructured(docLocal, conv);
+        conv = sc.conversation;
+        anonymizedDocsContext = sc.text;
+      }
       finalMessages = finalMessages.map((m) => {
         if (typeof m?.content !== 'string') return m;
-        const c = anonymizeWithMapping(m.content, mapping);
-        return { ...m, content: c, parts: [{ type: 'text' as const, text: c }] };
+        const local = anonymizeWithMapping(m.content, conv.mapping);
+        const sc = scrubStructured(local, conv);
+        conv = sc.conversation;
+        return { ...m, content: sc.text, parts: [{ type: 'text' as const, text: sc.text }] };
       });
+      // Если защитный фильтр добавил новые сущности — сохраняем mapping.
+      if (Object.keys(conv.mapping).length !== Object.keys(mapping).length) {
+        await persistConversationMapping(conversationId, conv);
+      }
+      mapping = conv.mapping;
+      anonymizeMapping = mapping;
+      anonymizationActive = true;
 
       // Принудительно облачная модель.
       effectiveProvider = 'openrouter';
@@ -962,6 +981,12 @@ export async function POST(req: Request) {
     const yyyy = now.getFullYear();
     const dayName = DAY_NAMES_RU[now.getDay()];
     systemPrompt += `\n\n[КОНТЕКСТ ДАТЫ: Текущая дата — ${dd}.${mm}.${yyyy} (${dayName}). Используй для вычисления абсолютных дат из относительных выражений. Если выражение требует знания дня недели даты встречи и ты не можешь вычислить точную дату — задай уточняющий вопрос пользователю.]`;
+  }
+
+  // Режим анонимизации: жёстко запрещаем модели выдумывать имена и подставлять
+  // примеры из системного промпта вместо плейсхолдеров.
+  if (anonymizationActive) {
+    systemPrompt += ANONYMIZE_MODE_SYSTEM_APPENDIX;
   }
 
   // messages-prepared verbose log removed

@@ -142,6 +142,39 @@ export default function ChatPage() {
   // Chat that user is currently viewing in the UI.
   const [viewConversationId, setViewConversationId] = useState<string | null>(null);
 
+  // Артефакты анонимизации по диалогам: { conversationId: { anonymizedText, mapping } }.
+  // Показываются в списке документов (анонимизированная версия + mapping).
+  type AnonArtifact = { anonymizedText: string; mapping: Record<string, string> };
+  const [anonByConv, setAnonByConv] = useState<Record<string, AnonArtifact>>({});
+  const handleAnonymizationReady = useCallback(
+    (data: AnonArtifact) => {
+      const key = conversationId || viewConversationId;
+      if (!key) return;
+      setAnonByConv((prev) => ({ ...prev, [key]: data }));
+    },
+    [conversationId, viewConversationId],
+  );
+  // Восстановление артефактов при переключении на диалог (после перезагрузки).
+  useEffect(() => {
+    const key = viewConversationId;
+    if (!key || String(key).startsWith('local-')) return;
+    if (anonByConv[key]) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/anonymize?conversationId=${encodeURIComponent(key)}`);
+        if (!res.ok) return;
+        const json = await res.json();
+        if (cancelled || !json?.ok) return;
+        const mapping = (json.mapping && typeof json.mapping === 'object') ? json.mapping : {};
+        const anonymizedText = String(json.anonymizedText || '');
+        if (Object.keys(mapping).length === 0 && !anonymizedText) return;
+        setAnonByConv((prev) => (prev[key] ? prev : { ...prev, [key]: { anonymizedText, mapping } }));
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [viewConversationId]);
+
   // Ensure that when PromptInputWrapper creates a real conversation from a local-* id,
   // both engine + view ids stay in sync.
   const setConversationIdAndView = useCallback<React.Dispatch<React.SetStateAction<string | null>>>(
@@ -1167,6 +1200,7 @@ export default function ChatPage() {
                 onUserMessageQueued={undefined}
                 chatBody={chatBody}
                 anonymizeMode={anonymizeMode}
+                onAnonymizationReady={handleAnonymizationReady}
                 onOpenAuthDialog={() => {
                   setAuthMode('login');
                   setAuthHintFromPrompt(true);
@@ -1182,6 +1216,7 @@ export default function ChatPage() {
           document={viewDocument}
           onEdit={handleDocumentEdit}
           attachments={attachedFiles}
+          anonymization={(viewConversationId && anonByConv[viewConversationId]) || (conversationId && anonByConv[conversationId]) || undefined}
           onSendReview={(text) => setInput(text)}
           onQuote={(text) => setQuoteText(text)}
           chatReviewBody={chatBody}

@@ -21,6 +21,7 @@ import {
 import { toast } from 'sonner';
 import { Response } from '@/components/ai-elements/response';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { DocumentReviewPanel } from '@/components/document/DocumentReviewPanel';
 import type { DocumentReview } from '@/app/api/chat/agents/review-agent';
 import type { Attachment, DocumentState } from '@/lib/document/types';
@@ -38,6 +39,7 @@ type DocumentPanelProps = {
   chatReviewBody?: Pick<ChatTransportBodyExtras, 'chatProvider' | 'chatModel' | 'useThinking'>;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
+  anonymization?: { anonymizedText: string; mapping: Record<string, string> };
 };
 
 function getFileExt(name: string) {
@@ -113,8 +115,23 @@ export const DocumentPanel = ({
   chatReviewBody,
   collapsed,
   onToggleCollapsed,
+  anonymization,
 }: DocumentPanelProps) => {
   const [copied, setCopied] = useState(false);
+  const [anonView, setAnonView] = useState<{ title: string; content: string } | null>(null);
+  const downloadTextFile = (filename: string, content: string, mime = 'text/plain') => {
+    try {
+      const blob = new Blob([content], { type: `${mime};charset=utf-8` });
+      const url = URL.createObjectURL(blob);
+      const a = window.document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      toast.error('Не удалось скачать файл');
+    }
+  };
   const [editing, setEditing] = useState(false);
   const [isBundling, setIsBundling] = useState(false);
   const [draftTitle, setDraftTitle] = useState(document.title);
@@ -668,7 +685,7 @@ export const DocumentPanel = ({
         )}
       </div>
 
-      {Array.isArray(attachments) && attachments.length > 0 && (
+      {((Array.isArray(attachments) && attachments.length > 0) || anonymization) && (
         <div className="border-t bg-background px-4 py-2 min-h-[104px]">
           <div className="flex items-center gap-2">
             <div className="text-xs font-medium text-muted-foreground">Загруженные документы</div>
@@ -736,8 +753,69 @@ export const DocumentPanel = ({
               })}
             </div>
           </div>
+          {anonymization && (Object.keys(anonymization.mapping || {}).length > 0 || anonymization.anonymizedText) && (
+            <div className="mt-3 border-t pt-2">
+              <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                <Shield className="size-3.5" /> Версия для облака (без ПДн, 152-ФЗ)
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-2 text-xs">
+                  <FileText className="size-3.5 shrink-0 text-[color:var(--chart-1)]" />
+                  <span className="flex-1 truncate" title="Анонимизированный текст, который уходит в облако">
+                    Анонимизированная версия (.txt)
+                  </span>
+                  <button
+                    type="button"
+                    className="rounded border px-2 py-0.5 hover:bg-muted"
+                    onClick={() => setAnonView({ title: 'Анонимизированная версия (уходит в облако)', content: anonymization.anonymizedText || '(пусто)' })}
+                  >
+                    Просмотр
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded border px-2 py-0.5 hover:bg-muted"
+                    onClick={() => downloadTextFile('anonymized.txt', anonymization.anonymizedText || '', 'text/plain')}
+                  >
+                    Скачать
+                  </button>
+                </div>
+                <div className="flex items-center gap-2 text-xs">
+                  <Shield className="size-3.5 shrink-0 text-[color:var(--chart-2)]" />
+                  <span className="flex-1 truncate" title="Ключ обратной подстановки (placeholder → оригинал)">
+                    Mapping — ключ деанонимизации ({Object.keys(anonymization.mapping || {}).length})
+                  </span>
+                  <button
+                    type="button"
+                    className="rounded border px-2 py-0.5 hover:bg-muted"
+                    onClick={() => setAnonView({ title: 'Mapping (placeholder → оригинал)', content: JSON.stringify(anonymization.mapping || {}, null, 2) })}
+                  >
+                    Просмотр
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded border px-2 py-0.5 hover:bg-muted"
+                    onClick={() => downloadTextFile('mapping.map.json', JSON.stringify(anonymization.mapping || {}, null, 2), 'application/json')}
+                  >
+                    Скачать
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
+
+      <Dialog open={!!anonView} onOpenChange={(o) => { if (!o) setAnonView(null); }} panelClassName="max-w-2xl w-full">
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{anonView?.title}</DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[60vh] overflow-auto rounded-md border bg-muted/30 p-3">
+            <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed">{anonView?.content}</pre>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {reviewResult && isReviewPanelOpen && (
         <DocumentReviewPanel
           review={reviewResult}

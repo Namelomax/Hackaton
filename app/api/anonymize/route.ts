@@ -3,13 +3,20 @@
  * mapping диалога. Используется для PREVIEW перед отправкой в облако.
  *
  * Body: { conversationId?: string, text?: string, files?: Attachment[] }
- *   Attachment: { url|data, mediaType|mimeType, name|filename, content? }
  *
- * Ответ: { ok, anonymizedText, summary, added }
+ * Ответ: { ok, anonymizedText, summary, added, mapping }
  *   503 + { unavailable: true } — анонимизатор недоступен (UI делает fallback).
+ *
+ * GET /api/anonymize?conversationId=... — вернуть сохранённые mapping и
+ * анонимизированный preview-текст (для восстановления при перезагрузке).
  */
 import { extractAttachmentText } from '@/lib/attachment-extract';
 import { anonymizeNewText, AnonymizerUnavailableError } from '@/lib/anonymization';
+import {
+  saveConversationPreview,
+  getConversationPreview,
+  getConversationMapping,
+} from '@/lib/getPromt';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -48,11 +55,19 @@ export async function POST(req: Request) {
 
   try {
     const result = await anonymizeNewText(fullText, conversationId);
+    if (conversationId) {
+      try {
+        await saveConversationPreview(conversationId, result.anonymizedText);
+      } catch (e) {
+        console.warn('[anonymize] save preview failed:', (e as Error)?.message);
+      }
+    }
     return Response.json({
       ok: true,
       anonymizedText: result.anonymizedText,
       summary: result.summary,
       added: result.added,
+      mapping: result.mapping,
     });
   } catch (e) {
     if (e instanceof AnonymizerUnavailableError) {
@@ -62,6 +77,30 @@ export async function POST(req: Request) {
       );
     }
     console.error('[anonymize] error:', e);
+    return Response.json(
+      { ok: false, error: e instanceof Error ? e.message : 'unknown' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const conversationId = url.searchParams.get('conversationId');
+  if (!conversationId) {
+    return Response.json({ ok: false, error: 'conversationId required' }, { status: 400 });
+  }
+  try {
+    const [stored, previewText] = await Promise.all([
+      getConversationMapping(conversationId),
+      getConversationPreview(conversationId),
+    ]);
+    return Response.json({
+      ok: true,
+      mapping: stored.mapping ?? {},
+      anonymizedText: previewText ?? '',
+    });
+  } catch (e) {
     return Response.json(
       { ok: false, error: e instanceof Error ? e.message : 'unknown' },
       { status: 500 },

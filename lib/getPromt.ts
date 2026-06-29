@@ -1117,6 +1117,39 @@ export async function getConversationMapping(
   return { mapping: {}, counters: {} };
 }
 
+/** Сохранить анонимизированную preview-версию документа (для показа в UI). */
+export async function saveConversationPreview(
+  conversationId: string,
+  previewText: string,
+): Promise<void> {
+  await connectDB();
+  const clean = String(conversationId).replace(/^anonymization_mappings:/, '').replace(/^conversations:/, '');
+  const rid = new RecordId('anonymization_mappings', clean);
+  try {
+    await db.merge(rid, { previewText } as any);
+  } catch (e) {
+    try {
+      await db.upsert(rid, { previewText } as any);
+    } catch (ee) {
+      console.error('saveConversationPreview failed:', (ee as Error)?.message);
+    }
+  }
+}
+
+/** Прочитать анонимизированную preview-версию документа. */
+export async function getConversationPreview(conversationId: string): Promise<string> {
+  await connectDB();
+  const clean = String(conversationId).replace(/^anonymization_mappings:/, '').replace(/^conversations:/, '');
+  try {
+    const rec = await db.select(new RecordId('anonymization_mappings', clean));
+    const row: any = Array.isArray(rec) ? rec[0] : rec;
+    if (row && typeof row.previewText === 'string') return row.previewText;
+  } catch (e) {
+    console.warn('getConversationPreview failed:', (e as Error)?.message);
+  }
+  return '';
+}
+
 /** Сохранить (перезаписать) mapping диалога. */
 export async function saveConversationMapping(
   conversationId: string,

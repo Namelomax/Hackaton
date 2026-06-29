@@ -129,6 +129,7 @@ type PromptInputWrapperProps = {
   onOpenAuthDialog?: () => void;
   chatBody?: ChatTransportBodyExtras;
   anonymizeMode?: boolean;
+  onAnonymizationReady?: (data: { anonymizedText: string; mapping: Record<string, string> }) => void;
 };
 
 export const PromptInputWrapper = ({
@@ -152,6 +153,7 @@ export const PromptInputWrapper = ({
   onOpenAuthDialog,
   chatBody,
   anonymizeMode = false,
+  onAnonymizationReady,
 }: PromptInputWrapperProps) => {
   const submitLockRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -217,6 +219,10 @@ export const PromptInputWrapper = ({
         setPreviewText(String(json.anonymizedText || ''));
         setPreviewSummary(json.summary || {});
         setPreviewLoading(false);
+        onAnonymizationReady?.({
+          anonymizedText: String(json.anonymizedText || ''),
+          mapping: (json.mapping && typeof json.mapping === 'object') ? json.mapping : {},
+        });
         return await new Promise<'confirm' | 'cancel'>((resolve) => {
           previewResolverRef.current = resolve;
         });
@@ -229,7 +235,7 @@ export const PromptInputWrapper = ({
         setPreviewLoading(false);
       }
     },
-    [],
+    [onAnonymizationReady],
   );
   const cancelRequestedRef = useRef(false);
   const preSendAbortRef = useRef<AbortController | null>(null);
