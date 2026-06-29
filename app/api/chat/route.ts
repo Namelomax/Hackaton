@@ -23,6 +23,17 @@ import {
   RAG_TOOL_MODE_SYSTEM_APPENDIX,
 } from './agents/rag-tools';
 import { AgentContext } from './agents/types';
+import {
+  anonymizeNewText,
+  anonymizeWithMapping,
+  loadConversationMapping,
+  AnonymizerUnavailableError,
+  type Mapping,
+} from '@/lib/anonymization';
+import {
+  wrapResponseWithDeanonymization,
+  prependNoticeToResponse,
+} from '@/lib/anonymization/sse-deanonymize';
 
 // Должно быть ≥ таймаута прокси/Ollama для длинных ответов (300s совпадало с 5m и обрывом стрима).
 export const maxDuration = 300;
@@ -387,6 +398,7 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   let { messages, newSystemPrompt, userId, selectedPromptId, documentContent, useRagContext, ragMode } =
     body as any;
+  const anonymizeMode = Boolean((body as any)?.anonymize);
   let conversationId: string | null = null;
 
   try {
@@ -762,6 +774,75 @@ export async function POST(req: Request) {
     }
   }
 
+  // ===== Режим «Облако + анонимизация» (152-ФЗ) =====
+  // Документ и сообщения чистим от ПДн ПЕРЕД отправкой в облачную LLM. Сервер
+  // дёргаем только для НОВОГО текста (последнее сообщение пользователя; документ —
+  // если mapping ещё пуст, т.е. preview не выполнялся). Остальное переписываем
+  // локально по каноническому mapping диалога.
+  let effectiveProvider: string | undefined = (body as Record<string, unknown>).chatProvider as
+    | string
+    | undefined;
+  let effectiveModel: string | undefined = (body as Record<string, unknown>).chatModel as
+    | string
+    | undefined;
+  let anonymizeMapping: Mapping = {};
+  let anonymizationActive = false;
+  let anonymizationNotice = '';
+  let anonymizedDocsContext = hiddenDocsContext;
+
+  if (anonymizeMode) {
+    try {
+      let mapping = await loadConversationMapping(conversationId);
+
+      // Документ: серверная анонимизация только если mapping пуст (preview не было).
+      if (hiddenDocsContext.trim() && Object.keys(mapping).length === 0) {
+        const r = await anonymizeNewText(hiddenDocsContext, conversationId);
+        mapping = r.mapping;
+      }
+
+      // Последнее сообщение пользователя — короткое, серверная анонимизация быстра.
+      const lastUserMsg = [...finalMessages].reverse().find((m) => m?.role === 'user');
+      const lastUserText =
+        typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : '';
+      if (lastUserText.trim()) {
+        const r2 = await anonymizeNewText(lastUserText, conversationId);
+        mapping = r2.mapping;
+      }
+
+      anonymizeMapping = mapping;
+      anonymizationActive = true;
+
+      // Локальная детерминированная подстановка (быстро) для документа и всей истории.
+      anonymizedDocsContext = anonymizeWithMapping(hiddenDocsContext, mapping);
+      finalMessages = finalMessages.map((m) => {
+        if (typeof m?.content !== 'string') return m;
+        const c = anonymizeWithMapping(m.content, mapping);
+        return { ...m, content: c, parts: [{ type: 'text' as const, text: c }] };
+      });
+
+      // Принудительно облачная модель.
+      effectiveProvider = 'openrouter';
+      effectiveModel = process.env.ANONYMIZER_CLOUD_MODEL || 'openrouter/owl-alpha';
+      console.log(
+        `🔒 anonymize active: mapping=${Object.keys(mapping).length} entries → ${effectiveModel}`,
+      );
+    } catch (e) {
+      if (e instanceof AnonymizerUnavailableError) {
+        // Fallback на локальную LLM (там ПДн допустимы) + уведомление пользователю.
+        anonymizationActive = false;
+        anonymizeMapping = {};
+        anonymizedDocsContext = hiddenDocsContext;
+        effectiveProvider = 'ollama';
+        effectiveModel = undefined;
+        anonymizationNotice =
+          '⚠️ Анонимизатор недоступен — отвечаю через локальную модель (данные не уходят в облако).';
+        console.warn('🔒 anonymize unavailable → local fallback:', e.message);
+      } else {
+        throw e;
+      }
+    }
+  }
+
   // Есть ли существенный документ в системном блоке (> 8 кБ)?
   const hasInlineTranscript =
     !ragOmitsAttachmentBodies &&
@@ -783,8 +864,8 @@ export async function POST(req: Request) {
   let languageModel;
   try {
     languageModel = resolveChatLanguageModel({
-      chatProvider: (body as Record<string, unknown>).chatProvider as string | undefined,
-      chatModel: (body as Record<string, unknown>).chatModel as string | undefined,
+      chatProvider: effectiveProvider,
+      chatModel: effectiveModel,
       useThinking: Boolean((body as Record<string, unknown>).useThinking),
     });
   } catch (err) {
@@ -841,7 +922,7 @@ export async function POST(req: Request) {
 
   let systemPrompt = buildSystemPrompt(
     userPrompt,
-    hiddenDocsContext,
+    anonymizedDocsContext,
     ragAutoContext?.trim() ? ragAutoContext : undefined,
     ragOmitsAttachmentBodies,
   );
@@ -866,9 +947,9 @@ export async function POST(req: Request) {
   if (hasInlineTranscript) {
     systemPrompt += PROTOCOL_CHAT_TIMECODE_APPENDIX;
     // Детерминированный слот-скан расшифровки → якорь для блока «Не хватает».
-    if (hiddenDocsContext.trim()) {
+    if (anonymizedDocsContext.trim()) {
       systemPrompt +=
-        '\n' + formatSlotScanForPrompt(analyzeTranscriptSlots(hiddenDocsContext));
+        '\n' + formatSlotScanForPrompt(analyzeTranscriptSlots(anonymizedDocsContext));
     }
   }
 
@@ -919,13 +1000,27 @@ export async function POST(req: Request) {
     hasInlineTranscript,
     useThinking: Boolean(body.useThinking),
     ragMode: ragModeStr,
+    anonymize: anonymizationActive,
+    anonymizeMapping,
   };
 
   const systemPromptTokensEst = Math.ceil(systemPrompt.length / 2.34);
   console.log(
-    `📐 context: system≈${systemPromptTokensEst}tok doc≈${docTokensEstimate}tok inline=${hasInlineTranscript} msgs=${finalMessages.length}`,
+    `📐 context: system≈${systemPromptTokensEst}tok doc≈${docTokensEstimate}tok inline=${hasInlineTranscript} msgs=${finalMessages.length} anon=${anonymizationActive}`,
   );
 
   // 6. Run Main Agent
-  return runMainAgent(agentContext, systemPrompt, userPrompt);
+  let agentResponse = await runMainAgent(agentContext, systemPrompt, userPrompt);
+
+  // Деанонимизация ответа «на лету» — клиент видит реальные данные.
+  if (anonymizationActive && Object.keys(anonymizeMapping).length > 0) {
+    agentResponse = wrapResponseWithDeanonymization(agentResponse, anonymizeMapping);
+  }
+
+  // Fallback-уведомление пользователю (анонимизатор недоступен → локальная модель).
+  if (anonymizationNotice) {
+    agentResponse = prependNoticeToResponse(agentResponse, anonymizationNotice);
+  }
+
+  return agentResponse;
 }

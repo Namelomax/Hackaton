@@ -16,12 +16,15 @@ import {
   usePromptInputAttachments,
 } from '@/components/ai-elements/prompt-input';
 import { isTextExtractable } from '@/lib/utils';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { toast } from 'sonner';
 export type ChatTransportBodyExtras = {
   chatProvider: 'openrouter' | 'ollama';
   chatModel: string;
   useRagContext: boolean;
   ragMode: string;
   useThinking?: boolean;
+  anonymize?: boolean;
 };
 
 const AttachmentsSection = () => {
@@ -125,6 +128,7 @@ type PromptInputWrapperProps = {
   onUserMessageQueued?: (message: any) => void;
   onOpenAuthDialog?: () => void;
   chatBody?: ChatTransportBodyExtras;
+  anonymizeMode?: boolean;
 };
 
 export const PromptInputWrapper = ({
@@ -147,10 +151,86 @@ export const PromptInputWrapper = ({
   onUserMessageQueued,
   onOpenAuthDialog,
   chatBody,
+  anonymizeMode = false,
 }: PromptInputWrapperProps) => {
   const submitLockRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [authWarningOpen, setAuthWarningOpen] = useState(false);
+
+  // ── Preview анонимизации документа перед отправкой в облако ──
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewText, setPreviewText] = useState('');
+  const [previewSummary, setPreviewSummary] = useState<Record<string, number>>({});
+  const previewResolverRef = useRef<((decision: 'confirm' | 'cancel') => void) | null>(null);
+
+  const resolvePreview = useCallback((decision: 'confirm' | 'cancel') => {
+    setPreviewOpen(false);
+    const resolve = previewResolverRef.current;
+    previewResolverRef.current = null;
+    resolve?.(decision);
+  }, []);
+
+  /**
+   * Прогоняет вложения через /api/anonymize, показывает preview и ждёт решения.
+   * Возвращает: 'confirm' — отправлять в облако; 'cancel' — отменить;
+   * 'fallback' — анонимизатор недоступен/ошибка, отправляем как есть (сервер
+   * сам уведомит и уйдёт на локальную модель).
+   */
+  const requestAnonymizationPreview = useCallback(
+    async (
+      files: FileUIPart[],
+      convId: string | null,
+      signal?: AbortSignal,
+    ): Promise<'confirm' | 'cancel' | 'fallback'> => {
+      setPreviewLoading(true);
+      setPreviewText('');
+      setPreviewSummary({});
+      setPreviewOpen(true);
+      try {
+        const payloadFiles = files.map((f: any) => ({
+          url: f?.url || f?.data,
+          mediaType: f?.mediaType || f?.mimeType,
+          filename: f?.filename || f?.name,
+        }));
+        const res = await fetch('/api/anonymize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal,
+          body: JSON.stringify({ conversationId: convId, files: payloadFiles }),
+        });
+        if (res.status === 503) {
+          setPreviewOpen(false);
+          toast.warning('Анонимизатор недоступен', {
+            description: 'Документ будет обработан локальной моделью (данные не уходят в облако).',
+          });
+          return 'fallback';
+        }
+        const json = await res.json();
+        if (!res.ok || !json?.ok) {
+          setPreviewOpen(false);
+          toast.error('Не удалось анонимизировать документ', {
+            description: json?.error || 'Отправляю через локальную модель.',
+          });
+          return 'fallback';
+        }
+        setPreviewText(String(json.anonymizedText || ''));
+        setPreviewSummary(json.summary || {});
+        setPreviewLoading(false);
+        return await new Promise<'confirm' | 'cancel'>((resolve) => {
+          previewResolverRef.current = resolve;
+        });
+      } catch (err) {
+        setPreviewOpen(false);
+        if ((err as any)?.name === 'AbortError') return 'cancel';
+        toast.error('Ошибка анонимизации', { description: String(err) });
+        return 'fallback';
+      } finally {
+        setPreviewLoading(false);
+      }
+    },
+    [],
+  );
   const cancelRequestedRef = useRef(false);
   const preSendAbortRef = useRef<AbortController | null>(null);
   const authWarningTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -243,6 +323,22 @@ export const PromptInputWrapper = ({
       // Avoid blocking UI on client-side extraction; server performs extraction/injection.
       void finalFiles.map((f) => (f?.mediaType ? isTextExtractable(f.mediaType) : false));
 
+      // Режим «Облако + анонимизация»: при наличии документа показываем preview
+      // анонимизированной версии и ждём подтверждения перед отправкой в облако.
+      if (anonymizeMode && finalFiles.length > 0) {
+        const decision = await requestAnonymizationPreview(
+          finalFiles,
+          ensuredConversationId ?? null,
+          abort.signal,
+        );
+        if (decision === 'cancel') {
+          submitLockRef.current = false;
+          setIsSubmitting(false);
+          return;
+        }
+        if (cancelRequestedRef.current || abort.signal.aborted) return;
+      }
+
       const clientMessageId =
         (typeof crypto !== 'undefined' && (crypto as any).randomUUID)
           ? (crypto as any).randomUUID()
@@ -299,6 +395,55 @@ export const PromptInputWrapper = ({
 
 return (
   <div className={className ? `relative ${className}` : 'relative'}>
+    {/* Preview анонимизации документа перед отправкой в облако */}
+    <Dialog open={previewOpen} onOpenChange={(o) => { if (!o) resolvePreview('cancel'); }} panelClassName="max-w-2xl w-full">
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Проверка перед отправкой в облако</DialogTitle>
+        </DialogHeader>
+        <div className="text-xs text-muted-foreground mb-2">
+          В облачную модель (owl-alpha) уйдёт только этот анонимизированный текст — без персональных данных (152-ФЗ).
+          Вы продолжите видеть реальные данные; обратная подстановка происходит автоматически.
+        </div>
+        {Object.keys(previewSummary).length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {Object.entries(previewSummary).map(([label, count]) => (
+              <span
+                key={label}
+                className="rounded-full border bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
+              >
+                {label}: {count}
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="max-h-[45vh] overflow-auto rounded-md border bg-muted/30 p-3">
+          {previewLoading ? (
+            <div className="text-sm text-muted-foreground">Анонимизация документа… (обычно 20–30 секунд)</div>
+          ) : (
+            <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed">{previewText}</pre>
+          )}
+        </div>
+        <div className="flex justify-end gap-2 pt-3">
+          <button
+            type="button"
+            onClick={() => resolvePreview('cancel')}
+            className="px-3 py-1.5 text-sm rounded border hover:bg-muted"
+          >
+            Отмена
+          </button>
+          <button
+            type="button"
+            disabled={previewLoading}
+            onClick={() => resolvePreview('confirm')}
+            className="px-4 py-1.5 text-sm rounded bg-primary text-black disabled:opacity-50"
+          >
+            Подтвердить и отправить
+          </button>
+        </div>
+      </DialogContent>
+    </Dialog>
+
     {authWarningOpen && (
       <div className="pointer-events-none absolute -top-10 left-0 right-0 z-10 flex justify-center">
         <div className="rounded-md border border-neutral-200 bg-white px-3 py-1 text-xs text-neutral-700 shadow-sm">

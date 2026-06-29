@@ -123,6 +123,9 @@ DEFINE TABLE conversations SCHEMALESS;
 
 DEFINE FIELD created ON conversations TYPE datetime DEFAULT time::now() READONLY;
 
+DEFINE TABLE anonymization_mappings SCHEMALESS;
+DEFINE FIELD updated ON anonymization_mappings TYPE datetime VALUE time::now();
+
     `);
   } catch (error: any) {
     if (!error.message?.includes?.('already exists')) {
@@ -1083,5 +1086,59 @@ export async function updatePrompt(content: string): Promise<void> {
       content,
       isDefault: true,
     });
+  }
+}
+
+// ===== Анонимизация: канонический mapping диалога (placeholder -> оригинал) =====
+
+export type StoredConversationMapping = {
+  mapping: Record<string, string>;
+  counters: Record<string, number>;
+};
+
+/** Прочитать сохранённый mapping диалога. Пустой, если ещё нет. */
+export async function getConversationMapping(
+  conversationId: string,
+): Promise<StoredConversationMapping> {
+  await connectDB();
+  const clean = String(conversationId).replace(/^anonymization_mappings:/, '').replace(/^conversations:/, '');
+  try {
+    const rec = await db.select(new RecordId('anonymization_mappings', clean));
+    const row: any = Array.isArray(rec) ? rec[0] : rec;
+    if (row && typeof row === 'object') {
+      return {
+        mapping: (row.mapping && typeof row.mapping === 'object') ? row.mapping : {},
+        counters: (row.counters && typeof row.counters === 'object') ? row.counters : {},
+      };
+    }
+  } catch (e) {
+    console.warn('getConversationMapping failed:', (e as Error)?.message);
+  }
+  return { mapping: {}, counters: {} };
+}
+
+/** Сохранить (перезаписать) mapping диалога. */
+export async function saveConversationMapping(
+  conversationId: string,
+  data: StoredConversationMapping,
+): Promise<void> {
+  await connectDB();
+  const clean = String(conversationId).replace(/^anonymization_mappings:/, '').replace(/^conversations:/, '');
+  const rid = new RecordId('anonymization_mappings', clean);
+  try {
+    await db.upsert(rid, {
+      mapping: data.mapping ?? {},
+      counters: data.counters ?? {},
+    });
+  } catch (e) {
+    // Фолбек на merge, если upsert недоступен в этой версии SDK.
+    try {
+      await db.merge(rid, {
+        mapping: data.mapping ?? {},
+        counters: data.counters ?? {},
+      } as any);
+    } catch (ee) {
+      console.error('saveConversationMapping failed:', (ee as Error)?.message);
+    }
   }
 }

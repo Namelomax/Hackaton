@@ -35,15 +35,31 @@ function buildPersistPutBody(
 }
 
 export default function ChatPage() {
+  // Режим работы модели: false — локальная LLM; true — облако owl-alpha с анонимизацией.
+  const [anonymizeMode, setAnonymizeMode] = useState(false);
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('anonymizeMode');
+      if (saved === '1') setAnonymizeMode(true);
+    } catch {}
+  }, []);
+  const handleToggleAnonymize = useCallback((next: boolean) => {
+    setAnonymizeMode(next);
+    try {
+      localStorage.setItem('anonymizeMode', next ? '1' : '0');
+    } catch {}
+  }, []);
+
   const chatBody = useMemo(
     () => ({
-      chatProvider: 'ollama' as const,
-      chatModel: FIXED_CHAT_MODEL,
+      chatProvider: anonymizeMode ? ('openrouter' as const) : ('ollama' as const),
+      chatModel: anonymizeMode ? 'openrouter/owl-alpha' : FIXED_CHAT_MODEL,
       useRagContext: false,
       ragMode: 'hybrid' as const,
       useThinking: false,
+      anonymize: anonymizeMode,
     }),
-    [],
+    [anonymizeMode],
   );
 
   const [authChecked, setAuthChecked] = useState(false);
@@ -1090,6 +1106,8 @@ export default function ChatPage() {
         setAuthMode={setAuthMode}
         toggleAuthMode={toggleAuthMode}
         showAuthHint={authHintFromPrompt}
+        anonymizeMode={anonymizeMode}
+        onToggleAnonymize={handleToggleAnonymize}
       />
 
       {/* Основная область */}
@@ -1148,6 +1166,7 @@ export default function ChatPage() {
                 prepareSend={prepareSend}
                 onUserMessageQueued={undefined}
                 chatBody={chatBody}
+                anonymizeMode={anonymizeMode}
                 onOpenAuthDialog={() => {
                   setAuthMode('login');
                   setAuthHintFromPrompt(true);

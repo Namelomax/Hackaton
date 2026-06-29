@@ -20,6 +20,8 @@ type HeaderProps = {
   toggleAuthMode: () => void;
   brandLabel?: string;
   showAuthHint?: boolean;
+  anonymizeMode?: boolean;
+  onToggleAnonymize?: (next: boolean) => void;
 };
 
 export const Header = ({
@@ -37,6 +39,8 @@ export const Header = ({
   toggleAuthMode,
   brandLabel = 'Протоколёр',
   showAuthHint = false,
+  anonymizeMode = false,
+  onToggleAnonymize,
 }: HeaderProps) => {
   useEffect(() => {
     if (authUser) {
@@ -67,6 +71,39 @@ export const Header = ({
           </div>
           <div className="text-sm text-foreground font-semibold">{brandLabel}</div>
         </div>
+
+        {/* Переключатель режима работы LLM */}
+        <div
+          className="flex items-center rounded-lg border bg-background p-0.5 text-xs shadow-sm"
+          role="group"
+          aria-label="Режим работы модели"
+        >
+          <button
+            type="button"
+            onClick={() => onToggleAnonymize?.(false)}
+            title="Локальная LLM на сервере (данные не покидают контур). Качество ниже."
+            className={`px-3 py-1.5 rounded-md transition-colors ${
+              !anonymizeMode
+                ? 'bg-primary text-black font-medium'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            🖥️ Локальная LLM
+          </button>
+          <button
+            type="button"
+            onClick={() => onToggleAnonymize?.(true)}
+            title="Облачная LLM (owl-alpha). Документ и сообщения анонимизируются перед отправкой — без ПДн (152-ФЗ)."
+            className={`px-3 py-1.5 rounded-md transition-colors ${
+              anonymizeMode
+                ? 'bg-primary text-black font-medium'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            ☁️ Облако + анонимизация
+          </button>
+        </div>
+
         <div>
           {authUser ? (
             <div className="flex items-center gap-3">

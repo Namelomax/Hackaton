@@ -36,6 +36,7 @@ import {
   isValidParticipantRow,
   resolveApprovalForDocument,
 } from '@/lib/protocol-markdown-format';
+import { applyMappingForward, deepDeanonymize, type Mapping } from '@/lib/anonymization';
 
 function extractMessageText(msg: any): string {
   if (!msg) return '';
@@ -69,6 +70,8 @@ function stripTimecodeMarkers(text: string): string {
 export async function runDocumentAgent(context: AgentContext) {
   const { messages, uiMessages, model, userPrompt, documentContent, userId, conversationId, abortSignal } =
     context;
+  const anonymize = Boolean(context.anonymize);
+  const anonymizeMapping: Mapping = context.anonymizeMapping ?? {};
   let generatedDocumentContent = '';
 
   const safeOriginalUIMessages = (() => {
@@ -99,6 +102,7 @@ export async function runDocumentAgent(context: AgentContext) {
           conversationId,
           0.1,
           abortSignal ?? undefined,
+          { anonymize, mapping: anonymizeMapping },
         );
         const doneId = `done-${Date.now()}`;
         writer.write({ type: 'text-start', id: doneId });
@@ -144,7 +148,10 @@ export async function generateFinalDocument(
   conversationId?: string | null,
   temperature: number = 0.1,
   abortSignal?: AbortSignal,
+  anonOptions?: { anonymize?: boolean; mapping?: Mapping },
 ): Promise<string> {
+  const anonymizeActive = Boolean(anonOptions?.anonymize) && Object.keys(anonOptions?.mapping ?? {}).length > 0;
+  const anonMapping: Mapping = anonOptions?.mapping ?? {};
   const writeData = (payload: { type: string; data: any; id?: string; transient?: boolean }) => {
     dataStream.write({
       type: payload.type,
@@ -213,14 +220,25 @@ export async function generateFinalDocument(
     );
   }
 
+  // Режим анонимизации: всё, что уходит в облачную модель, должно быть в плейсхолдерах.
+  const promptConversationContext = anonymizeActive
+    ? applyMappingForward(conversationContext, anonMapping)
+    : conversationContext;
+  const promptExistingDocumentContext = anonymizeActive
+    ? applyMappingForward(existingDocumentContext, anonMapping)
+    : existingDocumentContext;
+  const promptAgreedChatContext = anonymizeActive
+    ? applyMappingForward(agreedChatContext, anonMapping)
+    : agreedChatContext;
+
   // Use SGR-enhanced document generation prompt
   const protocolPrompt = SGR_DOCUMENT_AGENT_PROMPT
     .replace('{{REGULATION}}', PROTOCOL_REGULATION)
-    .replace('{{CONVERSATION_CONTEXT}}', conversationContext)
-    .replace('{{EXISTING_DOCUMENT_CONTEXT}}', existingDocumentContext)
+    .replace('{{CONVERSATION_CONTEXT}}', promptConversationContext)
+    .replace('{{EXISTING_DOCUMENT_CONTEXT}}', promptExistingDocumentContext)
     .replace(
       '{{AGREED_CHAT_CONTEXT}}',
-      agreedChatContext ||
+      promptAgreedChatContext ||
         '(Отдельный блок согласованных разделов не выделен — используйте подтверждённые пользователем формулировки из истории диалога.)',
     );
 
@@ -338,13 +356,21 @@ export async function generateFinalDocument(
 
     writeData({ type: 'data-finish', data: null, transient: true });
 
-    const docxBuffer = await generateProtocolDocx(validated);
+    // Деанонимизация перед DOCX/персистом: облачная модель работала с плейсхолдерами,
+    // готовый документ возвращаем пользователю с реальными данными (простая подстановка
+    // по mapping). Стрим-дельты деанонимизируются обёрткой на уровне роута.
+    const validatedOut = anonymizeActive ? deepDeanonymize(validated, anonMapping) : validated;
+    if (anonymizeActive) {
+      markdownContent = protocolToMarkdown(validatedOut);
+    }
+
+    const docxBuffer = await generateProtocolDocx(validatedOut);
     const base64Docx = docxBuffer.toString('base64');
     writeData({
       type: 'data-docx',
       data: {
         content: base64Docx,
-        filename: `Протокол_обследования_${validated.protocolNumber.replace(/[^0-9]/g, '')}_${validated.meetingDate.replace(/\./g, '-')}.docx`,
+        filename: `Протокол_обследования_${validatedOut.protocolNumber.replace(/[^0-9]/g, '')}_${validatedOut.meetingDate.replace(/\./g, '-')}.docx`,
       },
     });
 

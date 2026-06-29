@@ -19,6 +19,10 @@ export interface AgentContext {
   /** Qwen think=true — токены уходят в reasoning, чат может казаться «пустым». */
   useThinking?: boolean;
   ragMode?: string;
+  /** Режим «Облако + анонимизация»: вход уже в плейсхолдерах, выход надо деанонимизировать. */
+  anonymize?: boolean;
+  /** Канонический mapping диалога (placeholder -> оригинал) для деанонимизации. */
+  anonymizeMapping?: Record<string, string>;
 }
 
 export interface AgentResponse {

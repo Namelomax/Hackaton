@@ -17,6 +17,7 @@ import {
   ollamaStreamHeartbeatMs,
   pickChatMaxOutputTokens,
 } from "@/lib/ollama-limits";
+import { deanonymize, deepDeanonymize } from "@/lib/anonymization";
 
 const PROTOCOL_TOOL_SYSTEM_APPENDIX = `
 
@@ -194,6 +195,8 @@ export async function runChatAgent(
     useThinking,
     ragMode,
   } = context;
+  const anonymizeActive = Boolean(context.anonymize) && Object.keys(context.anonymizeMapping ?? {}).length > 0;
+  const anonMapping = context.anonymizeMapping ?? {};
   const messagesWithUserPrompt: ModelMessage[] = [];
 
   if (userPrompt && userPrompt.trim()) {
@@ -385,14 +388,21 @@ export async function runChatAgent(
       console.log(`✅ agent done: ${elapsed}ms total, protocol=${sink.markdown.length > 0 ? sink.markdown.length + ' chars' : 'none'}`);
       if (!userId) return;
       try {
-        const doc =
+        // В режиме анонимизации модель отвечает плейсхолдерами — в БД сохраняем
+        // реальные данные (как видит пользователь), чтобы при перезагрузке диалога
+        // не показывались [PERSON_1] и т.п.
+        const persistMessages = anonymizeActive
+          ? deepDeanonymize(finished, anonMapping)
+          : finished;
+        let doc =
           typeof sink.markdown === "string" && sink.markdown.trim().length > 0
             ? sink.markdown
             : undefined;
+        if (doc && anonymizeActive) doc = deanonymize(doc, anonMapping);
         if (conversationId) {
-          await updateConversation(conversationId, finished, doc);
+          await updateConversation(conversationId, persistMessages, doc);
         } else {
-          await saveConversation(userId, finished, doc);
+          await saveConversation(userId, persistMessages, doc);
         }
       } catch (e) {
         console.error("chat persistence failed", e);
