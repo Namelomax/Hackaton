@@ -99,9 +99,25 @@ export async function anonymizeRemote(
   try {
     res = await postJson(`${base}/anonymize`, { text, ...(stages ?? {}) }, token, timeoutMs);
   } catch (err) {
-    throw new AnonymizerUnavailableError(
-      `Анонимизатор недоступен: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    // Мгновенный обрыв (connection reset / refused) — не «анонимизатор упал»,
+    // а транзиентная сеть: пробуем ещё раз, прежде чем отключать анонимизацию.
+    // Настоящий таймаут (запрос шёл долго) не ретраим — время уже потрачено.
+    const elapsedGuess = String(err instanceof Error ? err.message : err);
+    const isTimeout = /таймаут|timeout/i.test(elapsedGuess);
+    if (!isTimeout) {
+      try {
+        await new Promise((r) => setTimeout(r, 1000));
+        res = await postJson(`${base}/anonymize`, { text, ...(stages ?? {}) }, token, timeoutMs);
+      } catch (retryErr) {
+        throw new AnonymizerUnavailableError(
+          `Анонимизатор недоступен: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
+        );
+      }
+    } else {
+      throw new AnonymizerUnavailableError(
+        `Анонимизатор недоступен: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   if (res.status < 200 || res.status >= 300) {

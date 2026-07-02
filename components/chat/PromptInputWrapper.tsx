@@ -195,12 +195,30 @@ export const PromptInputWrapper = ({
           mediaType: f?.mediaType || f?.mimeType,
           filename: f?.filename || f?.name,
         }));
-        const res = await fetch('/api/anonymize', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal,
-          body: JSON.stringify({ conversationId: convId, files: payloadFiles }),
-        });
+        // Сетевой обрыв (например, браузер приостановил фоновую вкладку и убил
+        // соединение) — не повод отключать анонимизацию: повторяем запрос.
+        // Повторный вызов дёшев для уже известных значений (mapping-кеш диалога).
+        const MAX_ATTEMPTS = 3;
+        let res: Response | null = null;
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+          try {
+            res = await fetch('/api/anonymize', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              signal,
+              body: JSON.stringify({ conversationId: convId, files: payloadFiles }),
+            });
+            break;
+          } catch (fetchErr) {
+            if ((fetchErr as any)?.name === 'AbortError' || signal?.aborted) throw fetchErr;
+            if (attempt === MAX_ATTEMPTS) throw fetchErr;
+            console.warn(
+              `[anonymize-preview] попытка ${attempt} оборвалась (${String(fetchErr)}), повторяю…`,
+            );
+            await new Promise((r) => setTimeout(r, 1500 * attempt));
+          }
+        }
+        if (!res) throw new Error('нет ответа от /api/anonymize');
         if (res.status === 503) {
           setPreviewOpen(false);
           toast.warning('Анонимизатор недоступен', {
@@ -425,7 +443,9 @@ return (
         )}
         <div className="max-h-[45vh] overflow-auto rounded-md border bg-muted/30 p-3">
           {previewLoading ? (
-            <div className="text-sm text-muted-foreground">Анонимизация документа… (обычно 20–30 секунд)</div>
+            <div className="text-sm text-muted-foreground">
+              Анонимизация документа… (от 30 секунд до пары минут для больших расшифровок — можно переключиться на другую вкладку, процесс продолжится)
+            </div>
           ) : (
             <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed">{previewText}</pre>
           )}

@@ -19,7 +19,9 @@ import {
 } from '@/lib/getPromt';
 
 export const runtime = 'nodejs';
-export const maxDuration = 120;
+// Полный пайплайн анонимизации (GLiNER + LLM + review + second-pass) на большой
+// расшифровке занимает 1–3 минуты; должен быть больше ANONYMIZER_TIMEOUT_MS.
+export const maxDuration = 240;
 
 export async function POST(req: Request) {
   let body: any = {};
