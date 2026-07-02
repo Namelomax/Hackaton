@@ -20,8 +20,9 @@ import {
 
 export const runtime = 'nodejs';
 // Полный пайплайн анонимизации (GLiNER + LLM + review + second-pass) на большой
-// расшифровке занимает 1–3 минуты; должен быть больше ANONYMIZER_TIMEOUT_MS.
-export const maxDuration = 240;
+// расшифровке занимает 1–3+ минуты; должен быть больше ANONYMIZER_TIMEOUT_MS.
+// 300 — максимум Vercel на текущем плане.
+export const maxDuration = 300;
 
 export async function POST(req: Request) {
   let body: any = {};
