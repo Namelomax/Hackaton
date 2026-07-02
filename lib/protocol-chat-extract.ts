@@ -4,8 +4,20 @@ import { isProtocolBoilerplateLine } from '@/lib/protocol-markdown-format';
 
 type ChatTurn = { role: string; text: string };
 
-const USER_CONFIRM_RX =
-  /^(верно|да|ок|окей|ладно|всё\s*верно|все\s*верно|согласен|подтверждаю|к\s+следующему|далее|продолжай|хорошо)([.!?,]|\s|$)/i;
+/**
+ * ЧИСТОЕ подтверждение — всё сообщение целиком состоит из слов согласия.
+ * Раньше «да, но исправь X» считалось подтверждением (матч по началу строки),
+ * из-за чего ошибочный блок попадал в «подтверждённые», а сама правка терялась.
+ * Теперь сообщение с любым дополнительным содержанием — это правка, и решать,
+ * что с ней делать, будет модель (см. extractLatestUserCorrections).
+ */
+const PURE_CONFIRM_RX =
+  /^(?:(?:верно|да|ок|окей|ладно|согласен|подтверждаю|далее|продолжай|хорошо|всё\s*верно|все\s*верно|к\s+следующему|да,?\s*(?:всё|все)\s*верно)[\s.!?)]*)+$/i;
+
+function isPureConfirmation(text: string): boolean {
+  const t = text.trim();
+  return t.length > 0 && t.length <= 60 && PURE_CONFIRM_RX.test(t);
+}
 
 function extractUiMessageText(msg: unknown): string {
   if (!msg || typeof msg !== 'object') return '';
@@ -47,7 +59,7 @@ export function collectUserConfirmedAssistantBlocks(uiMessages: unknown[]): stri
   const blocks: string[] = [];
   for (let i = 1; i < turns.length; i++) {
     const user = turns[i];
-    if (user.role !== 'user' || !USER_CONFIRM_RX.test(user.text.trim())) continue;
+    if (user.role !== 'user' || !isPureConfirmation(user.text)) continue;
     const prev = turns[i - 1];
     if (prev.role === 'assistant' && prev.text.trim().length > 40) {
       blocks.push(prev.text);
@@ -125,31 +137,32 @@ function parseAgendaFromBlocks(blocks: string[]): string[] {
   return [];
 }
 
+/** Максимум содержательных сообщений пользователя, передаваемых модели как правки. */
+const MAX_CORRECTIONS = 8;
+/** Сообщения длиннее этого — почти наверняка вставленная расшифровка, не правка. */
+const MAX_CORRECTION_CHARS = 2000;
+
 /**
- * Возвращает сообщения пользователя, пришедшие ПОСЛЕ последнего подтверждения «Верно»/«ок» и т.п.
- * Это правки/дополнения, которые должны перекрывать ранее согласованные блоки.
+ * Возвращает содержательные сообщения пользователя (в хронологическом порядке,
+ * последние MAX_CORRECTIONS) — это указания и правки, которые модель должна
+ * учесть при генерации. Раньше брались только сообщения ПОСЛЕ последнего
+ * подтверждения: правка «исправь Слушали», за которой следовало «верно»,
+ * выпадала из контекста и документ откатывался к старой версии. Теперь мы не
+ * пытаемся regex-логикой угадать, что из сказанного — правка: отдаём модели
+ * всё содержательное, приоритет по хронологии определяет она сама.
  */
 export function extractLatestUserCorrections(uiMessages: unknown[]): string[] {
   const turns = uiMessagesToTurns(uiMessages);
-
-  let lastConfirmIdx = -1;
-  for (let i = 0; i < turns.length; i++) {
-    if (turns[i].role === 'user' && USER_CONFIRM_RX.test(turns[i].text.trim())) {
-      lastConfirmIdx = i;
-    }
-  }
-  if (lastConfirmIdx < 0) return [];
-
   const corrections: string[] = [];
-  for (let i = lastConfirmIdx + 1; i < turns.length; i++) {
-    const turn = turns[i];
+  for (const turn of turns) {
     if (turn.role !== 'user') continue;
     const text = turn.text.trim();
-    // Пропускаем пустые, слишком короткие и повторные подтверждения
-    if (text.length < 15 || USER_CONFIRM_RX.test(text)) continue;
+    // Пропускаем: пустые/короткие, чистые подтверждения, вставки расшифровки.
+    if (text.length < 15 || text.length > MAX_CORRECTION_CHARS) continue;
+    if (isPureConfirmation(text)) continue;
     corrections.push(text);
   }
-  return corrections;
+  return corrections.slice(-MAX_CORRECTIONS);
 }
 
 function parseApprovalFromBlocks(blocks: string[]): Protocol['approval'] | undefined {
@@ -317,63 +330,79 @@ function isRealValue(v: string): boolean {
 
 /**
  * Сливает протокол модели с подтверждённым в чате черновиком.
- * ПРИОРИТЕТ у чата: пользователь видел и правил эти блоки в чате. Модель —
- * только фолбэк для полей, которых в чате нет. Это устраняет потерю роли,
- * договора и «откат» исправленного «Слушали» при повторной генерации.
+ * ПРИОРИТЕТ у МОДЕЛИ: она видит полную историю диалога, включая правки после
+ * подтверждений, и применяет их при генерации. Regex-черновик из чата — только
+ * страховка от ПУСТЫХ разделов (модель вернула пустую повестку/участников/
+ * содержание). Раньше приоритет был у чат-драфта, и устаревший «подтверждённый»
+ * блок откатывал правки, которые модель уже применила (старое «Слушали»,
+ * потерянная роль участника).
  */
 export function mergeProtocolWithChatDraft(model: Protocol, chatDraft: Partial<Protocol>): Protocol {
   if (!chatDraft || Object.keys(chatDraft).length === 0) return model;
   const merged: Protocol = { ...model };
-  const pick = (a: string, b: string): string => (isRealValue(a) ? a : (b ?? ''));
+  // Модель важнее; чат — фолбэк для пустых значений.
+  const pick = (modelVal: string, chatVal: string): string =>
+    isRealValue(modelVal) ? modelVal : (chatVal ?? '');
 
-  // Повестка: чат в приоритете.
-  if (chatDraft.agenda?.items?.length) {
+  // Повестка: чат подставляется, только если модель вернула пустую.
+  if (chatDraft.agenda?.items?.length && !merged.agenda.items.some((it) => isRealValue(it))) {
     merged.agenda = { items: chatDraft.agenda.items };
   }
 
-  // Содержание: чат в приоритете; пустые поля добираем из модели по совпадению заголовка.
+  // Содержание: темы модели — основа; пустые поля добираем из чата по заголовку.
   if (chatDraft.meetingContent?.topics?.length) {
-    const modelTopics = merged.meetingContent.topics;
-    const topics = chatDraft.meetingContent.topics.map((c, idx) => {
-      const m =
-        modelTopics.find((x) => normTopicTitle(x.title) === normTopicTitle(c.title)) ??
-        modelTopics[idx];
-      return {
-        title: pick(c.title, m?.title ?? ''),
-        listened: pick(c.listened, m?.listened ?? ''),
-        discussed: pick(c.discussed, m?.discussed ?? ''),
-        decided: pick(c.decided, m?.decided ?? ''),
-      };
-    });
-    merged.meetingContent = { ...merged.meetingContent, topics };
+    const chatTopics = chatDraft.meetingContent.topics;
+    if (merged.meetingContent.topics.length === 0) {
+      merged.meetingContent = { ...merged.meetingContent, topics: chatTopics };
+    } else {
+      const topics = merged.meetingContent.topics.map((m, idx) => {
+        const c =
+          chatTopics.find((x) => normTopicTitle(x.title) === normTopicTitle(m.title)) ??
+          chatTopics[idx];
+        return {
+          title: pick(m.title, c?.title ?? ''),
+          listened: pick(m.listened, c?.listened ?? ''),
+          discussed: pick(m.discussed, c?.discussed ?? ''),
+          decided: pick(m.decided, c?.decided ?? ''),
+        };
+      });
+      merged.meetingContent = { ...merged.meetingContent, topics };
+    }
   }
-  if (chatDraft.meetingContent?.summary?.length) {
+  if (
+    chatDraft.meetingContent?.summary?.length &&
+    !merged.meetingContent.summary.some((r) => isRealValue(r.decision))
+  ) {
     merged.meetingContent = { ...merged.meetingContent, summary: chatDraft.meetingContent.summary };
   }
 
-  // Согласование: чат в приоритете, если есть подписанты.
+  // Согласование: чат подставляется, только если у модели нет подписантов.
+  const modelHasSignatories =
+    merged.approval.customer.signatories.some((s) => s.trim()) ||
+    merged.approval.executor.signatories.some((s) => s.trim());
   if (
+    !modelHasSignatories &&
     chatDraft.approval &&
     (chatDraft.approval.customer.signatories.length || chatDraft.approval.executor.signatories.length)
   ) {
     merged.approval = chatDraft.approval;
   }
 
-  // Участники: чат в приоритете; должность добираем по имени из модели, если в чате пусто.
+  // Участники: список модели — основа; пустые должности добираем по имени из чата.
   if (chatDraft.participants) {
     const mergeSide = (side: 'customer' | 'executor') => {
       const chatGrp = chatDraft.participants![side];
       const modelGrp = merged.participants[side];
-      const people = chatGrp.people.length
-        ? chatGrp.people.map((cp) => {
-            const mp = modelGrp.people.find(
-              (x) => x.fullName.trim().toLowerCase() === cp.fullName.trim().toLowerCase(),
+      const people = modelGrp.people.length
+        ? modelGrp.people.map((mp) => {
+            const cp = chatGrp.people.find(
+              (x) => x.fullName.trim().toLowerCase() === mp.fullName.trim().toLowerCase(),
             );
-            return { fullName: cp.fullName, position: pick(cp.position, mp?.position ?? '') };
+            return { fullName: mp.fullName, position: pick(mp.position, cp?.position ?? '') };
           })
-        : modelGrp.people;
+        : chatGrp.people;
       merged.participants[side] = {
-        organizationName: pick(chatGrp.organizationName, modelGrp.organizationName),
+        organizationName: pick(modelGrp.organizationName, chatGrp.organizationName),
         people,
       };
     };
@@ -427,7 +456,7 @@ export function formatChatDraftForPrompt(draft: Partial<Protocol>, userCorrectio
 
   if (hasCorrections) {
     lines.push(
-      '\n### ⚠️ ПРАВКИ ПОЛЬЗОВАТЕЛЯ (применить ПОВЕРХ согласованных разделов — приоритет выше):',
+      '\n### ⚠️ ПРАВКИ ПОЛЬЗОВАТЕЛЯ (в хронологическом порядке; более поздние перекрывают более ранние; применить ПОВЕРХ согласованных разделов — приоритет выше):',
     );
     userCorrections!.forEach((c, i) => {
       lines.push(`[Правка ${i + 1}]: ${c}`);
