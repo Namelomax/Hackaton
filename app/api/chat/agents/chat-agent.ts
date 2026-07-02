@@ -328,10 +328,11 @@ export async function runChatAgent(
           messages: continueMessages,
           system: adaptedSystemPrompt,
           tools,
-          // Облако (nemotron — reasoning-модель): ограничиваем размышления,
-          // иначе весь бюджет уходит в think и ответ обрезается.
+          // Облако (nemotron — reasoning-модель): thinking полностью выключен —
+          // effort:'low' его лишь сокращал, модель всё равно думала и упиралась
+          // в тайм-аут функции. enabled:false отключает reasoning-токены совсем.
           ...(cloudMode
-            ? { providerOptions: { openrouter: { reasoning: { effort: 'low' } } } }
+            ? { providerOptions: { openrouter: { reasoning: { enabled: false } } } }
             : {}),
           stopWhen: stepCountIs(ragRetrievalEnabled ? 4 : 3),
           ...(abortSignal ? { abortSignal } : {}),

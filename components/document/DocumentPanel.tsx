@@ -40,6 +40,8 @@ type DocumentPanelProps = {
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
   anonymization?: { anonymizedText: string; mapping: Record<string, string> };
+  /** Для серверной анонимизации документа перед проверкой в облаке. */
+  conversationId?: string | null;
 };
 
 function getFileExt(name: string) {
@@ -116,6 +118,7 @@ export const DocumentPanel = ({
   collapsed,
   onToggleCollapsed,
   anonymization,
+  conversationId,
 }: DocumentPanelProps) => {
   const [copied, setCopied] = useState(false);
   const [anonView, setAnonView] = useState<{ title: string; content: string } | null>(null);
@@ -254,6 +257,7 @@ export const DocumentPanel = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           content: localDoc.content,
+          ...(conversationId ? { conversationId } : {}),
           ...(chatReviewBody ?? { chatProvider: 'ollama' as const }),
         }),
       });

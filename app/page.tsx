@@ -1220,6 +1220,7 @@ export default function ChatPage() {
           onSendReview={(text) => setInput(text)}
           onQuote={(text) => setQuoteText(text)}
           chatReviewBody={chatBody}
+          conversationId={viewConversationId ?? conversationId}
           collapsed={!isDocumentPanelVisible}
           onToggleCollapsed={() => setIsDocumentPanelVisible((v) => !v)}
         />

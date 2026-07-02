@@ -8,18 +8,24 @@ interface DialogProps {
   onOpenChange: (open: boolean) => void;
   children: React.ReactNode;
   panelClassName?: string;
+  /**
+   * false — диалог НЕ закрывается кликом по фону и Escape: только явными
+   * кнопками внутри (для долгих операций вроде анонимизации, где случайный
+   * клик мимо панели отменял процесс). По умолчанию true — прежнее поведение.
+   */
+  dismissible?: boolean;
 }
 
-export function Dialog({ open, onOpenChange, children, panelClassName }: DialogProps) {
+export function Dialog({ open, onOpenChange, children, panelClassName, dismissible = true }: DialogProps) {
   // Close on Escape key
   React.useEffect(() => {
-    if (!open) return;
+    if (!open || !dismissible) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onOpenChange(false);
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [open, onOpenChange]);
+  }, [open, onOpenChange, dismissible]);
 
   return (
     <AnimatePresence>
@@ -30,7 +36,7 @@ export function Dialog({ open, onOpenChange, children, panelClassName }: DialogP
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           // Close on mousedown on backdrop (before mouseup), but not when drag started inside.
-          onMouseDown={() => onOpenChange(false)}
+          onMouseDown={() => { if (dismissible) onOpenChange(false); }}
         >
           <motion.div
             initial={{ scale: 0.95, opacity: 0, y: 20 }}

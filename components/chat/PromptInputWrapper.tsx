@@ -420,7 +420,9 @@ export const PromptInputWrapper = ({
 return (
   <div className={className ? `relative ${className}` : 'relative'}>
     {/* Preview анонимизации документа перед отправкой в облако */}
-    <Dialog open={previewOpen} onOpenChange={(o) => { if (!o) resolvePreview('cancel'); }} panelClassName="max-w-2xl w-full">
+    {/* dismissible={false}: случайный клик мимо панели или Escape не отменяет
+        долгую анонимизацию — закрыть можно только кнопками «Отмена»/«Подтвердить». */}
+    <Dialog open={previewOpen} onOpenChange={(o) => { if (!o) resolvePreview('cancel'); }} panelClassName="max-w-2xl w-full" dismissible={false}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Проверка перед отправкой в облако</DialogTitle>

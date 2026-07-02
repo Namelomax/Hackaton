@@ -276,6 +276,10 @@ INFO (информация — не требует исправления):
       prompt: reviewPrompt,
       temperature: 0.0, // Нулевая температура для максимальной детерминированности
       seed: 42, // Фиксированный seed для воспроизводимости
+      // Облачная reasoning-модель: thinking выключен (жжёт токены и время).
+      ...(modelOptions?.chatProvider === 'openrouter'
+        ? { providerOptions: { openrouter: { reasoning: { enabled: false } } } }
+        : {}),
     });
 
     const elapsedTime = Date.now() - startTime;

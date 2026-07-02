@@ -254,6 +254,11 @@ export async function generateFinalDocument(
       maxOutputTokens,
       schema: ProtocolSchema,
       prompt: protocolPrompt,
+      // Облачная reasoning-модель: thinking выключен — при генерации JSON
+      // протокола размышления только жгут токены и время до тайм-аута.
+      ...(anonymizeActive
+        ? { providerOptions: { openrouter: { reasoning: { enabled: false } } } }
+        : {}),
       ...(abortSignal ? { abortSignal } : {}),
     });
 
