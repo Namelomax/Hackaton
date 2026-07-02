@@ -147,10 +147,13 @@ export default function ChatPage() {
   type AnonArtifact = { anonymizedText: string; mapping: Record<string, string> };
   const [anonByConv, setAnonByConv] = useState<Record<string, AnonArtifact>>({});
   const handleAnonymizationReady = useCallback(
-    (data: AnonArtifact) => {
-      const key = conversationId || viewConversationId;
+    (data: AnonArtifact & { conversationId?: string | null }) => {
+      // id из колбэка — актуальный серверный id диалога; state conversationId в
+      // момент preview ещё может быть старым local-... (setState не успел).
+      const key = data.conversationId || conversationId || viewConversationId;
       if (!key) return;
-      setAnonByConv((prev) => ({ ...prev, [key]: data }));
+      const { conversationId: _cid, ...artifact } = data;
+      setAnonByConv((prev) => ({ ...prev, [key]: artifact }));
     },
     [conversationId, viewConversationId],
   );

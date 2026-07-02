@@ -40,52 +40,72 @@ export function stripProtocolTimecodes(p: Protocol): Protocol {
   };
 }
 
-/** Есть ли дата в исходнике (расшифровка + ответы пользователя) в любой из форм 7.2.2026 / 07.02.2026. */
-function dateInSource(dd: string, mm: string, yy: string, source: string): boolean {
-  const forms = new Set<string>([
-    `${dd}.${mm}.${yy}`,
-    `${dd.padStart(2, '0')}.${mm.padStart(2, '0')}.${yy}`,
-    `${Number(dd)}.${Number(mm)}.${yy}`,
-  ]);
-  for (const f of forms) if (source.includes(f)) return true;
-  return false;
+/**
+ * Все даты из текста в НОРМАЛИЗОВАННОМ виде `d.m.yyyy` — независимо от того,
+ * как их написал человек: «02.02.2025», «2.2.2025», «02/02/2025», «02-02-2025»
+ * и слитно «02022025» (пользователи часто отвечают датами без точек).
+ */
+function extractNormalizedDates(text: string): Set<string> {
+  const out = new Set<string>();
+  const add = (dd: string, mm: string, yy: string) => {
+    const d = Number(dd);
+    const m = Number(mm);
+    if (d >= 1 && d <= 31 && m >= 1 && m <= 12) out.add(`${d}.${m}.${yy}`);
+  };
+  for (const m of text.matchAll(/\b(\d{1,2})[./-](\d{1,2})[./-](\d{4})\b/g)) add(m[1], m[2], m[3]);
+  for (const m of text.matchAll(/\b(\d{2})(\d{2})(\d{4})\b/g)) add(m[1], m[2], m[3]); // ддммгггг
+  return out;
 }
+
+const normKey = (dd: string, mm: string, yy: string) => `${Number(dd)}.${Number(mm)}.${yy}`;
 
 export interface DateProvenanceResult { protocol: Protocol; unresolved: string[]; }
 
 /**
  * Любая дата в «Решили»/«Резюме», которой НЕТ в расшифровке или ответах пользователя,
  * считается выдуманной → заменяется на «подлежит уточнению». Возвращает список таких мест.
+ *
+ * @param userTexts — сообщения пользователя (правки/ответы). Даты из них
+ *   ПРИВИЛЕГИРОВАННЫЕ: пользователь назвал их явно, поэтому они разрешены как
+ *   сроки даже при совпадении с датой встречи/договора и в любом формате записи.
  */
-export function enforceDateProvenance(p: Protocol, sourceText: string): DateProvenanceResult {
-  const src = sourceText || '';
+export function enforceDateProvenance(
+  p: Protocol,
+  sourceText: string,
+  userTexts: string[] = [],
+): DateProvenanceResult {
   const unresolved: string[] = [];
+  const sourceDates = extractNormalizedDates(sourceText || '');
+  const userDates = extractNormalizedDates(userTexts.join('\n'));
 
-  // Дата встречи и дата договора ЗАПРЕЩЕНЫ как срок решения (даже если они есть в источнике).
+  // Дата встречи и дата договора запрещены как срок решения (слабая модель
+  // копирует их на все пункты) — НО только если пользователь не назвал эту дату
+  // явно сам (тогда это его осознанный ответ, а не копирование моделью).
   const forbidden = new Set<string>();
   const addForbidden = (d?: string) => {
     const m = String(d || '').match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
-    if (m) forbidden.add(`${Number(m[1])}.${Number(m[2])}.${m[3]}`);
+    if (m) forbidden.add(normKey(m[1], m[2], m[3]));
   };
   addForbidden(p.meetingDate);
   addForbidden(p.contractDate);
-  const isForbidden = (dd: string, mm: string, yy: string) =>
-    forbidden.has(`${Number(dd)}.${Number(mm)}.${yy}`);
 
   const fix = (text: string, label: string): string =>
     (text || '').replace(FULL_DATE_RX, (whole, dd, mm, yy) => {
-      if (isForbidden(dd, mm, yy)) {
+      const key = normKey(dd, mm, yy);
+      if (userDates.has(key)) return whole; // пользователь назвал дату явно
+      if (forbidden.has(key)) {
         unresolved.push(`${label}: дата встречи/договора (${whole}) использована как срок — заменена на «подлежит уточнению»`);
         return 'подлежит уточнению';
       }
-      if (dateInSource(dd, mm, yy, src)) return whole;
+      if (sourceDates.has(key)) return whole;
       unresolved.push(`${label}: дата ${whole} отсутствует в расшифровке/ответах — заменена на «подлежит уточнению»`);
       return 'подлежит уточнению';
     });
 
   const topics = p.meetingContent.topics.map((t) => ({ ...t, decided: fix(t.decided, t.title || 'Решение') }));
   const summary = p.meetingContent.summary.map((r) => ({ ...r, decision: fix(r.decision, r.question || 'Резюме') }));
-  return { protocol: { ...p, meetingContent: { topics, summary } }, unresolved };
+  // Одно и то же решение проверяется в «Решили» и в «Резюме» — предупреждения дедупим.
+  return { protocol: { ...p, meetingContent: { topics, summary } }, unresolved: [...new Set(unresolved)] };
 }
 
 const NO_POSITION_RX = /^\s*$|^не\s+указан/i;
@@ -169,25 +189,37 @@ function realStr(v?: string): boolean {
 
 /**
  * Если модель «потеряла» договор, достаём его из ответов пользователя в диалоге.
- * Ищем в окне вокруг слова «договор». Только ЗАПОЛНЯЕМ пустое, не перезаписываем.
+ * Сканируем ВСЕ окна вокруг слова «договор» (первое упоминание — обычно вопрос
+ * агента без данных; ответ пользователя «Договор: номер 1, дата 01012025, тема …»
+ * встречается позже). Только ЗАПОЛНЯЕМ пустое, не перезаписываем.
  */
 export function fillContractFromDialogue(p: Protocol, dialogueText: string): Protocol {
   const t = String(dialogueText || '');
   const out: Protocol = { ...p };
-  const win = (t.match(/догов[а-яёА-ЯЁ]*[\s\S]{0,120}/i) || [''])[0];
-  if (!win) return out;
 
-  if (!realStr(out.contractNumber)) {
-    const m = win.match(/догов[а-яёА-ЯЁ]*\s*(?:№|n|номер[а-яёА-ЯЁ]*)?\s*[:\-]?\s*(\d{1,6})/i);
-    if (m) out.contractNumber = `№${m[1]}`;
-  }
-  if (!realStr(out.contractDate)) {
-    const m = win.match(/(?:дата|от)\s*[:\-]?\s*(\d{2})[.\-/]?(\d{2})[.\-/]?(\d{4})/i);
-    if (m) out.contractDate = `${m[1]}.${m[2]}.${m[3]}`;
-  }
-  if (!realStr(out.contractSubject)) {
-    const m = win.match(/тема\s*(?:догов[а-яёА-ЯЁ]*)?\s*[:\-]?\s*([^.\n;]{3,80})/i);
-    if (m) out.contractSubject = m[1].trim();
+  for (const winMatch of t.matchAll(/догов[а-яёА-ЯЁ]*[\s\S]{0,140}/gi)) {
+    const win = winMatch[0];
+
+    if (!realStr(out.contractNumber)) {
+      // Разделители допустимы и до, и после ключевого слова: «Договор: номер 1»,
+      // «договор № 1», «номер договора — 1».
+      const m = win.match(
+        /догов[а-яёА-ЯЁ]*\s*[:\-—]?\s*(?:№|n|номер[а-яёА-ЯЁ]*)?\s*[:\-—]?\s*(\d{1,6})(?!\d)/i,
+      );
+      if (m) out.contractNumber = `№${m[1]}`;
+    }
+    if (!realStr(out.contractDate)) {
+      const m = win.match(/(?:дата|от)\s*[:\-—]?\s*(\d{1,2})[.\-/]?(\d{1,2})[.\-/]?(\d{4})/i);
+      if (m) out.contractDate = `${m[1].padStart(2, '0')}.${m[2].padStart(2, '0')}.${m[3]}`;
+    }
+    if (!realStr(out.contractSubject)) {
+      const m = win.match(/тема\s*(?:догов[а-яёА-ЯЁ]*)?\s*[:\-—]?\s*([^.\n;]{3,80})/i);
+      if (m) out.contractSubject = m[1].trim();
+    }
+
+    if (realStr(out.contractNumber) && realStr(out.contractDate) && realStr(out.contractSubject)) {
+      break; // всё найдено
+    }
   }
   return out;
 }

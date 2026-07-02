@@ -129,7 +129,12 @@ type PromptInputWrapperProps = {
   onOpenAuthDialog?: () => void;
   chatBody?: ChatTransportBodyExtras;
   anonymizeMode?: boolean;
-  onAnonymizationReady?: (data: { anonymizedText: string; mapping: Record<string, string> }) => void;
+  onAnonymizationReady?: (data: {
+    anonymizedText: string;
+    mapping: Record<string, string>;
+    /** Диалог, к которому относится артефакт (id уже СЕРВЕРНЫЙ после ensureConversationCreated). */
+    conversationId?: string | null;
+  }) => void;
 };
 
 export const PromptInputWrapper = ({
@@ -240,6 +245,9 @@ export const PromptInputWrapper = ({
         onAnonymizationReady?.({
           anonymizedText: String(json.anonymizedText || ''),
           mapping: (json.mapping && typeof json.mapping === 'object') ? json.mapping : {},
+          // Передаём id явно: state conversationId в page.tsx в этот момент ещё
+          // старый (local-...), и артефакт терялся — панель искала его по новому id.
+          conversationId: convId,
         });
         return await new Promise<'confirm' | 'cancel'>((resolve) => {
           previewResolverRef.current = resolve;

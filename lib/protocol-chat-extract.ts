@@ -255,6 +255,8 @@ function parseParticipantsFromBlocks(blocks: string[]): Protocol['participants']
         if (cells.length < 2 || /фио|должность/i.test(cells[0])) continue;
         const fullName = stripTimecodes(cells[0]);
         const position = stripTimecodes(cells[1]);
+        // Блок мог содержать таблицу резюме — её заголовки/строки не участники.
+        if (/обсуждаем|принятые\s+решени|вопрос|повестк|срок\s*:|ответствен/i.test(fullName)) continue;
         if (!isValidParticipantRow(fullName, position)) continue;
         rows.push({ fullName, position });
       }

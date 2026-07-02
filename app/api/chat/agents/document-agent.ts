@@ -20,7 +20,7 @@ import {
   extractLatestUserCorrections,
   mergeProtocolWithChatDraft,
 } from '@/lib/protocol-chat-extract';
-import { applyGlossaryToProtocol } from '@/lib/prompts/glossary';
+import { applyGlossaryToProtocol, formatGlossaryForPrompt } from '@/lib/prompts/glossary';
 import {
   stripProtocolTimecodes,
   carryOverParticipantRoles,
@@ -234,7 +234,7 @@ export async function generateFinalDocument(
 
   // Use SGR-enhanced document generation prompt
   const protocolPrompt = (anonymizeActive ? ANONYMIZE_MODE_SYSTEM_APPENDIX + '\n\n' : '') + SGR_DOCUMENT_AGENT_PROMPT
-    .replace('{{REGULATION}}', PROTOCOL_REGULATION)
+    .replace('{{REGULATION}}', PROTOCOL_REGULATION + formatGlossaryForPrompt())
     .replace('{{CONVERSATION_CONTEXT}}', promptConversationContext)
     .replace('{{EXISTING_DOCUMENT_CONTEXT}}', promptExistingDocumentContext)
     .replace(
@@ -244,6 +244,12 @@ export async function generateFinalDocument(
     );
 
   let markdownContent = '';
+
+  // DEBUG_LLM_OUTBOUND=true — полный промпт генерации документа в лог
+  // (проверка анонимизации: реальных ФИО быть не должно).
+  if (process.env.DEBUG_LLM_OUTBOUND === 'true') {
+    console.log('┏━━━ OUTBOUND PROMPT (document-agent) ━━━\n' + protocolPrompt + '\n┗━━━ END PROMPT ━━━');
+  }
 
   try {
     const maxOutputTokens = ollamaProtocolMaxOutputTokens();
@@ -341,11 +347,16 @@ export async function generateFinalDocument(
     validated = stripProtocolTimecodes(validated); // тайм-кодов в финале быть не должно
     validated = carryOverParticipantRoles(validated, conversationContext); // не терять должность
     validated = fillContractFromDialogue(validated, conversationContext); // не терять договор
-    const dateGuard = enforceDateProvenance(validated, conversationContext); // выдуманные даты → «подлежит уточнению»
+    // Выдуманные даты → «подлежит уточнению». Ответы пользователя (userCorrections)
+    // привилегированы: названные им даты действительны в любом формате записи
+    // («02022025» без точек) и даже при совпадении с датой встречи/договора.
+    const dateGuard = enforceDateProvenance(validated, conversationContext, userCorrections);
     validated = dateGuard.protocol;
     const guardWarnings = [
-      ...dateGuard.unresolved,
-      ...reconcileWithApproved(validated, chatDraft, userCorrections),
+      ...new Set([
+        ...dateGuard.unresolved,
+        ...reconcileWithApproved(validated, chatDraft, userCorrections),
+      ]),
     ];
 
     const finalMarkdown = protocolToMarkdown(validated);

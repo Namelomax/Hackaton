@@ -13,6 +13,8 @@ import {
 } from "./protocol-tools";
 import { PROTOCOL_TIMECODE_ADAPTATION_LINE } from "@/lib/protocol-timecodes";
 import { createRetrieveFromIndexedDocumentsTool } from "./rag-tools";
+import { createAddGlossaryRuleTool } from "./glossary-tools";
+import { formatGlossaryForPrompt } from "@/lib/prompts/glossary";
 import {
   ollamaStreamHeartbeatMs,
   pickChatMaxOutputTokens,
@@ -37,6 +39,10 @@ const PROTOCOL_TOOL_SYSTEM_APPENDIX = `
 - НЕ вызывай при: приветствии, простом подтверждении получения файла, одиночном уточняющем вопросе, обсуждении того «что писать» без явной команды записать.
 - После успешного вызова в чат пиши коротко (1–3 строки): что сделано/исправлено и фразу «обновлено в правой панели». Не дублируй текст протокола в чат.
 - Если данных не хватает для качественного протокола — НЕ вызывай инструмент, задай **один** короткий уточняющий вопрос.
+
+## Инструмент addProtocolGlossaryRule — запрет слов в протоколе
+- Когда пользователь просит НЕ использовать слово/выражение в документе и/или говорит, чем заменять («не пиши "сделать", пиши "выполнить"», «убери "погнали" из протоколов») — вызови этот инструмент. Правило сохраняется навсегда и действует во всех будущих документах.
+- После вызова коротко подтверди: «Добавил в глоссарий: "X" → "Y"». Для разовой правки конкретного места в текущем документе инструмент НЕ вызывай — просто исправь текст.
 `;
 
 function hasAttachedFiles(messages: any[]): boolean {
@@ -242,7 +248,9 @@ export async function runChatAgent(
     adaptSystemPrompt(systemPrompt, hasFiles, messages.length, {
       ragRetrievalEnabled: Boolean(ragRetrievalEnabled),
       hasInlineTranscript: inlineTranscript,
-    }) + PROTOCOL_TOOL_SYSTEM_APPENDIX;
+    }) +
+    PROTOCOL_TOOL_SYSTEM_APPENDIX +
+    formatGlossaryForPrompt();
   if (!useThinking && !adaptedSystemPrompt.startsWith("/no_think")) {
     adaptedSystemPrompt = "/no_think\n\n" + adaptedSystemPrompt;
   }
@@ -293,6 +301,19 @@ export async function runChatAgent(
   console.log(
     `🤖 streamText start: msgs=${msgCount} dialog=${dialogMessageCount} input≈${estimatedInputTokens}tok (sys=${systemChars}c) maxOut=${maxOutputTokens} rag=${Boolean(ragRetrievalEnabled)} inlineDoc=${inlineTranscript}`,
   );
+  // DEBUG_LLM_OUTBOUND=true — вывести в лог ВЕСЬ контекст, уходящий модели
+  // (системный промпт + сообщения). Для ручной проверки анонимизации: в дампе
+  // не должно быть реальных ФИО/организаций, только [PERSON_N]/[ORG_N].
+  if (process.env.DEBUG_LLM_OUTBOUND === 'true') {
+    console.log('┏━━━ OUTBOUND SYSTEM PROMPT (chat-agent) ━━━\n' + adaptedSystemPrompt + '\n┗━━━ END SYSTEM ━━━');
+    console.log(
+      '┏━━━ OUTBOUND MESSAGES ━━━\n' +
+        messagesWithUserPrompt
+          .map((m) => `[${m.role}]\n${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`)
+          .join('\n---\n') +
+        '\n┗━━━ END MESSAGES ━━━',
+    );
+  }
   const agentStartMs = Date.now();
   const heartbeatMs = ollamaStreamHeartbeatMs(inlineTranscript);
   let lastHeartbeatAt = agentStartMs;
@@ -308,6 +329,7 @@ export async function runChatAgent(
 
       const tools = {
         publishInvestigationProtocol,
+        addProtocolGlossaryRule: createAddGlossaryRuleTool(),
         ...(retrieveFromIndexedDocumentsTool
           ? { retrieveFromIndexedDocuments: retrieveFromIndexedDocumentsTool }
           : {}),

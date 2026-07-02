@@ -46,33 +46,135 @@ function glossaryFilePath(): string {
   );
 }
 
+/** Пользовательский md-глоссарий: `data/glossary.md`, строки «слово -> замена». */
+function glossaryMdPath(): string {
+  return (
+    process.env.GLOSSARY_MD_PATH || path.join(process.cwd(), 'data', 'glossary.md')
+  );
+}
+
+/**
+ * Парсит md-глоссарий. Формат строки (в любом месте файла):
+ *   - слово -> замена
+ *   - словосочетание из нескольких слов -> другая формулировка
+ *   - слово ->            (пустая замена = слово просто удаляется)
+ * Строки без «->» (заголовки, комментарии) игнорируются.
+ */
+export function parseGlossaryMd(raw: string): GlossaryEntry[] {
+  const entries: GlossaryEntry[] = [];
+  for (const line of raw.split('\n')) {
+    const m = line.match(/^\s*[-*]?\s*(.+?)\s*(?:->|=>|→)\s*(.*?)\s*$/);
+    if (!m) continue;
+    const from = m[1].trim();
+    const to = m[2].trim();
+    if (!from || from.startsWith('#')) continue;
+    entries.push({ from, to, mode: from.includes(' ') ? 'phrase' : 'word' });
+  }
+  return entries;
+}
+
 function loadEntries(): GlossaryEntry[] {
   const now = Date.now();
   if (cache && now - cache.at < GLOSSARY_TTL_MS) return cache.entries;
 
   let entries: GlossaryEntry[] = DEFAULT_GLOSSARY;
+
+  // 1. Приоритет — md-файл (правится руками и инструментом addProtocolGlossaryRule).
+  let mdLoaded = false;
   try {
-    const raw = fs.readFileSync(glossaryFilePath(), 'utf8');
-    const parsed = JSON.parse(raw) as { entries?: unknown };
-    if (Array.isArray(parsed.entries)) {
-      const clean = parsed.entries
-        .map((e) => e as Record<string, unknown>)
-        .filter((e) => typeof e.from === 'string' && (e.from as string).trim().length > 0)
-        .map((e) => ({
-          from: String(e.from),
-          to: typeof e.to === 'string' ? e.to : '',
-          mode: e.mode === 'phrase' ? 'phrase' : 'word',
-        })) as GlossaryEntry[];
-      if (clean.length > 0) entries = clean;
+    const rawMd = fs.readFileSync(glossaryMdPath(), 'utf8');
+    const mdEntries = parseGlossaryMd(rawMd);
+    if (mdEntries.length > 0) {
+      entries = mdEntries;
+      mdLoaded = true;
     }
   } catch {
-    // нет файла/битый JSON — используем DEFAULT_GLOSSARY
+    // md нет — ниже пробуем json
+  }
+
+  if (!mdLoaded) {
+    try {
+      const raw = fs.readFileSync(glossaryFilePath(), 'utf8');
+      const parsed = JSON.parse(raw) as { entries?: unknown };
+      if (Array.isArray(parsed.entries)) {
+        const clean = parsed.entries
+          .map((e) => e as Record<string, unknown>)
+          .filter((e) => typeof e.from === 'string' && (e.from as string).trim().length > 0)
+          .map((e) => ({
+            from: String(e.from),
+            to: typeof e.to === 'string' ? e.to : '',
+            mode: e.mode === 'phrase' ? 'phrase' : 'word',
+          })) as GlossaryEntry[];
+        if (clean.length > 0) entries = clean;
+      }
+    } catch {
+      // нет файла/битый JSON — используем DEFAULT_GLOSSARY
+    }
   }
 
   // Длинные ключи раньше — чтобы «болевые точки» сработало до «боли».
   entries = [...entries].sort((a, b) => b.from.length - a.from.length);
   cache = { at: now, entries };
   return entries;
+}
+
+/**
+ * Добавляет/обновляет правило в md-глоссарии (создаёт файл при отсутствии) и
+ * сбрасывает кэш — правило действует со следующей генерации без перезапуска.
+ */
+export function addGlossaryRule(from: string, to: string): GlossaryEntry[] {
+  const cleanFrom = String(from ?? '').trim();
+  const cleanTo = String(to ?? '').trim();
+  if (!cleanFrom) throw new Error('Пустое слово для замены');
+
+  const p = glossaryMdPath();
+  let existing = '';
+  try {
+    existing = fs.readFileSync(p, 'utf8');
+  } catch {
+    existing =
+      '# Глоссарий замен для протокола\n\n' +
+      'Формат: `слово -> замена` (пустая замена — слово удаляется из текста).\n' +
+      'Файл можно править руками; ИИ дополняет его по просьбе в чате.\n\n';
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+  }
+
+  // Обновление существующего правила: убираем старую строку с тем же from.
+  const withoutOld = existing
+    .split('\n')
+    .filter((line) => {
+      const m = line.match(/^\s*[-*]?\s*(.+?)\s*(?:->|=>|→)/);
+      return !(m && m[1].trim().toLowerCase() === cleanFrom.toLowerCase());
+    })
+    .join('\n');
+
+  const next = `${withoutOld.replace(/\n*$/, '\n')}- ${cleanFrom} -> ${cleanTo}\n`;
+  fs.writeFileSync(p, next, 'utf8');
+  cache = null; // применить немедленно
+  return loadEntries();
+}
+
+/** Список правил глоссария (для промпта и инструмента). */
+export function listGlossaryEntries(): GlossaryEntry[] {
+  return loadEntries();
+}
+
+/**
+ * Блок для системного промпта: модель видит запрещённые слова и сразу пишет
+ * правильно (кодовая подстановка страхует на 100%, но не умеет склонять —
+ * поэтому список даётся и модели).
+ */
+export function formatGlossaryForPrompt(): string {
+  const entries = loadEntries();
+  if (entries.length === 0) return '';
+  const lines = entries.map((e) =>
+    e.to ? `- «${e.from}» → пиши «${e.to}»` : `- «${e.from}» → не употребляй (опусти слово)`,
+  );
+  return (
+    '\n\n### ГЛОССАРИЙ ЗАМЕН (обязателен, дополняет регламент)\n' +
+    'Следующие слова и формулировки ЗАПРЕЩЕНЫ в тексте протокола — используй замену (в нужном падеже и числе):\n' +
+    lines.join('\n')
+  );
 }
 
 function escapeRegex(s: string): string {
