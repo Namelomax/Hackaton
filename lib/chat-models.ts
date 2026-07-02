@@ -16,6 +16,20 @@ export const LOCAL_MODEL_LABELS: Record<string, string> = {
  */
 export const DEFAULT_CLOUD_CHAT_MODEL = 'nvidia/nemotron-3-ultra-550b-a55b:free';
 
+/**
+ * Отключённые/мёртвые слаги OpenRouter (404 «No endpoints found»). Могут
+ * прилетать из устаревшего env на деплое или из старого клиентского бандла
+ * (незакрытая вкладка) — молча заменяем на DEFAULT_CLOUD_CHAT_MODEL.
+ */
+const DEAD_CLOUD_MODELS = new Set(['openrouter/owl-alpha']);
+
+/** Нормализует слаг облачной модели: пустой или мёртвый → дефолтный. */
+export function normalizeCloudModel(id?: string | null): string {
+  const slug = (id ?? '').trim();
+  if (!slug || DEAD_CLOUD_MODELS.has(slug)) return DEFAULT_CLOUD_CHAT_MODEL;
+  return slug;
+}
+
 /** Available OpenRouter cloud models (optional admin UI / env). */
 export const OPENROUTER_MODELS: { id: string; label: string }[] = [
   { id: 'nvidia/nemotron-3-ultra-550b-a55b:free', label: 'Nemotron Ultra 550B (free)' },

@@ -1,6 +1,6 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { createOpenAI } from '@ai-sdk/openai';
-import { FIXED_CHAT_MODEL, parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
+import { FIXED_CHAT_MODEL, normalizeCloudModel, parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
 import { applyOllamaOpenAiCompatOptions, ollamaHardCapOutputTokens } from '@/lib/ollama-limits';
 import https from 'node:https';
 import http from 'node:http';
@@ -114,8 +114,12 @@ function createOpenRouterInstance() {
 }
 
 function resolveOpenRouterSlug(requestedRaw: string): string {
-  const fallback = process.env.OPENROUTER_MODEL_DEFAULT || 'nvidia/nemotron-3-super-120b-a12b:free';
-  const requested = requestedRaw.trim();
+  // normalizeCloudModel отсекает мёртвые слаги (напр. openrouter/owl-alpha из
+  // устаревшего env или старого клиентского бандла) и пустые значения.
+  const fallback = normalizeCloudModel(process.env.OPENROUTER_MODEL_DEFAULT);
+  const requested = normalizeCloudModel(requestedRaw) === requestedRaw.trim()
+    ? requestedRaw.trim()
+    : ''; // мёртвый/пустой слаг → уходим на fallback
   const allowedCsv = process.env.ALLOWED_OPENROUTER_MODELS?.trim();
   if (!allowedCsv) {
     if (requested && /^[\w\-./:]+$/.test(requested) && requested.length <= 160) return requested;
