@@ -10,7 +10,7 @@ import { Sidebar } from '@/components/chat/Sidebar';
 import { ConversationArea } from '@/components/chat/ConversationArea';
 import { PromptInputWrapper } from '@/components/chat/PromptInputWrapper';
 import { Loader } from '@/components/ai-elements/loader';
-import { FIXED_CHAT_MODEL } from '@/lib/chat-models';
+import { DEFAULT_CLOUD_CHAT_MODEL, FIXED_CHAT_MODEL } from '@/lib/chat-models';
 import { copyTextToClipboard } from '@/lib/copyToClipboard';
 import { toast } from 'sonner';
 import { resolveMessagesFromRecord } from '@/lib/conversationMessages';
@@ -35,7 +35,7 @@ function buildPersistPutBody(
 }
 
 export default function ChatPage() {
-  // Режим работы модели: false — локальная LLM; true — облако owl-alpha с анонимизацией.
+  // Режим работы модели: false — локальная LLM; true — облачная LLM с анонимизацией.
   const [anonymizeMode, setAnonymizeMode] = useState(false);
   useEffect(() => {
     try {
@@ -53,7 +53,7 @@ export default function ChatPage() {
   const chatBody = useMemo(
     () => ({
       chatProvider: anonymizeMode ? ('openrouter' as const) : ('ollama' as const),
-      chatModel: anonymizeMode ? 'openrouter/owl-alpha' : FIXED_CHAT_MODEL,
+      chatModel: anonymizeMode ? DEFAULT_CLOUD_CHAT_MODEL : FIXED_CHAT_MODEL,
       useRagContext: false,
       ragMode: 'hybrid' as const,
       useThinking: false,

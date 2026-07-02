@@ -4,6 +4,7 @@ import {
 import crypto from 'crypto';
 import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation } from '@/lib/getPromt';
 import { resolveChatLanguageModel } from '@/lib/resolve-chat-model';
+import { DEFAULT_CLOUD_CHAT_MODEL } from '@/lib/chat-models';
 import { PROTOCOL_CHAT_TIMECODE_APPENDIX } from '@/lib/protocol-timecodes';
 import { analyzeTranscriptSlots, formatSlotScanForPrompt } from '@/lib/protocol-slot-scan';
 import { fetchRagSnippet } from '@/lib/rag-client';
@@ -841,7 +842,7 @@ export async function POST(req: Request) {
 
       // Принудительно облачная модель.
       effectiveProvider = 'openrouter';
-      effectiveModel = process.env.ANONYMIZER_CLOUD_MODEL || 'openrouter/owl-alpha';
+      effectiveModel = process.env.ANONYMIZER_CLOUD_MODEL || DEFAULT_CLOUD_CHAT_MODEL;
       console.log(
         `🔒 anonymize active: mapping=${Object.keys(mapping).length} entries → ${effectiveModel}`,
       );

@@ -10,10 +10,16 @@ export const LOCAL_MODEL_LABELS: Record<string, string> = {
   'qwen3.5:9b': 'Qwen3.5 9B',
 };
 
+/**
+ * Облачная модель по умолчанию (режим «Облако + анонимизация»).
+ * Сервер может переопределить через ANONYMIZER_CLOUD_MODEL / OPENROUTER_MODEL_DEFAULT.
+ */
+export const DEFAULT_CLOUD_CHAT_MODEL = 'nvidia/nemotron-3-ultra-550b-a55b:free';
+
 /** Available OpenRouter cloud models (optional admin UI / env). */
 export const OPENROUTER_MODELS: { id: string; label: string }[] = [
+  { id: 'nvidia/nemotron-3-ultra-550b-a55b:free', label: 'Nemotron Ultra 550B (free)' },
   { id: 'nvidia/nemotron-3-super-120b-a12b:free', label: 'Nemotron 120B (free)' },
-  { id: 'openrouter/owl-alpha', label: 'Owl Alpha' },
   { id: 'google/gemini-2.5-pro-preview', label: 'Gemini 2.5 Pro' },
   { id: 'anthropic/claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
   { id: 'openai/gpt-4.1', label: 'GPT-4.1' },

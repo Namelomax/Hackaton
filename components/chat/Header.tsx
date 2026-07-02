@@ -93,7 +93,7 @@ export const Header = ({
           <button
             type="button"
             onClick={() => onToggleAnonymize?.(true)}
-            title="Облачная LLM (owl-alpha). Документ и сообщения анонимизируются перед отправкой — без ПДн (152-ФЗ)."
+            title="Облачная LLM. Документ и сообщения анонимизируются перед отправкой — без ПДн (152-ФЗ)."
             className={`px-3 py-1.5 rounded-md transition-colors ${
               anonymizeMode
                 ? 'bg-primary text-black font-medium'
