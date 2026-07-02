@@ -280,10 +280,16 @@ export async function runChatAgent(
   const estimatedInputTokens = Math.round(
     (messagesChars + systemChars) / 2.34,
   );
-  const maxOutputTokens = pickChatMaxOutputTokens({
-    hasInlineTranscript: inlineTranscript,
-    dialogMessageCount,
-  });
+  // Облачный режим (анонимизация активна → OpenRouter): лимиты Ollama не
+  // применяем — облачные модели поддерживают большой вывод, а reasoning-модели
+  // тратят бюджет на размышления и обрезались на середине ответа.
+  const cloudMode = anonymizeActive;
+  const maxOutputTokens = cloudMode
+    ? Number(process.env.CLOUD_CHAT_MAX_OUTPUT_TOKENS ?? 16000)
+    : pickChatMaxOutputTokens({
+        hasInlineTranscript: inlineTranscript,
+        dialogMessageCount,
+      });
   console.log(
     `🤖 streamText start: msgs=${msgCount} dialog=${dialogMessageCount} input≈${estimatedInputTokens}tok (sys=${systemChars}c) maxOut=${maxOutputTokens} rag=${Boolean(ragRetrievalEnabled)} inlineDoc=${inlineTranscript}`,
   );
@@ -322,6 +328,11 @@ export async function runChatAgent(
           messages: continueMessages,
           system: adaptedSystemPrompt,
           tools,
+          // Облако (nemotron — reasoning-модель): ограничиваем размышления,
+          // иначе весь бюджет уходит в think и ответ обрезается.
+          ...(cloudMode
+            ? { providerOptions: { openrouter: { reasoning: { effort: 'low' } } } }
+            : {}),
           stopWhen: stepCountIs(ragRetrievalEnabled ? 4 : 3),
           ...(abortSignal ? { abortSignal } : {}),
           onChunk: ({ chunk }) => {
@@ -356,7 +367,9 @@ export async function runChatAgent(
           },
         });
 
-        writer.merge(result.toUIMessageStream());
+        // sendReasoning: false — внутренние размышления модели (reasoning-части)
+        // не отправляются в чат: пользователь видит только итоговый ответ.
+        writer.merge(result.toUIMessageStream({ sendReasoning: false }));
         const [finishReason, text] = await Promise.all([result.finishReason, result.text]);
         const textStr = String(text ?? '').trim();
 

@@ -1014,13 +1014,21 @@ export async function POST(req: Request) {
     }];
   }
 
+  // Режим анонимизации: документ правой панели содержит РЕАЛЬНЫЕ данные (после
+  // обратной подстановки) — перед отправкой в облако зачищаем его по mapping,
+  // иначе chat-agent вставит его в системный промпт сырым (утечка ПДн).
+  const safeDocumentContent =
+    anonymizationActive && typeof documentContent === 'string' && documentContent.trim()
+      ? anonymizeWithMapping(documentContent, anonymizeMapping)
+      : documentContent;
+
   const agentContext: AgentContext = {
     messages: coreMessages,
     uiMessages: normalizedMessagesNonEmpty,
     userPrompt: userPrompt,
     userId,
     conversationId,
-    documentContent,
+    documentContent: safeDocumentContent,
     model: languageModel,
     abortSignal: req.signal,
     ragRetrievalEnabled,
