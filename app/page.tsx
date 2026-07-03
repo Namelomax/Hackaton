@@ -15,6 +15,7 @@ import { copyTextToClipboard } from '@/lib/copyToClipboard';
 import { toast } from 'sonner';
 import { resolveMessagesFromRecord } from '@/lib/conversationMessages';
 import { GuestWelcomeGuide, shouldShowGuestWelcome } from '@/components/onboarding/GuestWelcomeGuide';
+import { WhatsNewDialog, shouldShowWhatsNew, markWhatsNewSeen } from '@/components/onboarding/WhatsNewDialog';
 
 /** Убирает бинарный DOCX-блок, который старые версии сохраняли в document_content */
 function stripDocxMeta(content: string): string {
@@ -92,6 +93,7 @@ export default function ChatPage() {
   const [authOpen, setAuthOpen] = useState(false);
   const [authHintFromPrompt, setAuthHintFromPrompt] = useState(false);
   const [guestGuideOpen, setGuestGuideOpen] = useState(false);
+  const [whatsNewOpen, setWhatsNewOpen] = useState(false);
   const handleAuthOpenChange = (open: boolean) => {
     setAuthOpen(open);
     if (!open) setAuthHintFromPrompt(false);
@@ -647,11 +649,20 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (!authChecked) return;
-    if (authUser) {
-      setGuestGuideOpen(false);
-      return;
+
+    // Полная памятка — только гостю при первом визите.
+    const guestGuide = !authUser && shouldShowGuestWelcome();
+    setGuestGuideOpen(guestGuide);
+
+    // Плашка новостей «Что нового» — всем остальным (вошедшим и вернувшимся
+    // гостям) один раз на версию. Первому гостю её не показываем: та же новость
+    // уже есть блоком в памятке — сразу помечаем как просмотренную.
+    if (guestGuide) {
+      markWhatsNewSeen();
+      setWhatsNewOpen(false);
+    } else if (shouldShowWhatsNew()) {
+      setWhatsNewOpen(true);
     }
-    if (shouldShowGuestWelcome()) setGuestGuideOpen(true);
   }, [authChecked, authUser]);
 
   // When authUser is present, fetch conversations
@@ -1134,6 +1145,7 @@ export default function ChatPage() {
     <div className="h-screen flex flex-col bg-background">
 
       <GuestWelcomeGuide open={guestGuideOpen} />
+      <WhatsNewDialog open={whatsNewOpen} onClose={() => setWhatsNewOpen(false)} />
 
       {isBooting && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">

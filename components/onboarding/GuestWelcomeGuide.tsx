@@ -41,6 +41,24 @@ export function GuestWelcomeGuide({ open }: GuestWelcomeGuideProps) {
         </DialogHeader>
 
         <div className="space-y-4 text-sm text-neutral-800 leading-relaxed">
+          {/* Яркий блок новой версии */}
+          <section className="relative overflow-hidden rounded-xl bg-gradient-to-br from-sky-500 via-indigo-500 to-violet-600 px-4 py-3 text-white">
+            <div className="absolute -right-6 -top-8 size-24 rounded-full bg-white/10 blur-xl" />
+            <div className="relative flex items-center gap-2">
+              <span className="inline-flex animate-pulse items-center rounded-full bg-amber-400 px-2 py-0.5 text-[11px] font-extrabold uppercase tracking-wider text-black shadow">
+                Update
+              </span>
+              <span className="text-xs font-medium text-white/80">Новое в Протоколёре</span>
+            </div>
+            <h3 className="relative mt-2 text-base font-bold">Режим «Облако + анонимизация»</h3>
+            <p className="relative mt-0.5 text-white/90">
+              В шапке появился переключатель «☁️ Облако + анонимизация» — протокол готовит более сильная
+              облачная модель. Перед отправкой в облако персональные данные заменяются на плейсхолдеры
+              (152-ФЗ), а вы продолжаете видеть реальные данные. Окно подтверждения можно отключить галочкой
+              рядом с переключателем — анонимизация при этом работает всегда.
+            </p>
+          </section>
+
           <section>
             <h3 className="font-semibold text-neutral-900 mb-1">Загрузка документов</h3>
             <p>
