@@ -122,6 +122,27 @@ export const DocumentPanel = ({
 }: DocumentPanelProps) => {
   const [copied, setCopied] = useState(false);
   const [anonView, setAnonView] = useState<{ title: string; content: string } | null>(null);
+  const [mappingOpen, setMappingOpen] = useState(false);
+  // Пары mapping для таблицы: сгруппированы по метке и отсортированы по номеру.
+  const mappingRows = useMemo(() => {
+    const m = anonymization?.mapping || {};
+    const labelOf = (ph: string) => {
+      const inner = ph.replace(/^\[/, '').replace(/\]$/, '');
+      const i = inner.lastIndexOf('_');
+      return i === -1 ? inner : inner.slice(0, i);
+    };
+    const numOf = (ph: string) => {
+      const mm = ph.match(/_(\d+)\]$/);
+      return mm ? Number(mm[1]) : 0;
+    };
+    return Object.entries(m)
+      .map(([placeholder, original]) => ({ placeholder, original: String(original), label: labelOf(placeholder) }))
+      .sort((a, b) =>
+        a.label === b.label
+          ? numOf(a.placeholder) - numOf(b.placeholder)
+          : a.label.localeCompare(b.label),
+      );
+  }, [anonymization?.mapping]);
   const downloadTextFile = (filename: string, content: string, mime = 'text/plain') => {
     try {
       const blob = new Blob([content], { type: `${mime};charset=utf-8` });
@@ -791,7 +812,7 @@ export const DocumentPanel = ({
                   <button
                     type="button"
                     className="rounded border px-2 py-0.5 hover:bg-muted"
-                    onClick={() => setAnonView({ title: 'Mapping (placeholder → оригинал)', content: JSON.stringify(anonymization.mapping || {}, null, 2) })}
+                    onClick={() => setMappingOpen(true)}
                   >
                     Просмотр
                   </button>
@@ -816,6 +837,58 @@ export const DocumentPanel = ({
           </DialogHeader>
           <div className="max-h-[60vh] overflow-auto rounded-md border bg-muted/30 p-3">
             <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed">{anonView?.content}</pre>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Таблица mapping — как модель анонимизировала (placeholder → оригинал). */}
+      <Dialog open={mappingOpen} onOpenChange={(o) => { if (!o) setMappingOpen(false); }} panelClassName="max-w-2xl w-full">
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              <span className="inline-flex items-center gap-1.5">
+                <Shield className="size-4 text-[color:var(--chart-2)]" />
+                Как анонимизировано ({mappingRows.length})
+              </span>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="mb-2 text-xs text-muted-foreground">
+            Слева — плейсхолдер, который ушёл в облако вместо персональных данных; справа — исходное значение (152-ФЗ). Обратная подстановка выполняется автоматически.
+          </div>
+          <div className="max-h-[60vh] overflow-auto rounded-md border">
+            {mappingRows.length === 0 ? (
+              <div className="p-4 text-sm text-muted-foreground">Персональные данные не обнаружены.</div>
+            ) : (
+              <table className="w-full border-collapse text-xs">
+                <thead className="sticky top-0 bg-muted/60 backdrop-blur">
+                  <tr className="text-left text-muted-foreground">
+                    <th className="px-3 py-2 font-medium">Плейсхолдер</th>
+                    <th className="px-3 py-2 font-medium">Оригинал (ПДн)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {mappingRows.map((row) => (
+                    <tr key={row.placeholder} className="border-t hover:bg-muted/30">
+                      <td className="whitespace-nowrap px-3 py-1.5 align-top">
+                        <code className="rounded bg-[color:var(--chart-1)]/10 px-1.5 py-0.5 font-mono text-[color:var(--chart-1)]">
+                          {row.placeholder}
+                        </code>
+                      </td>
+                      <td className="px-3 py-1.5 align-top break-words">{row.original}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+          <div className="flex justify-end pt-3">
+            <button
+              type="button"
+              className="rounded border px-3 py-1.5 text-sm hover:bg-muted"
+              onClick={() => downloadTextFile('mapping.map.json', JSON.stringify(anonymization?.mapping || {}, null, 2), 'application/json')}
+            >
+              Скачать JSON
+            </button>
           </div>
         </DialogContent>
       </Dialog>

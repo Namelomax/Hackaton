@@ -187,6 +187,7 @@ export const PromptInputWrapper = ({
   const requestAnonymizationPreview = useCallback(
     async (
       files: FileUIPart[],
+      text: string,
       convId: string | null,
       signal?: AbortSignal,
     ): Promise<'confirm' | 'cancel' | 'fallback'> => {
@@ -211,7 +212,11 @@ export const PromptInputWrapper = ({
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               signal,
-              body: JSON.stringify({ conversationId: convId, files: payloadFiles }),
+              body: JSON.stringify({
+                conversationId: convId,
+                files: payloadFiles,
+                ...(text && text.trim() ? { text: text.trim() } : {}),
+              }),
             });
             break;
           } catch (fetchErr) {
@@ -355,11 +360,14 @@ export const PromptInputWrapper = ({
       // Avoid blocking UI on client-side extraction; server performs extraction/injection.
       void finalFiles.map((f) => (f?.mediaType ? isTextExtractable(f.mediaType) : false));
 
-      // Режим «Облако + анонимизация»: при наличии документа показываем preview
-      // анонимизированной версии и ждём подтверждения перед отправкой в облако.
-      if (anonymizeMode && finalFiles.length > 0) {
+      // Режим «Облако + анонимизация»: перед отправкой в облако показываем preview
+      // анонимизированной версии и ждём подтверждения — как для документа, так и
+      // для обычного текстового сообщения (152-ФЗ: в облако уходит только текст
+      // без ПДн).
+      if (anonymizeMode && (finalFiles.length > 0 || Boolean(textWithQuote))) {
         const decision = await requestAnonymizationPreview(
           finalFiles,
+          textWithQuote,
           ensuredConversationId ?? null,
           abort.signal,
         );
@@ -454,7 +462,7 @@ return (
         <div className="max-h-[45vh] overflow-auto rounded-md border bg-muted/30 p-3">
           {previewLoading ? (
             <div className="text-sm text-muted-foreground">
-              Анонимизация документа… (от 30 секунд до пары минут для больших расшифровок — можно переключиться на другую вкладку, процесс продолжится)
+              Анонимизация… (короткое сообщение — быстро; для больших расшифровок от 30 секунд до пары минут — можно переключиться на другую вкладку, процесс продолжится)
             </div>
           ) : (
             <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed">{previewText}</pre>

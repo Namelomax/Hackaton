@@ -1,5 +1,5 @@
 import { deanonymize } from '../deanonymize';
-import { applyMappingForward, mergeRemoteResult, countersFromMapping, labelOf } from '../merge';
+import { applyMappingForward, applyMappingForwardDeep, mergeRemoteResult, countersFromMapping, labelOf } from '../merge';
 import type { ConversationMapping } from '../types';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -27,6 +27,31 @@ describe('deanonymize / applyMappingForward', () => {
   });
 });
 
+describe('applyMappingForwardDeep — компоненты ФИО (защита от утечки одиночного имени)', () => {
+  const mapping = { '[PERSON_4]': 'Никита Грицанюк', '[ORG_1]': 'группа компаний Форус' };
+
+  it('ловит одиночное имя, когда mapping хранит только полное ФИО', () => {
+    const raw = 'На созвоне [PERSON_4], представитель [ORG_1]. Никита, добрый день.';
+    const out = applyMappingForwardDeep(raw, mapping);
+    expect(out).not.toMatch(/Никита/);
+    expect(out).toBe('На созвоне [PERSON_4], представитель [ORG_1]. [PERSON_4], добрый день.');
+  });
+
+  it('полное ФИО заменяется целиком (не по кускам)', () => {
+    expect(applyMappingForwardDeep('Никита Грицанюк пришёл', mapping)).toBe('[PERSON_4] пришёл');
+  });
+
+  it('обычная applyMappingForward одиночное имя НЕ ловит (демонстрация исходного бага)', () => {
+    expect(applyMappingForward('Никита, добрый день', mapping)).toBe('Никита, добрый день');
+  });
+
+  it('не подставляет компоненты ORG и не режет середину других слов', () => {
+    const out = applyMappingForwardDeep('Компания Форус и Никитин', mapping);
+    expect(out).toContain('Никитин');
+    expect(out).toContain('Форус');
+  });
+});
+
 describe('labelOf', () => {
   it('извлекает метку', () => {
     expect(labelOf('[PERSON_1]')).toBe('PERSON');
@@ -44,7 +69,6 @@ describe('mergeRemoteResult — каноническая перенумерац�
       spans: [],
     };
     const res = mergeRemoteResult(conv, remote);
-    // server [PERSON_2]=Иван Иванов → канонический [PERSON_1]; server [PERSON_1]=Пётр → новый [PERSON_2]
     expect(res.anonymizedText).toBe('[PERSON_2] и [PERSON_1]');
     expect(res.conversation.mapping['[PERSON_1]']).toBe('Иван Иванов');
     expect(res.conversation.mapping['[PERSON_2]']).toBe('Пётр Петров');
@@ -57,18 +81,15 @@ describe('образец mapping (Чебурашка)', () => {
   it('round-trip по реальному mapping', () => {
     if (!fs.existsSync(file)) return;
     const mapping = JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, string>;
-    // counters восстанавливаются корректно
     const counters = countersFromMapping(mapping);
     expect(counters.PERSON).toBeGreaterThanOrEqual(20);
-    // соберём текст из части плейсхолдеров и проверим деанонимизацию
     const phs = Object.keys(mapping).slice(0, 30);
     const anonText = phs.join(' / ');
     const real = deanonymize(anonText, mapping);
     for (const ph of phs) expect(real).toContain(mapping[ph]);
-    expect(real).not.toMatch(/\[[A-Z_]+_\d+\]/); // не осталось плейсхолдеров
+    expect(real).not.toMatch(/\[[A-Z_]+_\d+\]/);
   });
 });
-
 
 import { scrubStructured } from '../scrub';
 
@@ -83,7 +104,6 @@ describe('scrubStructured — защитный фильтр', () => {
     expect(res.text).toMatch(/\[EMAIL_1\]/);
     expect(res.text).toMatch(/\[PHONE_1\]/);
     expect(res.added).toBeGreaterThanOrEqual(3);
-    // обратимость
     expect(res.conversation.mapping['[EMAIL_1]']).toBe('ivan@example.com');
   });
   it('не трогает плейсхолдеры и обычный текст', () => {

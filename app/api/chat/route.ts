@@ -801,9 +801,14 @@ export async function POST(req: Request) {
       let mapping = await loadConversationMapping(conversationId);
 
       // Документ: серверная анонимизация только если mapping пуст (preview не было).
+      // Сохраняем полный серверный anonymized_text — в нём NER уже заменил и
+      // одиночные имена («Никита»), которые локальная forward-подстановка по
+      // полному ФИО могла бы пропустить (утечка ПДн в облако).
+      let serverAnonymizedDoc: string | null = null;
       if (hiddenDocsContext.trim() && Object.keys(mapping).length === 0) {
         const r = await anonymizeNewText(hiddenDocsContext, conversationId);
         mapping = r.mapping;
+        serverAnonymizedDoc = r.anonymizedText;
       }
 
       // Последнее сообщение пользователя — короткое, серверная анонимизация быстра.
@@ -820,7 +825,10 @@ export async function POST(req: Request) {
       //   (защитный фильтр email/телефонов/длинных ID, что мог пропустить NER).
       let conv: ConversationMapping = { mapping, counters: countersFromMapping(mapping) };
       {
-        const docLocal = anonymizeWithMapping(hiddenDocsContext, conv.mapping);
+        // Предпочитаем полный серверный результат (в нём одиночные имена уже
+        // заменены); при его отсутствии — детерминированная локальная
+        // «глубокая» подстановка (включая компоненты ФИО).
+        const docLocal = serverAnonymizedDoc ?? anonymizeWithMapping(hiddenDocsContext, conv.mapping);
         const sc = scrubStructured(docLocal, conv);
         conv = sc.conversation;
         anonymizedDocsContext = sc.text;

@@ -10,14 +10,19 @@ import {
   saveConversationMapping,
 } from '@/lib/getPromt';
 import { anonymizeRemote, AnonymizerUnavailableError } from './remote-client';
-import { applyMappingForward, countersFromMapping, mergeRemoteResult } from './merge';
+import {
+  applyMappingForward,
+  applyMappingForwardDeep,
+  countersFromMapping,
+  mergeRemoteResult,
+} from './merge';
 import { scrubStructured } from './scrub';
 import { deanonymize, deepDeanonymize } from './deanonymize';
 import type { ConversationMapping, Mapping } from './types';
 
 export { AnonymizerUnavailableError };
 export { deanonymize, deepDeanonymize };
-export { applyMappingForward, countersFromMapping };
+export { applyMappingForward, applyMappingForwardDeep, countersFromMapping };
 export { scrubStructured };
 export type { Mapping, ConversationMapping };
 
@@ -69,9 +74,13 @@ export async function anonymizeNewText(
 /**
  * Быстрая локальная анонимизация по уже известному mapping (без вызова сервера).
  * Для документа/истории на повторных ходах диалога.
+ *
+ * Использует «глубокую» подстановку: помимо полных оригиналов подставляет и
+ * отдельные компоненты ФИО, чтобы одиночное имя (напр. «Никита») не утекло в
+ * облако, если серверный NER пометил только полное «Никита Грицанюк».
  */
 export function anonymizeWithMapping(text: string, mapping: Mapping): string {
-  return applyMappingForward(text, mapping);
+  return applyMappingForwardDeep(text, mapping);
 }
 
 /** Загрузить только mapping диалога (для деанонимизации ответа). */
