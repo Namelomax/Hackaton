@@ -50,6 +50,22 @@ export default function ChatPage() {
     } catch {}
   }, []);
 
+  // Показывать окно подтверждения перед отправкой в облако. Сама анонимизация
+  // выполняется ВСЕГДА (на сервере) — этот флаг влияет только на предпросмотр.
+  const [confirmAnonymize, setConfirmAnonymize] = useState(true);
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('anonymizeConfirm');
+      if (saved === '0') setConfirmAnonymize(false);
+    } catch {}
+  }, []);
+  const handleToggleConfirmAnonymize = useCallback((next: boolean) => {
+    setConfirmAnonymize(next);
+    try {
+      localStorage.setItem('anonymizeConfirm', next ? '1' : '0');
+    } catch {}
+  }, []);
+
   const chatBody = useMemo(
     () => ({
       chatProvider: anonymizeMode ? ('openrouter' as const) : ('ollama' as const),
@@ -1144,6 +1160,8 @@ export default function ChatPage() {
         showAuthHint={authHintFromPrompt}
         anonymizeMode={anonymizeMode}
         onToggleAnonymize={handleToggleAnonymize}
+        anonymizeConfirm={confirmAnonymize}
+        onToggleAnonymizeConfirm={handleToggleConfirmAnonymize}
       />
 
       {/* Основная область */}
@@ -1203,6 +1221,7 @@ export default function ChatPage() {
                 onUserMessageQueued={undefined}
                 chatBody={chatBody}
                 anonymizeMode={anonymizeMode}
+                anonymizeConfirm={confirmAnonymize}
                 onAnonymizationReady={handleAnonymizationReady}
                 onOpenAuthDialog={() => {
                   setAuthMode('login');

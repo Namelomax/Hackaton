@@ -22,6 +22,9 @@ type HeaderProps = {
   showAuthHint?: boolean;
   anonymizeMode?: boolean;
   onToggleAnonymize?: (next: boolean) => void;
+  /** Показывать окно подтверждения перед отправкой в облако (анонимизация идёт всегда). */
+  anonymizeConfirm?: boolean;
+  onToggleAnonymizeConfirm?: (next: boolean) => void;
 };
 
 export const Header = ({
@@ -41,6 +44,8 @@ export const Header = ({
   showAuthHint = false,
   anonymizeMode = false,
   onToggleAnonymize,
+  anonymizeConfirm = true,
+  onToggleAnonymizeConfirm,
 }: HeaderProps) => {
   useEffect(() => {
     if (authUser) {
@@ -103,6 +108,23 @@ export const Header = ({
             ☁️ Облако + анонимизация
           </button>
         </div>
+
+        {/* Подтверждение анонимизации: скрывает окно предпросмотра. Сама
+            анонимизация выполняется всегда — этот флаг на неё не влияет. */}
+        {anonymizeMode && (
+          <label
+            className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground select-none"
+            title="Показывать окно с анонимизированной версией перед отправкой в облако. Анонимизация выполняется всегда, независимо от этой галочки."
+          >
+            <input
+              type="checkbox"
+              className="size-3.5 accent-primary"
+              checked={anonymizeConfirm}
+              onChange={(e) => onToggleAnonymizeConfirm?.(e.target.checked)}
+            />
+            Подтверждать перед отправкой
+          </label>
+        )}
 
         <div>
           {authUser ? (

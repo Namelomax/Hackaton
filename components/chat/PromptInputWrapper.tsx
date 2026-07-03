@@ -129,6 +129,10 @@ type PromptInputWrapperProps = {
   onOpenAuthDialog?: () => void;
   chatBody?: ChatTransportBodyExtras;
   anonymizeMode?: boolean;
+  /** Показывать диалог подтверждения перед отправкой в облако. Анонимизация
+   * происходит ВСЕГДА (на сервере) независимо от этого флага; выключение
+   * убирает только окно предпросмотра. По умолчанию включено. */
+  anonymizeConfirm?: boolean;
   onAnonymizationReady?: (data: {
     anonymizedText: string;
     mapping: Record<string, string>;
@@ -158,6 +162,7 @@ export const PromptInputWrapper = ({
   onOpenAuthDialog,
   chatBody,
   anonymizeMode = false,
+  anonymizeConfirm = true,
   onAnonymizationReady,
 }: PromptInputWrapperProps) => {
   const submitLockRef = useRef(false);
@@ -169,6 +174,7 @@ export const PromptInputWrapper = ({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewText, setPreviewText] = useState('');
   const [previewSummary, setPreviewSummary] = useState<Record<string, number>>({});
+  const [previewMapping, setPreviewMapping] = useState<Record<string, string>>({});
   const previewResolverRef = useRef<((decision: 'confirm' | 'cancel') => void) | null>(null);
 
   const resolvePreview = useCallback((decision: 'confirm' | 'cancel') => {
@@ -194,6 +200,7 @@ export const PromptInputWrapper = ({
       setPreviewLoading(true);
       setPreviewText('');
       setPreviewSummary({});
+      setPreviewMapping({});
       setPreviewOpen(true);
       try {
         const payloadFiles = files.map((f: any) => ({
@@ -246,6 +253,7 @@ export const PromptInputWrapper = ({
         }
         setPreviewText(String(json.anonymizedText || ''));
         setPreviewSummary(json.summary || {});
+        setPreviewMapping((json.mapping && typeof json.mapping === 'object') ? json.mapping : {});
         setPreviewLoading(false);
         onAnonymizationReady?.({
           anonymizedText: String(json.anonymizedText || ''),
@@ -363,8 +371,10 @@ export const PromptInputWrapper = ({
       // Режим «Облако + анонимизация»: перед отправкой в облако показываем preview
       // анонимизированной версии и ждём подтверждения — как для документа, так и
       // для обычного текстового сообщения (152-ФЗ: в облако уходит только текст
-      // без ПДн).
-      if (anonymizeMode && (finalFiles.length > 0 || Boolean(textWithQuote))) {
+      // без ПДн). Само окно можно отключить (anonymizeConfirm=false) — тогда
+      // отправляем без предпросмотра, но анонимизация всё равно выполняется на
+      // сервере в /api/chat (гарантия защиты ПДн не зависит от этого флага).
+      if (anonymizeMode && anonymizeConfirm && (finalFiles.length > 0 || Boolean(textWithQuote))) {
         const decision = await requestAnonymizationPreview(
           finalFiles,
           textWithQuote,
@@ -438,7 +448,7 @@ return (
     {/* Preview анонимизации документа перед отправкой в облако */}
     {/* dismissible={false}: случайный клик мимо панели или Escape не отменяет
         долгую анонимизацию — закрыть можно только кнопками «Отмена»/«Подтвердить». */}
-    <Dialog open={previewOpen} onOpenChange={(o) => { if (!o) resolvePreview('cancel'); }} panelClassName="max-w-2xl w-full" dismissible={false}>
+    <Dialog open={previewOpen} onOpenChange={(o) => { if (!o) resolvePreview('cancel'); }} panelClassName="max-w-4xl w-full" dismissible={false}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Проверка перед отправкой в облако</DialogTitle>
@@ -459,13 +469,53 @@ return (
             ))}
           </div>
         )}
-        <div className="max-h-[45vh] overflow-auto rounded-md border bg-muted/30 p-3">
-          {previewLoading ? (
-            <div className="text-sm text-muted-foreground">
-              Анонимизация… (короткое сообщение — быстро; для больших расшифровок от 30 секунд до пары минут — можно переключиться на другую вкладку, процесс продолжится)
+        <div className="flex flex-col gap-3 md:flex-row">
+          {/* Слева — анонимизированный текст, который уйдёт в облако */}
+          <div className="flex min-w-0 flex-1 flex-col">
+            <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Уйдёт в облако (без ПДн)
             </div>
-          ) : (
-            <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed">{previewText}</pre>
+            <div className="max-h-[45vh] overflow-auto rounded-md border bg-muted/30 p-3">
+              {previewLoading ? (
+                <div className="text-sm text-muted-foreground">
+                  Анонимизация… (короткое сообщение — быстро; для больших расшифровок от 30 секунд до пары минут — можно переключиться на другую вкладку, процесс продолжится)
+                </div>
+              ) : (
+                <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed">{previewText}</pre>
+              )}
+            </div>
+          </div>
+          {/* Справа — mapping: как анонимизировано (placeholder → оригинал) */}
+          {!previewLoading && Object.keys(previewMapping).length > 0 && (
+            <div className="flex w-full flex-col md:w-[44%]">
+              <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Mapping — что скрыто ({Object.keys(previewMapping).length})
+              </div>
+              <div className="max-h-[45vh] overflow-auto rounded-md border">
+                <table className="w-full border-collapse text-xs">
+                  <thead className="sticky top-0 bg-muted/60 backdrop-blur">
+                    <tr className="text-left text-muted-foreground">
+                      <th className="px-2 py-1.5 font-medium">Плейсхолдер</th>
+                      <th className="px-2 py-1.5 font-medium">Оригинал (ПДн)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(previewMapping)
+                      .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
+                      .map(([placeholder, original]) => (
+                        <tr key={placeholder} className="border-t hover:bg-muted/30">
+                          <td className="whitespace-nowrap px-2 py-1 align-top">
+                            <code className="rounded bg-[color:var(--chart-1)]/10 px-1 py-0.5 font-mono text-[color:var(--chart-1)]">
+                              {placeholder}
+                            </code>
+                          </td>
+                          <td className="px-2 py-1 align-top break-words">{String(original)}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           )}
         </div>
         <div className="flex justify-end gap-2 pt-3">
