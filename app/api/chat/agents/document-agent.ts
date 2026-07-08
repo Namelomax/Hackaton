@@ -27,6 +27,7 @@ import {
   enforceDateProvenance,
   reconcileWithApproved,
   fillContractFromDialogue,
+  fillHeaderFromDialogue,
 } from '@/lib/protocol-guards';
 import {
   cleanProtocolText,
@@ -347,6 +348,7 @@ export async function generateFinalDocument(
     validated = stripProtocolTimecodes(validated); // тайм-кодов в финале быть не должно
     validated = carryOverParticipantRoles(validated, conversationContext); // не терять должность
     validated = fillContractFromDialogue(validated, conversationContext); // не терять договор
+    validated = fillHeaderFromDialogue(validated, conversationContext); // не терять номер/название протокола
     // Выдуманные даты → «подлежит уточнению». Ответы пользователя (userCorrections)
     // привилегированы: названные им даты действительны в любом формате записи
     // («02022025» без точек) и даже при совпадении с датой встречи/договора.

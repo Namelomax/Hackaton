@@ -74,3 +74,87 @@ export function hasStructuredPII(text: string): boolean {
     new RegExp(ID_RE.source).test(text)
   );
 }
+
+// --- Словарный фильтр гос/организационных наименований (аварийный фолбэк) ---
+// ЕДИНЫЙ ИСТОЧНИК ИСТИНЫ для таких терминов — глоссарий Python-анонимайзера
+// (`anonymizer/custom_terms.txt`, детектор GlossaryDetector). Именно туда нужно
+// добавлять новые организации/аббревиатуры: там корректная обработка склонений
+// (в т.ч. «Правительство» → «правительством»), канонические имена и единый
+// плейсхолдер на все алиасы.
+//
+// Этот TS-список — тонкий страховочный слой на стороне Next: он срабатывает по
+// уже анонимизированному ответу сервера и ловит лишь то, что глоссарий вдруг
+// пропустил (например, глоссарий не задеплоен). Держим здесь минимальный набор
+// самых частых ведомств; кастомные термины НЕ дублируем сюда, а ведём в
+// глоссарии. Разовые локальные добавки — через ANONYMIZER_EXTRA_ORG_TERMS.
+// Каждая основа матчится с любыми русскими окончаниями и с границами слова.
+const ORG_WORD_CH = '0-9A-Za-zА-Яа-яЁё';
+
+const SENSITIVE_ORG_STEMS_BASE = [
+  // Министерства (основа + окончания ловят «Минфина», «Минфином» и т.д.)
+  'минфин', 'мингос', 'минцифр', 'минздрав', 'минобрнаук', 'минобр', 'минтруд',
+  'минэконом', 'минэк', 'минпросвещ', 'минюст', 'минстрой', 'минтранс',
+  'минсельхоз', 'минпромторг', 'минкультур', 'минспорт', 'минэнерго',
+  'миннаук', 'министерств',
+  // Органы власти и учреждения
+  'правительств', 'казначейств', 'госдум', 'совфед', 'госсовет', 'администраци',
+  'роскомнадзор', 'роспотребнадзор', 'рособрнадзор', 'росреестр',
+  'управделами', 'управдел', 'фнс', 'пфр', 'сфр', 'фомс',
+];
+
+function sensitiveOrgStems(): string[] {
+  const extra = String(process.env.ANONYMIZER_EXTRA_ORG_TERMS ?? '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  // Длинные основы первыми — чтобы «минобрнаук» выигрывал у «минобр».
+  return [...new Set([...SENSITIVE_ORG_STEMS_BASE, ...extra])].sort((a, b) => b.length - a.length);
+}
+
+function buildOrgRegex(): RegExp {
+  const stems = sensitiveOrgStems().map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  // Основа + любые русские буквенные окончания, с границами слова.
+  const body = `(?:${stems.join('|')})[а-яё]*`;
+  return new RegExp(`(?<![${ORG_WORD_CH}])(?:${body})(?![${ORG_WORD_CH}])`, 'giu');
+}
+
+/**
+ * Маскирует названия ведомств/органов власти по словарю. Возвращает обновлённый
+ * текст, mapping и число добавленных сущностей. Обратимо (как scrubStructured).
+ */
+export function scrubSensitiveOrgs(
+  text: string,
+  conv: ConversationMapping,
+): { text: string; conversation: ConversationMapping; added: number } {
+  if (!text) return { text, conversation: conv, added: 0 };
+
+  const mapping = { ...conv.mapping };
+  const counters = { ...conv.counters };
+  const reverse = new Map<string, string>();
+  for (const [ph, original] of Object.entries(mapping)) {
+    reverse.set(normalizeKey(labelOf(ph), original), ph);
+  }
+  let added = 0;
+
+  const assign = (value: string): string => {
+    const key = normalizeKey('ORG', value);
+    let ph = reverse.get(key);
+    if (!ph) {
+      counters['ORG'] = (counters['ORG'] ?? 0) + 1;
+      ph = `[ORG_${counters['ORG']}]`;
+      mapping[ph] = value;
+      reverse.set(key, ph);
+      added += 1;
+    }
+    return ph;
+  };
+
+  const out = text.replace(buildOrgRegex(), (m) => assign(m));
+  return { text: out, conversation: { mapping, counters }, added };
+}
+
+/** Есть ли в тексте гос/орг-термин из словаря. */
+export function hasSensitiveOrgs(text: string): boolean {
+  if (!text) return false;
+  return buildOrgRegex().test(text);
+}

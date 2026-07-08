@@ -113,3 +113,35 @@ describe('scrubStructured — защитный фильтр', () => {
     expect(res.added).toBe(0);
   });
 });
+
+import { scrubSensitiveOrgs } from '../scrub';
+
+describe('scrubSensitiveOrgs — словарь гос/орг наименований', () => {
+  it('маскирует Минфин/Мингос/Правительство/управделами с окончаниями', () => {
+    const conv = { mapping: {}, counters: {} };
+    const text =
+      'Спрашивали у Мингоса, поменять на стороне Минфина, чтобы Правительство обменивалось, там у нас управделами.';
+    const res = scrubSensitiveOrgs(text, conv);
+    expect(res.text).not.toMatch(/Мингос/i);
+    expect(res.text).not.toMatch(/Минфин/i);
+    expect(res.text).not.toMatch(/Правительств/i);
+    expect(res.text).not.toMatch(/управдел/i);
+    expect(res.text).toMatch(/\[ORG_\d+\]/);
+    expect(res.added).toBeGreaterThanOrEqual(4);
+  });
+
+  it('обратимо: [ORG_n] → оригинал в mapping', () => {
+    const conv = { mapping: {}, counters: {} };
+    const res = scrubSensitiveOrgs('на стороне Минфина', conv);
+    const ph = Object.keys(res.conversation.mapping)[0];
+    expect(ph).toMatch(/^\[ORG_\d+\]$/);
+    expect(res.conversation.mapping[ph]).toBe('Минфина');
+  });
+
+  it('не трогает обычные слова (минута, минимальный)', () => {
+    const conv = { mapping: {}, counters: {} };
+    const res = scrubSensitiveOrgs('минута работы и минимальный набор задач', conv);
+    expect(res.text).toBe('минута работы и минимальный набор задач');
+    expect(res.added).toBe(0);
+  });
+});

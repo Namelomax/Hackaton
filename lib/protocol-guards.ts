@@ -223,3 +223,40 @@ export function fillContractFromDialogue(p: Protocol, dialogueText: string): Pro
   }
   return out;
 }
+
+/**
+ * Восстанавливает поля ШАПКИ (номер и название протокола) из ответов в диалоге,
+ * если модель их «потеряла». Только ЗАПОЛНЯЕТ пустое, не перезаписывает.
+ * Берём последнее валидное упоминание (обычно подтверждённое предложение агента).
+ */
+export function fillHeaderFromDialogue(p: Protocol, dialogueText: string): Protocol {
+  const t = String(dialogueText || '');
+  const out: Protocol = { ...p };
+
+  // Номер протокола: «протокол №1», «номер протокола 1», «протокол номер 1».
+  const numEmpty = !realStr(out.protocolNumber) || /^№?\s*$/.test(String(out.protocolNumber).trim());
+  if (numEmpty) {
+    let lastNum = '';
+    for (const m of t.matchAll(/протокол[а-яё]*\s*(?:№|номер[а-яё]*)\s*[:\-—]?\s*(\d{1,4})(?!\d)/gi)) {
+      lastNum = m[1];
+    }
+    if (lastNum) out.protocolNumber = `№${lastNum}`;
+  }
+
+  // Название/тема протокола: «название протокола: X» / «тема протокола — X».
+  // Отсекаем служебные фрагменты вопроса агента (списки «1) …; 2) …», слово «договор»).
+  if (!realStr(out.protocolTitle)) {
+    let lastTitle = '';
+    for (const m of t.matchAll(
+      /(?:назван[а-яё]*|тема|наименован[а-яё]*)\s+протокол[а-яё]*\s*[:\-—]\s*«?([^.\n;»)]{3,120})»?/gi,
+    )) {
+      const cand = m[1].trim();
+      if (cand && !/догов|\bнеобходимо\b|уточн/i.test(cand) && !/^\d+[).]/.test(cand)) {
+        lastTitle = cand;
+      }
+    }
+    if (lastTitle) out.protocolTitle = lastTitle;
+  }
+
+  return out;
+}

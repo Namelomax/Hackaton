@@ -233,6 +233,9 @@ function preprocessLlmProtocolShape(input: unknown): Record<string, unknown> {
       const existing = Array.isArray(side.signatories)
         ? (side.signatories as unknown[]).map((s) => toStr(s).trim()).filter(Boolean)
         : [];
+      // ВАЖНО: подставляем всех участников ТОЛЬКО когда подписантов нет вообще.
+      // Если модель вернула конкретный список (например, пользователь попросил
+      // 2 подписантов) — НЕ перезаписываем его всеми участниками из таблицы.
       if (existing.length === 0 && namesFromPeople.length > 0) {
         side.signatories = namesFromPeople;
       }

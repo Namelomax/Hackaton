@@ -30,6 +30,7 @@ import {
   loadConversationMapping,
   countersFromMapping,
   scrubStructured,
+  scrubSensitiveOrgs,
   persistConversationMapping,
   AnonymizerUnavailableError,
   type Mapping,
@@ -831,14 +832,19 @@ export async function POST(req: Request) {
         const docLocal = serverAnonymizedDoc ?? anonymizeWithMapping(hiddenDocsContext, conv.mapping);
         const sc = scrubStructured(docLocal, conv);
         conv = sc.conversation;
-        anonymizedDocsContext = sc.text;
+        // Словарный фильтр гос/орг-наименований, что пропустил NER (Минфин и т.п.).
+        const so = scrubSensitiveOrgs(sc.text, conv);
+        conv = so.conversation;
+        anonymizedDocsContext = so.text;
       }
       finalMessages = finalMessages.map((m) => {
         if (typeof m?.content !== 'string') return m;
         const local = anonymizeWithMapping(m.content, conv.mapping);
         const sc = scrubStructured(local, conv);
         conv = sc.conversation;
-        return { ...m, content: sc.text, parts: [{ type: 'text' as const, text: sc.text }] };
+        const so = scrubSensitiveOrgs(sc.text, conv);
+        conv = so.conversation;
+        return { ...m, content: so.text, parts: [{ type: 'text' as const, text: so.text }] };
       });
       // Если защитный фильтр добавил новые сущности — сохраняем mapping.
       if (Object.keys(conv.mapping).length !== Object.keys(mapping).length) {
