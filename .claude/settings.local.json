@@ -45,7 +45,13 @@
       "Bash(bun run *)",
       "Bash(python e2e_protocol.py 1)",
       "Bash(python e2e_protocol.py 2)",
-      "Bash(python e2e_protocol.py 3)"
+      "Bash(python e2e_protocol.py 3)",
+      "Bash(curl -s -m 30 -H 'Authorization: Bearer 1913de7b07f34d61a28792a88f613767' https://jh.interfonica.cloud/user/ts-bdfzametjv73gxxu/proxy/11434/api/ps)",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(m['name'], 'size=%.1fGB'%\\(m['size']/1e9\\), 'vram=%.1fGB'%\\(m['size_vram']/1e9\\), 'ctx=', m.get\\('context_length'\\)\\) for m in d.get\\('models',[]\\)] or print\\('nothing loaded'\\)\")",
+      "Bash(curl -s -m 60 -H 'Authorization: Bearer 1913de7b07f34d61a28792a88f613767' -H 'Content-Type: application/json' -d '{\"model\":\"qwen3.5:9b\",\"keep_alive\":0}' https://jh.interfonica.cloud/user/ts-bdfzametjv73gxxu/proxy/11434/api/generate)",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(m['name'], 'size=%.2fGB'%\\(m['size']/1e9\\), 'vram=%.2fGB'%\\(m['size_vram']/1e9\\), 'ctx=', m.get\\('context_length'\\), 'fullGPU=', m['size']==m['size_vram']\\) for m in d.get\\('models',[]\\)]\")",
+      "Bash(sed -i 's/MODEL = \"qwen3.5:9b\"/MODEL = \"gemma4:12b\"/' needle_test.py)",
+      "Bash(python needle_native.py 7500 131072)"
     ],
     "additionalDirectories": [
       "d:\\Jacob\\Hakaton\\.claude"
