@@ -7,7 +7,54 @@
  */
 import type { Protocol } from '@/lib/schemas/protocol-schema';
 
-const FULL_DATE_RX = /\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b/g;
+/**
+ * Корни названий месяцев для разбора словесных дат («1 марта 2026», «24 февраля
+ * 2028 г.»). Падежные окончания добираются регэкспом `[а-яёА-ЯЁ]*` после корня —
+ * так распознаются любые формы («марта», «марте», «март»).
+ */
+const MONTH_ROOTS: Array<{ rx: string; month: number }> = [
+  { rx: 'январ', month: 1 },
+  { rx: 'феврал', month: 2 },
+  { rx: 'март', month: 3 },
+  { rx: 'апрел', month: 4 },
+  { rx: 'ма[йя]', month: 5 },
+  { rx: 'июн', month: 6 },
+  { rx: 'июл', month: 7 },
+  { rx: 'август', month: 8 },
+  { rx: 'сентябр', month: 9 },
+  { rx: 'октябр', month: 10 },
+  { rx: 'ноябр', month: 11 },
+  { rx: 'декабр', month: 12 },
+];
+
+const MONTH_ALT_RX = MONTH_ROOTS.map((m) => m.rx).join('|');
+
+/** Определяет номер месяца по слову, начинающемуся с одного из MONTH_ROOTS. */
+function monthFromWord(word: string): number {
+  const w = String(word || '').toLowerCase();
+  for (const { rx, month } of MONTH_ROOTS) {
+    if (new RegExp(`^(?:${rx})`, 'i').test(w)) return month;
+  }
+  return 0;
+}
+
+/** Словесная дата: «1 марта 2026», «01 марта 2026 года», «24 февраля 2028 г.». */
+const WORDY_DATE_RX = new RegExp(`\\b(\\d{1,2})\\s+((?:${MONTH_ALT_RX})[а-яёА-ЯЁ]*)\\s+(\\d{4})\\b`, 'gi');
+
+/**
+ * Единая дата (цифровая ИЛИ словесная) с прилегающим контекстом — используется
+ * в enforceDateProvenance для замены даты БЕЗ поломки грамматики фразы.
+ * Группы: 1 — «Срок:», 2 — предлог/оборот перед датой, 3-5 — дд.мм.гггг (цифры),
+ * 6-8 — дд, слово месяца, гггг (словесная форма).
+ */
+const CONTEXTUAL_DATE_RX = new RegExp(
+  '(Срок:\\s*)?' +
+    '((?:в срок\\s+)?(?:до|к|с|по|не позднее)\\s+)?' +
+    '\\b' +
+    `(?:(\\d{1,2})\\.(\\d{1,2})\\.(\\d{4})|(\\d{1,2})\\s+((?:${MONTH_ALT_RX})[а-яёА-ЯЁ]*)\\s+(\\d{4}))` +
+    '(?:\\s*г\\.|\\s+года)?',
+  'gi',
+);
 
 /** Удаляет любые маркеры тайм-кодов [ТС: …], [TC: …], {{ТС: …}} (в т.ч. «[ТС: Не указано…]»). */
 export function stripTimecodes(text: string): string {
@@ -54,6 +101,10 @@ function extractNormalizedDates(text: string): Set<string> {
   };
   for (const m of text.matchAll(/\b(\d{1,2})[./-](\d{1,2})[./-](\d{4})\b/g)) add(m[1], m[2], m[3]);
   for (const m of text.matchAll(/\b(\d{2})(\d{2})(\d{4})\b/g)) add(m[1], m[2], m[3]); // ддммгггг
+  for (const m of text.matchAll(WORDY_DATE_RX)) {
+    const month = monthFromWord(m[2]);
+    if (month) add(m[1], String(month), m[3]);
+  }
   return out;
 }
 
@@ -89,18 +140,38 @@ export function enforceDateProvenance(
   addForbidden(p.meetingDate);
   addForbidden(p.contractDate);
 
+  // Дату заменяем ВМЕСТЕ с прилегающим контекстом (иначе получается битая
+  // грамматика вида «переход на ЭДО с подлежит уточнению»):
+  // - «Срок: 01.03.2026» → «Срок: подлежит уточнению» (формат нужен downstream-проверкам);
+  // - «до/к/с/по/не позднее 01.03.2026» → предлог поглощается, «в срок, подлежащий уточнению»;
+  // - голая дата в середине фразы → тоже «в срок, подлежащий уточнению»;
+  // - хвост «г.»/«года» поглощается в обоих случаях.
   const fix = (text: string, label: string): string =>
-    (text || '').replace(FULL_DATE_RX, (whole, dd, mm, yy) => {
-      const key = normKey(dd, mm, yy);
-      if (userDates.has(key)) return whole; // пользователь назвал дату явно
-      if (forbidden.has(key)) {
-        unresolved.push(`${label}: дата встречи/договора (${whole}) использована как срок — заменена на «подлежит уточнению»`);
-        return 'подлежит уточнению';
-      }
-      if (sourceDates.has(key)) return whole;
-      unresolved.push(`${label}: дата ${whole} отсутствует в расшифровке/ответах — заменена на «подлежит уточнению»`);
-      return 'подлежит уточнению';
-    });
+    (text || '').replace(
+      CONTEXTUAL_DATE_RX,
+      (whole, srok, _prep, dd1, mm1, yy1, dd2, monthWord, yy2) => {
+        const isWordy = dd2 !== undefined;
+        const dd = isWordy ? dd2 : dd1;
+        const mm = isWordy ? String(monthFromWord(monthWord)) : mm1;
+        const yy = isWordy ? yy2 : yy1;
+        if (!mm || Number(mm) < 1) return whole; // корень месяца не распознан — не трогаем
+
+        const key = normKey(dd, mm, yy);
+        if (userDates.has(key)) return whole; // пользователь назвал дату явно
+
+        const display = `${Number(dd)}.${Number(mm)}.${yy}`;
+        let reason: string | null = null;
+        if (forbidden.has(key)) {
+          reason = `${label}: дата встречи/договора (${display}) использована как срок — заменена на «подлежит уточнению»`;
+        } else if (!sourceDates.has(key)) {
+          reason = `${label}: дата ${display} отсутствует в расшифровке/ответах — заменена на «подлежит уточнению»`;
+        }
+        if (!reason) return whole; // дата подтверждена расшифровкой — не трогаем
+
+        unresolved.push(reason);
+        return srok ? 'Срок: подлежит уточнению' : 'в срок, подлежащий уточнению';
+      },
+    );
 
   const topics = p.meetingContent.topics.map((t) => ({ ...t, decided: fix(t.decided, t.title || 'Решение') }));
   const summary = p.meetingContent.summary.map((r) => ({ ...r, decision: fix(r.decision, r.question || 'Резюме') }));
@@ -172,7 +243,7 @@ export function reconcileWithApproved(
   // 3. Сроки/ответственные конкретны?
   p.meetingContent.summary.forEach((r) => {
     if (!/срок\s*:/i.test(r.decision)) warnings.push(`В резюме нет «Срок:» по вопросу «${r.question}»`);
-    if (/подлежит уточнению/i.test(r.decision)) warnings.push(`Срок не подтверждён по вопросу «${r.question}» — уточните дату`);
+    if (/подлеж(?:ит|ащ[а-яё]*)\s+уточнени/i.test(r.decision)) warnings.push(`Срок не подтверждён по вопросу «${r.question}» — уточните дату`);
     if (!/ответствен/i.test(r.decision)) warnings.push(`Нет ответственного по вопросу «${r.question}»`);
   });
   // 4. Поздние правки пользователя — напоминание проверить вручную.

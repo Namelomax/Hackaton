@@ -198,6 +198,40 @@ function applyEntry(text: string, entry: GlossaryEntry): string {
   return text.replace(re, (m) => matchCase(m, entry.to));
 }
 
+/**
+ * Латинские буквы-«близнецы» кириллических — модель иногда подставляет их
+ * внутрь кириллического слова (визуально неотличимо: «ЭДO» с латинской O).
+ * Карта только для букв, у которых написание совпадает 1-в-1.
+ */
+const CYRILLIC_HOMOGLYPHS: Record<string, string> = {
+  A: 'А', B: 'В', C: 'С', E: 'Е', H: 'Н', K: 'К', M: 'М', O: 'О', P: 'Р', T: 'Т', X: 'Х',
+  a: 'а', c: 'с', e: 'е', o: 'о', p: 'р', x: 'х', y: 'у',
+};
+
+/**
+ * Заменяет латинские буквы-гомоглифы на кириллические внутри слов, где
+ * кириллических букв больше, чем латинских (значит слово по смыслу кириллическое,
+ * а латиница в нём — опечатка модели). Слова целиком на латинице (Ozon, MVP, 1С)
+ * не трогает — там кириллических букв нет вовсе, условие «больше» не выполняется.
+ */
+export function normalizeCyrillicHomoglyphs(text: string): string {
+  if (!text || typeof text !== 'string') return text;
+  return text.replace(/\p{L}+/gu, (word) => {
+    let cyrCount = 0;
+    let latCount = 0;
+    for (const ch of word) {
+      if (/[а-яёА-ЯЁ]/.test(ch)) cyrCount++;
+      else if (/[a-zA-Z]/.test(ch)) latCount++;
+    }
+    if (cyrCount === 0 || latCount === 0 || cyrCount <= latCount) return word;
+    let out = '';
+    for (const ch of word) {
+      out += CYRILLIC_HOMOGLYPHS[ch] ?? ch;
+    }
+    return out;
+  });
+}
+
 /** Применяет словарь к произвольной строке. Пустые/нестроковые — без изменений. */
 export function applyGlossary(text: string): string {
   if (!text || typeof text !== 'string') return text;
@@ -205,6 +239,7 @@ export function applyGlossary(text: string): string {
   for (const entry of loadEntries()) {
     out = applyEntry(out, entry);
   }
+  out = normalizeCyrillicHomoglyphs(out);
   // Подчистить двойные пробелы, появившиеся после удаления слов (to: '').
   return out.replace(/[ \t]{2,}/g, ' ').replace(/\s+([,.;:])/g, '$1');
 }

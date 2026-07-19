@@ -51,7 +51,19 @@
       "Bash(curl -s -m 60 -H 'Authorization: Bearer 1913de7b07f34d61a28792a88f613767' -H 'Content-Type: application/json' -d '{\"model\":\"qwen3.5:9b\",\"keep_alive\":0}' https://jh.interfonica.cloud/user/ts-bdfzametjv73gxxu/proxy/11434/api/generate)",
       "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(m['name'], 'size=%.2fGB'%\\(m['size']/1e9\\), 'vram=%.2fGB'%\\(m['size_vram']/1e9\\), 'ctx=', m.get\\('context_length'\\), 'fullGPU=', m['size']==m['size_vram']\\) for m in d.get\\('models',[]\\)]\")",
       "Bash(sed -i 's/MODEL = \"qwen3.5:9b\"/MODEL = \"gemma4:12b\"/' needle_test.py)",
-      "Bash(python needle_native.py 7500 131072)"
+      "Bash(python needle_native.py 7500 131072)",
+      "Bash(curl -s -m 180 -H 'Authorization: Bearer 1913de7b07f34d61a28792a88f613767' -H 'Content-Type: application/json' -d '{\"model\":\"gemma4:12b\"}' https://jh.interfonica.cloud/user/ts-bdfzametjv73gxxu/proxy/11434/api/generate)",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(m['name'], 'vram=%.2fGB'%\\(m['size_vram']/1e9\\), 'ctx=', m.get\\('context_length'\\), 'fullGPU=', m['size']==m['size_vram']\\) for m in d.get\\('models',[]\\)]\")",
+      "Bash(python build_long.py)",
+      "Bash(python -)",
+      "Bash(sed -i 's/155_000/205_000/' build_long.py)",
+      "Bash(python e2e_protocol.py 6)",
+      "Bash(python e2e_long.py L1)",
+      "Bash(sed -i 's/205_000/310_000/' build_long.py)",
+      "Bash(python e2e_long.py L2)",
+      "Bash(grep -oE \"договор[^,.;]{0,40}№[^,.;]{0,25}|№ ?47[^ ]{0,5}|10\\\\.01\\\\.2026|12\\\\.01\\\\.2026|01 марта 2026|марта 2026\" combined_test_vse.txt)",
+      "Bash(npx jest *)",
+      "Bash(grep -oE \"Ответственный: [^|<]{3,40}\" protocol_run7.md)"
     ],
     "additionalDirectories": [
       "d:\\Jacob\\Hakaton\\.claude"

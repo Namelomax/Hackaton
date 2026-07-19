@@ -18,6 +18,7 @@ import {
   buildProtocolDraftFromChat,
   formatChatDraftForPrompt,
   extractLatestUserCorrections,
+  extractUserAnswerTexts,
   mergeProtocolWithChatDraft,
 } from '@/lib/protocol-chat-extract';
 import { applyGlossaryToProtocol, formatGlossaryForPrompt } from '@/lib/prompts/glossary';
@@ -215,6 +216,10 @@ export async function generateFinalDocument(
 
   const chatDraft = buildProtocolDraftFromChat(uiMessages);
   const userCorrections = extractLatestUserCorrections(uiMessages);
+  // Реквизиты договора/шапки — только из явных ответов пользователя, НЕ из всей
+  // расшифровки: иначе гард склеивает липовые данные из случайных упоминаний
+  // «договор №…» в тексте встречи (см. fillContractFromDialogue/fillHeaderFromDialogue).
+  const userAnswersText = extractUserAnswerTexts(uiMessages || []).join('\n');
   const agreedChatContext = formatChatDraftForPrompt(chatDraft, userCorrections);
   if (Object.keys(chatDraft).length > 0 || userCorrections.length > 0) {
     console.log(
@@ -347,8 +352,10 @@ export async function generateFinalDocument(
     // Код-гарды: то, в чём слабая модель регулярно ошибается (промптом не лечится).
     validated = stripProtocolTimecodes(validated); // тайм-кодов в финале быть не должно
     validated = carryOverParticipantRoles(validated, conversationContext); // не терять должность
-    validated = fillContractFromDialogue(validated, conversationContext); // не терять договор
-    validated = fillHeaderFromDialogue(validated, conversationContext); // не терять номер/название протокола
+    // Договор/шапку достаём только из ответов пользователя (не из всей расшифровки) —
+    // иначе гард ловит случайные упоминания «договор №…» в тексте встречи.
+    validated = fillContractFromDialogue(validated, userAnswersText); // не терять договор
+    validated = fillHeaderFromDialogue(validated, userAnswersText); // не терять номер/название протокола
     // Выдуманные даты → «подлежит уточнению». Ответы пользователя (userCorrections)
     // привилегированы: названные им даты действительны в любом формате записи
     // («02022025» без точек) и даже при совпадении с датой встречи/договора.

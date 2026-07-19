@@ -138,31 +138,84 @@ function parseAgendaFromBlocks(blocks: string[]): string[] {
 }
 
 /** Максимум содержательных сообщений пользователя, передаваемых модели как правки. */
-const MAX_CORRECTIONS = 8;
-/** Сообщения длиннее этого — почти наверняка вставленная расшифровка, не правка. */
-const MAX_CORRECTION_CHARS = 2000;
+function protocolMaxCorrections(): number {
+  const n = Number(process.env.PROTOCOL_MAX_CORRECTIONS);
+  return Number.isFinite(n) && n > 0 ? n : 8;
+}
+
+/** Сообщения длиннее этого — вероятно, вставленная расшифровка, а не правка. */
+function protocolMaxCorrectionChars(): number {
+  const n = Number(process.env.PROTOCOL_MAX_CORRECTION_CHARS);
+  return Number.isFinite(n) && n > 0 ? n : 2000;
+}
+
+/** Сообщения длиннее этого исключаются из «ответов пользователя» (см. extractUserAnswerTexts). */
+function protocolUserAnswerMaxChars(): number {
+  const n = Number(process.env.PROTOCOL_USER_ANSWER_MAX_CHARS);
+  return Number.isFinite(n) && n > 0 ? n : 2000;
+}
+
+/** Построчный паттерн реплик расшифровки: «[00:01:15] — …» / «Спикер 1: …». */
+const TRANSCRIPT_LINE_RX = /^\s*(?:\[?\d{1,2}:\d{2}(?::\d{2})?\]?\s*[—–-]|Спикер\s+\d+\s*:)/gm;
+
+/** ≥3 строк-реплик подряд — это вставленная расшифровка, а не текст правки. */
+function looksLikeTranscript(text: string): boolean {
+  const matches = text.match(TRANSCRIPT_LINE_RX);
+  return Boolean(matches && matches.length >= 3);
+}
 
 /**
  * Возвращает содержательные сообщения пользователя (в хронологическом порядке,
- * последние MAX_CORRECTIONS) — это указания и правки, которые модель должна
- * учесть при генерации. Раньше брались только сообщения ПОСЛЕ последнего
+ * последние protocolMaxCorrections()) — это указания и правки, которые модель
+ * должна учесть при генерации. Раньше брались только сообщения ПОСЛЕ последнего
  * подтверждения: правка «исправь Слушали», за которой следовало «верно»,
  * выпадала из контекста и документ откатывался к старой версии. Теперь мы не
  * пытаемся regex-логикой угадать, что из сказанного — правка: отдаём модели
  * всё содержательное, приоритет по хронологии определяет она сама.
+ *
+ * Сообщения длиннее лимита раньше молча отбрасывались — терялись реальные
+ * длинные правки. Теперь отбрасываются только похожие на вставленную
+ * расшифровку (по построчному паттерну реплик); остальные — обрезаются
+ * до лимита с явным маркером, чтобы пользователь проверил раздел вручную.
  */
 export function extractLatestUserCorrections(uiMessages: unknown[]): string[] {
   const turns = uiMessagesToTurns(uiMessages);
+  const maxChars = protocolMaxCorrectionChars();
   const corrections: string[] = [];
   for (const turn of turns) {
     if (turn.role !== 'user') continue;
     const text = turn.text.trim();
-    // Пропускаем: пустые/короткие, чистые подтверждения, вставки расшифровки.
-    if (text.length < 15 || text.length > MAX_CORRECTION_CHARS) continue;
+    // Пропускаем: пустые/короткие, чистые подтверждения.
+    if (text.length < 15) continue;
     if (isPureConfirmation(text)) continue;
+    if (text.length > maxChars) {
+      if (looksLikeTranscript(text)) continue; // вставленная расшифровка — пропускаем, как раньше
+      corrections.push(
+        `${text.slice(0, maxChars)}…[правка обрезана до ${maxChars} символов — проверьте этот раздел в готовом документе]`,
+      );
+      continue;
+    }
     corrections.push(text);
   }
-  return corrections.slice(-MAX_CORRECTIONS);
+  return corrections.slice(-protocolMaxCorrections());
+}
+
+/**
+ * Видимые тексты ответов пользователя (роль user) — источник для гардов
+ * реквизитов договора/шапки (fillContractFromDialogue/fillHeaderFromDialogue).
+ * В отличие от полного conversationContext, сюда НЕ попадает текст вложенной
+ * расшифровки — она приходит в metadata.hiddenTexts, а не в тексте хода
+ * пользователя, поэтому случайные упоминания «договор №…» из расшифровки
+ * сюда не просачиваются. Сообщения длиннее лимита (почти наверняка вставленный
+ * текст, а не ответ) исключаются.
+ */
+export function extractUserAnswerTexts(uiMessages: unknown[]): string[] {
+  const turns = uiMessagesToTurns(uiMessages);
+  const maxChars = protocolUserAnswerMaxChars();
+  return turns
+    .filter((t) => t.role === 'user')
+    .map((t) => t.text.trim())
+    .filter((text) => text.length >= 3 && text.length <= maxChars);
 }
 
 function parseApprovalFromBlocks(blocks: string[]): Protocol['approval'] | undefined {
