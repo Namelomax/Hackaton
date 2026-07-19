@@ -722,8 +722,35 @@ export async function POST(req: Request) {
   const chatModelId =
     typeof body.chatModel === 'string' ? body.chatModel.trim() : '';
   const contextTokensLimit = effectiveOllamaContextTokens(chatModelId);
+  const CHARS_PER_TOKEN = 2.34; // для русского текста; EN ≈ 4
+  const RESERVE_RESPONSE_TOKENS = Number(process.env.OLLAMA_MAX_OUTPUT_TOKENS ?? 8192);
+  const RESERVE_SYSTEM_BASE_TOKENS = 9000; // системный промт (SGR + полный документ)
   // Системный блок: полные тексты документов
-  const hiddenDocsContext = hiddenDocsFull.join('\n\n');
+  let hiddenDocsContext = hiddenDocsFull.join('\n\n');
+
+  /**
+   * Жёсткий кап документа в системном блоке: сервер Ollama за прокси реально держит
+   * num_ctx = OLLAMA_CONTEXT_LENGTH и при переполнении МОЛЧА отрезает НАЧАЛО промпта
+   * (в т.ч. системные инструкции). Бюджетная математика истории ниже не спасает от
+   * гигантской расшифровки — режем документ заранее, оставляя минимум под историю.
+   */
+  const RESERVE_HISTORY_MIN_TOKENS = 16000;
+  const maxDocChars = Math.max(
+    (contextTokensLimit -
+      RESERVE_RESPONSE_TOKENS -
+      RESERVE_SYSTEM_BASE_TOKENS -
+      RESERVE_HISTORY_MIN_TOKENS) *
+      CHARS_PER_TOKEN,
+    20000,
+  );
+  if (hiddenDocsContext.length > maxDocChars) {
+    const originalLength = hiddenDocsContext.length;
+    const truncated = hiddenDocsContext.slice(0, maxDocChars);
+    hiddenDocsContext = `${truncated}\n…[РАСШИФРОВКА ОБРЕЗАНА: документ превышает контекстное окно модели (сохранены первые ${Math.floor(maxDocChars)} из ${originalLength} символов). Уточните детали конца встречи у пользователя.]…`;
+    console.warn(
+      `[route] hiddenDocsContext обрезан: ${originalLength} → ${Math.floor(maxDocChars)} симв. (~${Math.ceil(maxDocChars / CHARS_PER_TOKEN)} токенов)`,
+    );
+  }
 
   /**
    * Динамическая обрезка истории — гарантирует, что диалог любой длины не вызовет переполнения.
@@ -736,9 +763,6 @@ export async function POST(req: Request) {
    * Документы ВСЕГДА остаются в user-сообщениях — никогда не вырезаются при тримминге.
    */
   const CONTEXT_TOKENS_LIMIT = contextTokensLimit;
-  const CHARS_PER_TOKEN = 2.34; // для русского текста; EN ≈ 4
-  const RESERVE_RESPONSE_TOKENS = Number(process.env.OLLAMA_MAX_OUTPUT_TOKENS ?? 8192);
-  const RESERVE_SYSTEM_BASE_TOKENS = 9000; // системный промт (SGR + полный документ)
   const docTokensEstimate = Math.ceil(hiddenDocsContext.length / CHARS_PER_TOKEN);
   const availableForHistoryTokens =
     CONTEXT_TOKENS_LIMIT - RESERVE_RESPONSE_TOKENS - RESERVE_SYSTEM_BASE_TOKENS - docTokensEstimate;

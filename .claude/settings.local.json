@@ -31,7 +31,21 @@
       "Bash(curl -sk -X POST \"https://wild-mountain-06cupioiq9vpbadmqsbcb609a8.aws-euw1.surreal.cloud/sql\" -H \"Accept: application/json\" -H \"surreal-ns: demo\" -H \"surreal-db: wild_mountain\" -u \"admin:90522468q_Q\" -d \"SELECT * FROM prompt LIMIT 1\")",
       "Bash(findstr /r /s \"initializeDatabase\\\\|initDB\\\\|seedDefault\" *.ts app\\\\*.ts lib\\\\*.ts)",
       "Bash(curl -sk -H 'Authorization: Bearer 1913de7b07f34d61a28792a88f613767' https://jh.interfonica.cloud/user/ts-bdfzametjv73gxxu/proxy/11434/api/tags)",
-      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:3000/api/chat\" -Method GET -UseBasicParsing -TimeoutSec 3; \"Server up: $\\($r.StatusCode\\)\" } catch { \"Server not running: $_\" })"
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:3000/api/chat\" -Method GET -UseBasicParsing -TimeoutSec 3; \"Server up: $\\($r.StatusCode\\)\" } catch { \"Server not running: $_\" })",
+      "Bash(curl -s -m 30 -H 'Authorization: Bearer 1913de7b07f34d61a28792a88f613767' https://jh.interfonica.cloud/user/ts-bdfzametjv73gxxu/proxy/11434/api/tags)",
+      "Bash(curl -s -m 30 -H 'Authorization: Bearer 1913de7b07f34d61a28792a88f613767' -H 'Content-Type: application/json' -d '{\"model\":\"gemma4:12b\"}' https://jh.interfonica.cloud/user/ts-bdfzametjv73gxxu/proxy/11434/api/show)",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('parameters:', d.get\\('parameters'\\)\\); print\\('modelfile num_ctx lines:', [l for l in d.get\\('modelfile',''\\).splitlines\\(\\) if 'ctx' in l.lower\\(\\)]\\)\")",
+      "Bash(python needle_test.py small)",
+      "Bash(python needle_test.py big 7500)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(npx biome *)",
+      "Bash(git stash *)",
+      "Bash(git check-ignore *)",
+      "Bash(bun --version)",
+      "Bash(bun run *)",
+      "Bash(python e2e_protocol.py 1)",
+      "Bash(python e2e_protocol.py 2)",
+      "Bash(python e2e_protocol.py 3)"
     ],
     "additionalDirectories": [
       "d:\\Jacob\\Hakaton\\.claude"

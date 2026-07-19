@@ -218,6 +218,30 @@ export function resolveChatLanguageModel(options: ResolveChatModelOptions = {}) 
             let sseBody: string;
             try {
               const completion = JSON.parse(jsonText) as Record<string, unknown>;
+
+              // Лог usage + детектор молчаливой обрезки НАЧАЛА промпта сервером Ollama
+              // (сервер за прокси реально держит num_ctx = OLLAMA_CONTEXT_LENGTH и при
+              // переполнении режет начало контекста, включая системные инструкции).
+              try {
+                const usage = completion.usage as Record<string, unknown> | undefined;
+                const promptTokens = Number(usage?.prompt_tokens);
+                const completionTokens = Number(usage?.completion_tokens);
+                if (Number.isFinite(promptTokens) || Number.isFinite(completionTokens)) {
+                  console.log(`[llm←] usage: prompt=${promptTokens} completion=${completionTokens}`);
+                }
+                const ctxLimit = Number(process.env.OLLAMA_CONTEXT_LENGTH);
+                if (Number.isFinite(ctxLimit) && Number.isFinite(promptTokens)) {
+                  const maxTokens = typeof parsed.max_tokens === 'number' ? parsed.max_tokens : 0;
+                  if (promptTokens >= ctxLimit - maxTokens - 256) {
+                    console.warn(
+                      `⚠️ [llm←] prompt_tokens=${promptTokens} упёрся в num_ctx=${ctxLimit} — сервер, вероятно, ОБРЕЗАЛ НАЧАЛО промпта (системные инструкции). Сократите документ/историю.`,
+                    );
+                  }
+                }
+              } catch {
+                // Не ломаем основной поток из-за диагностики
+              }
+
               const choices = completion.choices as any[] | undefined;
               const choice = choices?.[0] ?? {};
               const message = (choice.message ?? {}) as Record<string, unknown>;

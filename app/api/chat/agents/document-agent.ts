@@ -102,7 +102,7 @@ export async function runDocumentAgent(context: AgentContext) {
           model,
           documentContent,
           conversationId,
-          0.1,
+          0,
           abortSignal ?? undefined,
           { anonymize, mapping: anonymizeMapping },
         );
@@ -148,7 +148,7 @@ export async function generateFinalDocument(
   model: any,
   existingDocument?: string,
   conversationId?: string | null,
-  temperature: number = 0.1,
+  temperature: number = 0,
   abortSignal?: AbortSignal,
   anonOptions?: { anonymize?: boolean; mapping?: Mapping },
 ): Promise<string> {
