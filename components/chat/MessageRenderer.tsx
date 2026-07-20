@@ -228,8 +228,12 @@ export const MessageRenderer = ({
             mediaType: p.mediaType,
           }));
 
+  // Сырые "текстовые tool-call" ({"reasonBrief": …}) не показываем — это
+  // аргументы инструмента, а не сообщение для пользователя.
+  const RAW_TOOL_JSON_RE = /^\s*\{\s*"?reasonBrief"?\s*:[\s\S]*\}\s*$/;
   const textParts = rawParts.filter(
-    (part: any): part is { type: 'text'; text: string } => part.type === 'text',
+    (part: any): part is { type: 'text'; text: string } =>
+      part.type === 'text' && !RAW_TOOL_JSON_RE.test(String(part.text ?? '')),
   );
   const reasoningParts = rawParts.filter((part: any) => part.type === 'reasoning');
   const toolParts = rawParts.filter(

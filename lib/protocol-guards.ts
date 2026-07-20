@@ -331,3 +331,45 @@ export function fillHeaderFromDialogue(p: Protocol, dialogueText: string): Proto
 
   return out;
 }
+
+// --- Относительные даты в финальном документе (просьба заказчика, п.3) ---
+// «сегодня», «вчера», «на следующей неделе» и т.п. не подходят для протокола.
+// Модель обязана заменять их конкретными датами, но слабая модель иногда
+// пропускает. Здесь детерминированно помечаем такие места прямо В ТЕКСТЕ
+// документа маркером «(⚠️ требует уточнения: конкретная дата)».
+const RELATIVE_DATE_IN_DOC_RX = new RegExp(
+  '(?<![\\p{L}\\p{N}])(' +
+    [
+      'сегодня', 'вчера', 'завтра', 'послезавтра', 'позавчера',
+      'на следующей неделе', 'на прошлой неделе', 'на этой неделе',
+      'до конца недели', 'до конца месяца', 'в конце месяца', 'в начале месяца',
+      'в ближайшее время', 'в ближайшие дни', 'на днях', 'скоро',
+      'в течение недели', 'в течение месяца',
+    ].join('|') +
+  ')(?![\\p{L}\\p{N}])',
+  'giu',
+);
+const ALREADY_FLAGGED = '(⚠️ требует уточнения: конкретная дата)';
+
+function flagRelativeInText(text: string, label: string, flags: string[]): string {
+  if (!text || text.includes(ALREADY_FLAGGED)) return text;
+  return text.replace(RELATIVE_DATE_IN_DOC_RX, (m) => {
+    flags.push(`${label}: относительная дата «${m}» — требуется конкретная дата ДД.ММ.ГГГГ`);
+    return `${m} ${ALREADY_FLAGGED}`;
+  });
+}
+
+/** Помечает относительные даты в содержательных полях протокола. */
+export function flagRelativeDates(p: Protocol): { protocol: Protocol; flags: string[] } {
+  const flags: string[] = [];
+  const topics = p.meetingContent.topics.map((t) => ({
+    ...t,
+    discussed: flagRelativeInText(t.discussed, t.title || 'Обсудили', flags),
+    decided: flagRelativeInText(t.decided, t.title || 'Решили', flags),
+  }));
+  const summary = p.meetingContent.summary.map((r) => ({
+    ...r,
+    decision: flagRelativeInText(r.decision, r.question || 'Резюме', flags),
+  }));
+  return { protocol: { ...p, meetingContent: { topics, summary } }, flags };
+}

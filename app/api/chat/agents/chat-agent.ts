@@ -11,6 +11,7 @@ import {
   createPublishInvestigationProtocolTool,
   type ProtocolGenerationSink,
 } from "./protocol-tools";
+import { generateFinalDocument } from "./document-agent";
 import { PROTOCOL_TIMECODE_ADAPTATION_LINE } from "@/lib/protocol-timecodes";
 import { createRetrieveFromIndexedDocumentsTool } from "./rag-tools";
 import { createAddGlossaryRuleTool } from "./glossary-tools";
@@ -336,6 +337,7 @@ export async function runChatAgent(
       };
 
       let continueMessages: ModelMessage[] = messagesWithUserPrompt;
+      let lastAssistantText = "";
       const MAX_CONTINUATIONS = 0;
 
       for (let attempt = 0; attempt <= MAX_CONTINUATIONS; attempt++) {
@@ -395,6 +397,7 @@ export async function runChatAgent(
         writer.merge(result.toUIMessageStream({ sendReasoning: false }));
         const [finishReason, text] = await Promise.all([result.finishReason, result.text]);
         const textStr = String(text ?? '').trim();
+        lastAssistantText = textStr;
 
         if (finishReason !== 'length' || !textStr) {
           if (finishReason === 'length' && !textStr) {
@@ -417,6 +420,49 @@ export async function runChatAgent(
           { role: 'assistant', content: textStr } as ModelMessage,
           { role: 'user', content: '[Авто-продолжение] Продолжи ответ точно с того места, где остановился. Не повторяй уже написанное.' } as ModelMessage,
         ];
+      }
+
+      // 🛟 ФОЛБЭК «текстовый tool-call»: слабая модель часто ПИШЕТ аргументы
+      // инструмента текстом ({"reasonBrief": …}) или заявляет «правки внесены»,
+      // но реального вызова publishInvestigationProtocol не делает — панель не
+      // обновляется. Детектируем это и генерируем документ детерминированно.
+      if (!sink.markdown || sink.markdown.trim().length === 0) {
+        const t = lastAssistantText.trim();
+        const textualToolJson = /^\{\s*"?reasonBrief"?\s*:/i.test(t);
+        const claimsUpdated =
+          /(обновл|внес|внёс|исправл|замен|сформирован|правк[аи].{0,20}(принят|учтен|учтён))/i.test(t);
+        const isQuoteEdit = lastUserText.trim().startsWith('[Цитата из протокола]');
+        const editIntent = hasDocument && (hasFixRequest || isQuoteEdit);
+        const shouldForce =
+          textualToolJson || (editIntent && claimsUpdated && !t.includes('?'));
+        if (shouldForce) {
+          try {
+            console.warn(
+              `🛟 tool fallback: textualJson=${textualToolJson} editIntent=${editIntent} → generateFinalDocument напрямую`,
+            );
+            const md = await generateFinalDocument(
+              safeOriginalUIMessages(context),
+              context.userPrompt,
+              writer,
+              model,
+              documentContent,
+              conversationId ?? null,
+              0.1,
+              abortSignal ?? undefined,
+            );
+            sink.markdown = md;
+            const okId = `tool-fallback-${Date.now()}`;
+            writer.write({ type: "text-start", id: okId });
+            writer.write({
+              type: "text-delta",
+              id: okId,
+              delta: "Документ обновлён в правой панели.",
+            });
+            writer.write({ type: "text-end", id: okId });
+          } catch (e) {
+            console.error("🛟 tool fallback failed:", e);
+          }
+        }
       }
     },
     onFinish: async ({ messages: finished }) => {

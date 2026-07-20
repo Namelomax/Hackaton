@@ -16,14 +16,14 @@ import {
   countersFromMapping,
   mergeRemoteResult,
 } from './merge';
-import { scrubStructured, scrubSensitiveOrgs } from './scrub';
+import { scrubStructured, scrubSensitiveOrgs, restoreNonSensitivePlaceholders } from './scrub';
 import { deanonymize, deepDeanonymize } from './deanonymize';
 import type { ConversationMapping, Mapping } from './types';
 
 export { AnonymizerUnavailableError };
 export { deanonymize, deepDeanonymize };
 export { applyMappingForward, applyMappingForwardDeep, countersFromMapping };
-export { scrubStructured, scrubSensitiveOrgs };
+export { scrubStructured, scrubSensitiveOrgs, restoreNonSensitivePlaceholders };
 export type { Mapping, ConversationMapping };
 
 async function loadConversation(conversationId?: string | null): Promise<ConversationMapping> {

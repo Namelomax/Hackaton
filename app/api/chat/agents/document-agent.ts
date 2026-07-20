@@ -28,6 +28,7 @@ import {
   enforceDateProvenance,
   reconcileWithApproved,
   fillContractFromDialogue,
+  flagRelativeDates,
   fillHeaderFromDialogue,
 } from '@/lib/protocol-guards';
 import {
@@ -361,14 +362,18 @@ export async function generateFinalDocument(
     // («02022025» без точек) и даже при совпадении с датой встречи/договора.
     const dateGuard = enforceDateProvenance(validated, conversationContext, userCorrections);
     validated = dateGuard.protocol;
+    // Относительные даты («сегодня», «вчера»…) в финальном тексте — пометить.
+    const relFlags = flagRelativeDates(validated);
+    validated = relFlags.protocol;
     const guardWarnings = [
+      ...relFlags.flags,
       ...new Set([
         ...dateGuard.unresolved,
         ...reconcileWithApproved(validated, chatDraft, userCorrections),
       ]),
     ];
 
-    const finalMarkdown = protocolToMarkdown(validated);
+    const finalMarkdown = markUnresolvedInMarkdown(protocolToMarkdown(validated));
     markdownContent = finalMarkdown;
     // Append only what hasn't been sent yet; full reset if final was restructured.
     if (finalMarkdown !== sentContent) {
@@ -442,6 +447,17 @@ export async function generateFinalDocument(
   }
 
   return markdownContent;
+}
+
+
+/** Визуально помечает в markdown-панели места, требующие уточнения (просьба заказчика). */
+function markUnresolvedInMarkdown(md: string): string {
+  return md
+    .replace(/требует уточнени[йя]/gi, (m) => `⚠️ ${m}`)
+    .replace(/подлежит уточнению/gi, '⚠️ подлежит уточнению')
+    .replace(/не указано в расшифровке/gi, '⚠️ не указано в расшифровке — требует уточнения')
+    .replace(/⚠️\s*⚠️/g, '⚠️')
+    .replace(/(— требует уточнения)(\s*—\s*требует уточнения)+/g, '$1');
 }
 
 /** Проверяет, что название организации — реальное имя, а не заглушка или мусор из LLM. */

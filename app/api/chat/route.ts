@@ -31,6 +31,7 @@ import {
   countersFromMapping,
   scrubStructured,
   scrubSensitiveOrgs,
+  restoreNonSensitivePlaceholders,
   persistConversationMapping,
   AnonymizerUnavailableError,
   type Mapping,
@@ -859,7 +860,9 @@ export async function POST(req: Request) {
         // Словарный фильтр гос/орг-наименований, что пропустил NER (Минфин и т.п.).
         const so = scrubSensitiveOrgs(sc.text, conv);
         conv = so.conversation;
-        anonymizedDocsContext = so.text;
+        // Даты и вежливые фразы — не ПДн: возвращаем оригиналы, чтобы облачная
+        // модель видела реальные даты (сроки!) и нормальный текст.
+        anonymizedDocsContext = restoreNonSensitivePlaceholders(so.text, conv.mapping).text;
       }
       finalMessages = finalMessages.map((m) => {
         if (typeof m?.content !== 'string') return m;
@@ -868,7 +871,8 @@ export async function POST(req: Request) {
         conv = sc.conversation;
         const so = scrubSensitiveOrgs(sc.text, conv);
         conv = so.conversation;
-        return { ...m, content: so.text, parts: [{ type: 'text' as const, text: so.text }] };
+        const restoredText = restoreNonSensitivePlaceholders(so.text, conv.mapping).text;
+        return { ...m, content: restoredText, parts: [{ type: 'text' as const, text: restoredText }] };
       });
       // Если защитный фильтр добавил новые сущности — сохраняем mapping.
       if (Object.keys(conv.mapping).length !== Object.keys(mapping).length) {

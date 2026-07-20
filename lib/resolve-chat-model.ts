@@ -252,7 +252,10 @@ export function resolveChatLanguageModel(options: ResolveChatModelOptions = {}) 
               const delta: Record<string, unknown> = { role: message.role ?? 'assistant' };
               if (message.content != null) delta.content = String(message.content);
               const toolCalls = (message as any).tool_calls as any[] | undefined;
-              if (toolCalls?.length) delta.tool_calls = toolCalls;
+              // OpenAI streaming-формат требует index у каждого tool_call —
+              // без него AI SDK может молча отбросить вызов инструмента.
+              if (toolCalls?.length)
+                delta.tool_calls = toolCalls.map((tc: any, i: number) => ({ index: i, ...tc }));
 
               const deltaChunk = { ...base, choices: [{ index: 0, delta, finish_reason: null }] };
               const finishChunk = { ...base, choices: [{ index: 0, delta: {}, finish_reason: finishReason }], usage: completion.usage };
