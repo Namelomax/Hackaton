@@ -91,7 +91,10 @@
       "Bash(curl -s -o /dev/null -w \"status=%{http_code}\\\\n\" -m 20 https://hackaton-kappa-seven.vercel.app/api/chat)",
       "Bash(curl -s -o /tmp/d.txt -w \"status=%{http_code} time=%{time_total}s\\\\n\" -m 90 -X POST https://hackaton-kappa-seven.vercel.app/api/chat -H \"Content-Type: application/json\" -d '{\"anonymize\":true,\"messages\":[{\"id\":\"1\",\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"Встреча 20.02.2026. Исполнитель: вчера обновили отчёт Динамика СЗП, сегодня уточню у специалистов.\"}]}]}')",
       "Bash(curl -s -o /tmp/e.txt -w \"status=%{http_code} time=%{time_total}s\\\\n\" -m 200 -X POST https://hackaton-kappa-seven.vercel.app/api/chat -H \"Content-Type: application/json\" -d '{\"anonymize\":true,\"messages\":[{\"id\":\"1\",\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"Встреча 20.02.2026 по договору №15. Исполнитель Иванов сообщил: вчера обновили отчёт Динамика СЗП, сегодня уточню у специалистов.\"}]},{\"id\":\"2\",\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"Сформируй протокол\"}]}]}')",
-      "Bash(git log *)"
+      "Bash(git log *)",
+      "Bash(grep -viE \"//|/\\\\*|\\\\*\")",
+      "Bash(git add *)",
+      "Bash(git commit -q -m ' *)"
     ],
     "additionalDirectories": [
       "d:\\Jacob\\Hakaton\\.claude"
