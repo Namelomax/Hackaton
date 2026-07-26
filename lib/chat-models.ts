@@ -1,11 +1,19 @@
-/** Единственная модель чата (пока без выбора в UI). */
-export const FIXED_CHAT_MODEL = 'qwen3.5:9b';
+/**
+ * Единственная модель чата (пока без выбора в UI).
+ * ВАЖНО: это же значение — дефолт, когда ALLOWED_OLLAMA_MODELS не задан в env
+ * (см. parseAllowedOllamaModelsFromServerEnv). Раньше здесь стоял qwen3.5:9b —
+ * из-за этого любой инстанс без ALLOWED_OLLAMA_MODELS (напр. прод-деплой, где
+ * переменную забыли) грузил qwen ВМЕСТО gemma и на общей карте копились две
+ * модели → OOM. Держим тут актуальную модель.
+ */
+export const FIXED_CHAT_MODEL = 'gemma4:12b';
 
 /** Allowed local chat models (must match `ollama list` names). */
-export const DEFAULT_LOCAL_CHAT_MODELS = ['qwen3.5:9b', 'qwen3:14b'] as const;
+export const DEFAULT_LOCAL_CHAT_MODELS = ['gemma4:12b'] as const;
 
 /** Короткие подписи для селектора моделей в UI */
 export const LOCAL_MODEL_LABELS: Record<string, string> = {
+  'gemma4:12b': 'Gemma 4 12B',
   'qwen3:14b': 'Qwen3 14B',
   'qwen3.5:9b': 'Qwen3.5 9B',
 };
@@ -51,7 +59,7 @@ export function parseModelsFromEnv(jsonEnv?: string): string[] {
   }
 }
 
-/** Модель по умолчанию для чата: qwen3.5:9b, иначе первая из списка env. */
+/** Модель по умолчанию для чата: gemma4:12b, иначе первая из списка env. */
 export function pickDefaultLocalChatModel(_jsonEnv?: string): string {
   return FIXED_CHAT_MODEL;
 }
