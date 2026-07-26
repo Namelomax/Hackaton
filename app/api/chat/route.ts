@@ -340,16 +340,64 @@ async function extractXlsxTextFromAttachment(att: any): Promise<string | null> {
   return bestEffortBinaryText(buf);
 }
 
+/**
+ * Оценка «читаемости» декодированной строки. Кириллица весит больше, управляющие
+ * символы и � штрафуются. Нужна, чтобы отличить корректный windows-1251 от того же
+ * буфера, ошибочно прочитанного как latin1 (даёт мойибаке без единого �).
+ */
+function textReadabilityScore(s: string): number {
+  if (!s) return -1;
+  let good = 0;
+  let bad = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0)!;
+    if (c === 0xfffd) { bad += 5; continue; }                 // replacement char
+    if (c === 9 || c === 10 || c === 13) { good += 1; continue; } // tab/CR/LF
+    if (c >= 32 && c < 127) { good += 1; continue; }          // ASCII печатаемые
+    if (c >= 0x0400 && c <= 0x04ff) { good += 2; continue; }  // кириллица
+    if (c >= 0x2010 && c <= 0x2069) { good += 1; continue; }  // — « » … типографика
+    if (c < 32) { bad += 2; continue; }                       // прочие control
+    bad += 1;                                                  // латиница-мойибаке и т.п.
+  }
+  const total = good + bad;
+  return total === 0 ? -1 : (good - bad) / total;
+}
+
+/**
+ * Декодирует текстовый буфер, определяя кодировку. Важно для русских .txt в
+ * windows-1251 (кодировка по умолчанию в Windows): раньше latin1-фолбэк молча
+ * возвращал мойибаке (latin1 не даёт �), и в облако/модель уходил нечитаемый текст.
+ */
+function decodeTextBuffer(buf: Buffer): string | null {
+  if (!buf || buf.length === 0) return null;
+  // BOM: однозначная кодировка.
+  if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf)
+    return buf.toString('utf8', 3);
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe)
+    return new TextDecoder('utf-16le').decode(buf.subarray(2));
+  if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff)
+    return new TextDecoder('utf-16be').decode(buf.subarray(2));
+  // Строгий UTF-8: если буфер валиден как UTF-8 — это почти наверняка он.
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buf);
+  } catch {}
+  // Иначе выбираем кодировку по «читаемости» (кириллические .txt обычно cp1251).
+  let best: { text: string; score: number } | null = null;
+  for (const enc of ['windows-1251', 'koi8-r', 'utf-16le', 'latin1']) {
+    try {
+      const text = new TextDecoder(enc).decode(buf);
+      const score = textReadabilityScore(text);
+      if (!best || score > best.score) best = { text, score };
+    } catch {}
+  }
+  return best?.text ?? null;
+}
+
 async function extractPlainTextFromAttachment(att: any): Promise<string | null> {
   const buf = await urlToBuffer(att?.url || att?.data);
   if (!buf) return null;
-  for (const enc of ['utf8', 'utf16le', 'latin1'] as const) {
-    try {
-      const text = buf.toString(enc).trim();
-      if (text && !text.includes('�')) return text;
-    } catch {}
-  }
-  return bestEffortBinaryText(buf);
+  const decoded = decodeTextBuffer(buf)?.trim();
+  return decoded || bestEffortBinaryText(buf);
 }
 
 async function extractRtfTextFromAttachment(att: any): Promise<string | null> {
