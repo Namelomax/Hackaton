@@ -1,6 +1,16 @@
 import { createUIMessageStream, JsonToSseTransformStream, streamObject } from 'ai';
 import { AgentContext } from './types';
-import { updateConversation, saveConversation } from '@/lib/getPromt';
+import {
+  updateConversation,
+  saveConversation,
+  saveConversationProtocolJson,
+  getConversationProtocolJson,
+} from '@/lib/getPromt';
+import {
+  planProtocolPatch,
+  applyEditsToProtocol,
+  mapProtocolStrings,
+} from './protocol-patch';
 import {
   ProtocolSchema,
   coerceProtocolPartial,
@@ -236,6 +246,22 @@ export async function generateFinalDocument(
     );
   }
 
+  // ── Точечная правка вместо полной пересборки ────────────────────────────
+  // Если протокол уже сформирован и пользователь уточняет отдельные места,
+  // пересобирать документ целиком нельзя: модель заодно переписывает соседние
+  // формулировки. Пробуем применить точечные замены к сохранённому Protocol JSON.
+  const patchedMarkdown = await tryPatchExistingProtocol({
+    conversationId,
+    userRequest: lastUserMessageText(uiMessages),
+    model,
+    writeData,
+    dataStream,
+    anonymizeActive,
+    anonMapping,
+    abortSignal,
+  });
+  if (patchedMarkdown) return patchedMarkdown;
+
   // Режим анонимизации: всё, что уходит в облачную модель, должно быть в плейсхолдерах.
   const promptConversationContext = anonymizeActive
     ? applyMappingForward(conversationContext, anonMapping)
@@ -433,6 +459,12 @@ export async function generateFinalDocument(
       markdownContent = protocolToMarkdown(validatedOut);
     }
 
+    // База для будущих точечных правок: сохраняем валидный Protocol JSON с
+    // реальными данными. Без него правка = полная пересборка документа.
+    if (conversationId) {
+      await saveConversationProtocolJson(conversationId, validatedOut).catch(() => {});
+    }
+
     const docxBuffer = await generateProtocolDocx(validatedOut);
     const base64Docx = docxBuffer.toString('base64');
     writeData({
@@ -486,6 +518,138 @@ export async function generateFinalDocument(
   return markdownContent;
 }
 
+
+/** Текст последнего сообщения пользователя — источник правки для patch-режима. */
+function lastUserMessageText(uiMessages: any[]): string {
+  if (!Array.isArray(uiMessages)) return '';
+  for (let i = uiMessages.length - 1; i >= 0; i--) {
+    const msg = uiMessages[i];
+    if (msg?.role !== 'user') continue;
+    return stripTimecodeMarkers(extractMessageText(msg)).trim();
+  }
+  return '';
+}
+
+/**
+ * Пытается применить правку пользователя точечно, без пересборки протокола.
+ * Возвращает markdown (с реальными данными) при успехе или null — тогда
+ * вызывающий код идёт обычным путём полной генерации.
+ */
+async function tryPatchExistingProtocol(options: {
+  conversationId?: string | null;
+  userRequest: string;
+  model: any;
+  writeData: (payload: { type: string; data: any; id?: string; transient?: boolean }) => void;
+  dataStream: any;
+  anonymizeActive: boolean;
+  anonMapping: Mapping;
+  abortSignal?: AbortSignal;
+}): Promise<string | null> {
+  const {
+    conversationId,
+    userRequest,
+    model,
+    writeData,
+    dataStream,
+    anonymizeActive,
+    anonMapping,
+    abortSignal,
+  } = options;
+
+  if (process.env.PROTOCOL_PATCH_MODE === 'off') return null;
+  if (!conversationId || !userRequest) return null;
+
+  let base: Protocol;
+  try {
+    const stored = await getConversationProtocolJson(conversationId);
+    if (!stored) return null;
+    base = parseProtocolStrict(stored);
+  } catch (e) {
+    console.warn('[protocol-patch] сохранённый протокол не читается:', (e as Error)?.message);
+    return null;
+  }
+
+  // В облако уходит только обезличенная версия — и документ, и текст правки.
+  const baseForModel = anonymizeActive
+    ? mapProtocolStrings(base, (s) => applyMappingForward(s, anonMapping))
+    : base;
+  const requestForModel = anonymizeActive
+    ? applyMappingForward(userRequest, anonMapping)
+    : userRequest;
+
+  const plan = await planProtocolPatch({
+    model,
+    documentMarkdown: markUnresolvedInMarkdown(protocolToMarkdown(baseForModel)),
+    userRequest: requestForModel,
+    abortSignal,
+  });
+
+  if (!plan.canPatch || plan.edits.length === 0) {
+    console.log(
+      `[protocol-patch] точечная правка не подходит (${plan.reason || 'нет замен'}) → полная генерация`,
+    );
+    return null;
+  }
+
+  const applied = applyEditsToProtocol(baseForModel, plan.edits);
+  if (!applied.ok) {
+    console.log(
+      `[protocol-patch] замены не применены (${applied.reason}) → полная генерация`,
+      applied.failedEdit ? `find="${applied.failedEdit.find.slice(0, 60)}"` : '',
+    );
+    return null;
+  }
+
+  let patchedOut: Protocol;
+  try {
+    patchedOut = parseProtocolStrict(
+      anonymizeActive ? deepDeanonymize(applied.protocol, anonMapping) : applied.protocol,
+    );
+  } catch (e) {
+    console.warn('[protocol-patch] результат не прошёл схему → полная генерация:', (e as Error)?.message);
+    return null;
+  }
+
+  console.log(`[protocol-patch] применено замен: ${applied.applied.length} (без пересборки документа)`);
+
+  // В панель отдаём ту же версию, что и при полной генерации: обезличенную —
+  // деанонимизацию SSE делает обёртка роута.
+  const streamMarkdown = markUnresolvedInMarkdown(protocolToMarkdown(applied.protocol));
+  writeData({ type: 'data-clear', data: null, transient: true });
+  writeData({ type: 'data-documentDelta', data: streamMarkdown, transient: true });
+  writeData({ type: 'data-finish', data: null, transient: true });
+
+  const finalMarkdown = markUnresolvedInMarkdown(protocolToMarkdown(patchedOut));
+
+  try {
+    const docxBuffer = await generateProtocolDocx(patchedOut);
+    writeData({
+      type: 'data-docx',
+      data: {
+        content: docxBuffer.toString('base64'),
+        filename: `Протокол_обследования_${patchedOut.protocolNumber.replace(/[^0-9]/g, '')}_${patchedOut.meetingDate.replace(/\./g, '-')}.docx`,
+      },
+    });
+  } catch (e) {
+    console.warn('[protocol-patch] DOCX не собран:', (e as Error)?.message);
+  }
+
+  await saveConversationProtocolJson(conversationId, patchedOut).catch(() => {});
+
+  const changed = applied.applied
+    .map((e) => `• «${e.find.slice(0, 70)}» → «${e.replace.slice(0, 70)}»`)
+    .join('\n');
+  const noteId = `patch-${Date.now()}`;
+  dataStream.write({ type: 'text-start', id: noteId });
+  dataStream.write({
+    type: 'text-delta',
+    id: noteId,
+    delta: `Правка внесена точечно, остальной текст протокола не менялся.\n${changed}`,
+  });
+  dataStream.write({ type: 'text-end', id: noteId });
+
+  return finalMarkdown;
+}
 
 /** Визуально помечает в markdown-панели места, требующие уточнения (просьба заказчика). */
 function markUnresolvedInMarkdown(md: string): string {
