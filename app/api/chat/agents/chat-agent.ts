@@ -163,8 +163,17 @@ function detectFixRequest(text: string): boolean {
   const t = (text || "").toLowerCase();
   if (!t) return false;
   if (t.includes("замечан") || t.includes("исправь") || t.includes("исправить")) return true;
-  if (t.includes("обнови") && (t.includes("документ") || t.includes("протокол"))) return true;
-  if (t.includes("переделай") && (t.includes("документ") || t.includes("протокол"))) return true;
+  const refersToDocument =
+    t.includes("документ") ||
+    t.includes("протокол") ||
+    t.includes("правой части") ||
+    t.includes("правую часть") ||
+    t.includes("прав панел") ||
+    t.includes("правой панел") ||
+    t.includes("панел");
+  if (t.includes("обнови") && refersToDocument) return true;
+  if (t.includes("переделай") && refersToDocument) return true;
+  if (t.includes("поправ") && refersToDocument) return true;
   return false;
 }
 
@@ -428,11 +437,24 @@ export async function runChatAgent(
       // обновляется. Детектируем это и генерируем документ детерминированно.
       if (!sink.markdown || sink.markdown.trim().length === 0) {
         const t = lastAssistantText.trim();
-        const textualToolJson = /^\{\s*"?reasonBrief"?\s*:/i.test(t);
+        // Модель нередко «протекает» аргументами инструмента в текст: раньше
+        // ловили только строку, НАЧИНАЮЩУЮСЯ с `{`. Но на практике leak выглядит
+        // как `["reasonBrief": …]`, `("reasonBrief": …)` или встроен в середину
+        // ответа (см. скриншот с ЦОТ→ЦОД). `reasonBrief` — внутреннее имя параметра
+        // инструмента, в русском ответе пользователю оно не встречается никогда,
+        // поэтому его наличие ГДЕ УГОДНО в тексте — надёжный признак утечки tool-call.
+        const textualToolJson = /"?reasonBrief"?\s*:/i.test(t);
         const claimsUpdated =
           /(обновл|внес|внёс|исправл|замен|сформирован|правк[аи].{0,20}(принят|учтен|учтён))/i.test(t);
         const isQuoteEdit = lastUserText.trim().startsWith('[Цитата из протокола]');
-        const editIntent = hasDocument && (hasFixRequest || isQuoteEdit);
+        // Раньше требовали hasFixRequest/isQuoteEdit — но detectFixRequest ловит только
+        // узкий набор формулировок («обнови документ/протокол», «замечания», «исправь»).
+        // Если пользователь просит иначе («поправь правую часть», «обнови панель» и т.п.)
+        // и модель НЕ распознала это как триггер для инструмента, но всё равно текстом
+        // заявляет об обновлении — это тот самый баг «raz na raz»: сообщение есть,
+        // панель не меняется. hasDocument + claimsUpdated + отсутствие вопроса уже
+        // достаточно специфичны, чтобы не срабатывать на посторонние ответы.
+        const editIntent = hasDocument;
         const shouldForce =
           textualToolJson || (editIntent && claimsUpdated && !t.includes('?'));
         if (shouldForce) {
@@ -460,7 +482,19 @@ export async function runChatAgent(
             });
             writer.write({ type: "text-end", id: okId });
           } catch (e) {
+            // Раньше ошибка тут только логировалась — пользователь видел исходное
+            // «правки внесены» от модели и считал, что всё обновилось, хотя панель
+            // осталась старой. Теперь явно сообщаем о сбое в чате.
             console.error("🛟 tool fallback failed:", e);
+            const failId = `tool-fallback-fail-${Date.now()}`;
+            writer.write({ type: "text-start", id: failId });
+            writer.write({
+              type: "text-delta",
+              id: failId,
+              delta:
+                "⚠️ Не удалось автоматически обновить документ в правой панели (ошибка формирования протокола). Попробуйте переформулировать правку или повторить запрос ещё раз.",
+            });
+            writer.write({ type: "text-end", id: failId });
           }
         }
       }

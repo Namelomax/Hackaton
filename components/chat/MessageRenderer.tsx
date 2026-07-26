@@ -59,6 +59,18 @@ const sanitizeUserText = (text: string) => {
   return { visible, hadHidden };
 };
 
+// Убирает «утёкший» в текст tool-call publishInvestigationProtocol: {"reasonBrief":…},
+// ["reasonBrief":…], ("reasonBrief":…). Закрывающую скобку ищем только в конце строки/
+// текста (lookahead), чтобы не отрезать реальный текст после фрагмента и не остановиться
+// на скобке внутри значения (напр. «ЦОД (центр обработки данных)»).
+const LEAKED_TOOL_CALL_RE = /[[({]\s*"?reasonBrief"?\s*:[\s\S]*?[\])}](?=\s*(?:\n|$))/gi;
+
+const stripLeakedToolCall = (text: string): string =>
+  String(text ?? '')
+    .replace(LEAKED_TOOL_CALL_RE, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
 /**
  * Extracts <think>...</think> content from text into a separate reasoning string.
  * Handles both complete tags and incomplete (streaming) open tags.
@@ -228,13 +240,25 @@ export const MessageRenderer = ({
             mediaType: p.mediaType,
           }));
 
-  // Сырые "текстовые tool-call" ({"reasonBrief": …}) не показываем — это
-  // аргументы инструмента, а не сообщение для пользователя.
-  const RAW_TOOL_JSON_RE = /^\s*\{\s*"?reasonBrief"?\s*:[\s\S]*\}\s*$/;
-  const textParts = rawParts.filter(
-    (part: any): part is { type: 'text'; text: string } =>
-      part.type === 'text' && !RAW_TOOL_JSON_RE.test(String(part.text ?? '')),
-  );
+  // Сырые "текстовые tool-call" не показываем — это аргументы инструмента
+  // publishInvestigationProtocol, а не сообщение для пользователя. Модель «протекает»
+  // ими в текст в разных обёртках: {"reasonBrief": …}, ["reasonBrief": …],
+  // ("reasonBrief": …) — иногда посреди осмысленного ответа. `reasonBrief` — внутреннее
+  // имя параметра, в нормальном ответе оно не встречается, поэтому такие фрагменты режем.
+  // Значение бывает с вложенными кавычками/скобками (напр. «ЦОД (центр обработки данных)»),
+  // поэтому закрываем фрагмент только на скобке в конце строки/текста, чтобы не отрезать
+  // реальный текст, идущий следом.
+  const textParts = rawParts
+    .filter((part: any) => part.type === 'text')
+    .map((part: any) => {
+      if (message.role !== 'assistant') return part;
+      const cleaned = stripLeakedToolCall(String(part.text ?? ''));
+      return cleaned === part.text ? part : { ...part, text: cleaned };
+    })
+    .filter(
+      (part: any): part is { type: 'text'; text: string } =>
+        message.role !== 'assistant' || String(part.text ?? '').trim().length > 0,
+    );
   const reasoningParts = rawParts.filter((part: any) => part.type === 'reasoning');
   const toolParts = rawParts.filter(
     (part: any) =>

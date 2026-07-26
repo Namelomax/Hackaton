@@ -180,8 +180,14 @@ export function resolveChatLanguageModel(options: ResolveChatModelOptions = {}) 
             const requestedMax =
               typeof parsed.max_tokens === 'number' ? parsed.max_tokens : cap;
             parsed.max_tokens = Math.min(requestedMax, cap);
-            // Keep model loaded in GPU memory indefinitely (default Ollama keep_alive is 5 min)
-            parsed.keep_alive = -1;
+            // keep_alive: сколько держать модель в VRAM после запроса.
+            // Раньше было жёстко -1 (вечно) — на общей карте это копило модели при
+            // переключении/RAG до OOM. Теперь конечный дефолт «30m» и override через
+            // OLLAMA_KEEP_ALIVE ('-1' — прежнее поведение, '300' — секунды, '10m' — строка).
+            const kaEnv = process.env.OLLAMA_KEEP_ALIVE?.trim();
+            parsed.keep_alive = kaEnv
+              ? (/^-?\d+$/.test(kaEnv) ? Number(kaEnv) : kaEnv)
+              : '30m';
 
             // Стриминг. Через прокси JupyterHub SSE часто буферизуется/обрывается,
             // поэтому по умолчанию форсим non-stream и сами заворачиваем ответ в SSE
