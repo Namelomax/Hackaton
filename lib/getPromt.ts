@@ -1117,6 +1117,49 @@ export async function getConversationMapping(
   return { mapping: {}, counters: {} };
 }
 
+/**
+ * Сохранить последний валидный Protocol JSON диалога (с реальными данными).
+ * Нужен для точечных правок: без базового объекта единственный вариант —
+ * пересобирать весь протокол заново, что переписывает и незатронутые места.
+ */
+export async function saveConversationProtocolJson(
+  conversationId: string,
+  protocol: unknown,
+): Promise<void> {
+  await connectDB();
+  const clean = String(conversationId).replace(/^conversations:/, '');
+  const rid = new RecordId('conversations', clean);
+  let payload: string;
+  try {
+    payload = JSON.stringify(protocol);
+  } catch {
+    return;
+  }
+  try {
+    await db.merge(rid, { document_json: payload } as any);
+  } catch (e) {
+    console.warn('saveConversationProtocolJson failed:', (e as Error)?.message);
+  }
+}
+
+/** Прочитать последний Protocol JSON диалога. null — если его ещё нет. */
+export async function getConversationProtocolJson(
+  conversationId: string,
+): Promise<unknown | null> {
+  await connectDB();
+  const clean = String(conversationId).replace(/^conversations:/, '');
+  try {
+    const rec = await db.select(new RecordId('conversations', clean));
+    const row: any = Array.isArray(rec) ? rec[0] : rec;
+    const raw = row?.document_json;
+    if (typeof raw === 'string' && raw.trim()) return JSON.parse(raw);
+    if (raw && typeof raw === 'object') return raw;
+  } catch (e) {
+    console.warn('getConversationProtocolJson failed:', (e as Error)?.message);
+  }
+  return null;
+}
+
 /** Сохранить анонимизированную preview-версию документа (для показа в UI). */
 export async function saveConversationPreview(
   conversationId: string,
