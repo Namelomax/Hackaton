@@ -121,21 +121,33 @@ export default function ChatPage() {
   const [isDocumentPanelVisible, setIsDocumentPanelVisible] = useState(true);
   const selectedPromptId: string | null = null;
 
+  /**
+   * Тело запроса для regenerate/edit. ДОЛЖНО совпадать с тем, что отправляет
+   * PromptInputWrapper при обычной отправке: без documentContent агент теряет
+   * текущий протокол правой панели и правки «не применяются».
+   */
+  const buildRetryBody = () => ({
+    selectedPromptId,
+    documentContent: engineDocumentRef.current?.content || undefined,
+    ...(conversationId ? { conversationId } : {}),
+    ...chatBody,
+  });
+
   const handleRegenerate = (messageId: string) => {
     const index = messages.findIndex(m => m.id === messageId);
     if (index === -1) return;
-    
+
     const message = messages[index];
     let newMessages;
-    
+
     if (message.role === 'user') {
       newMessages = messages.slice(0, index + 1);
     } else {
       newMessages = messages.slice(0, index);
     }
-    
+
     setMessages(newMessages);
-    regenerate({ body: { ...chatBody, messages: newMessages } });
+    regenerate({ body: { ...buildRetryBody(), messages: newMessages } });
   };
 
   const handleEdit = (messageId: string, newContent: string) => {
@@ -150,7 +162,7 @@ export default function ChatPage() {
     const newMessages = [...messages.slice(0, index), updatedMessage];
     
     setMessages(newMessages as any);
-    regenerate({ body: { ...chatBody, messages: newMessages } });
+    regenerate({ body: { ...buildRetryBody(), messages: newMessages } });
   };
 
   // Custom fetch to inject userId and conversationId into every chat request body
@@ -321,6 +333,7 @@ export default function ChatPage() {
   }, [authUser?.id, conversationId]);
 
   const lastErrorSignatureRef = useRef<string>('');
+  const lastErrorAtRef = useRef<number>(0);
   const errorRecoveryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function collectErrorText(err: any): string {
@@ -362,6 +375,17 @@ export default function ChatPage() {
     const raw = collectErrorText(err);
     const lower = raw.toLowerCase();
 
+    // Next.js вернул HTML-страницу ошибки (необработанное исключение в /api/chat).
+    // Её нельзя разбирать по подстрокам «401»/«api key» — внутри случайная разметка,
+    // из-за которой пользователь получал ложное «проверь OPENROUTER_API_KEY».
+    if (lower.includes('__next_error__') || lower.includes('internal server error')) {
+      return (
+        'Сервер не смог обработать запрос (500).\n' +
+        'Чаще всего это слишком большой контекст (расшифровка + документ + история) или сбой провайдера модели. ' +
+        'Попробуйте ещё раз, а если повторяется — начните новый чат или уменьшите объём вложений. Подробности — в логах сервера.'
+      );
+    }
+
     if (
       lower.includes('maximum context length') ||
       (lower.includes('context length') && lower.includes('tokens')) ||
@@ -398,8 +422,17 @@ export default function ChatPage() {
       const friendly = toUserFriendlyErrorMessage(error);
       const signature = friendly.trim();
       
-      // Показываем ошибку даже для abort-like, но всегда восстанавливаем работоспособность
-      if (signature && lastErrorSignatureRef.current === signature) {
+      // Дедуп только для «эха» одной и той же ошибки в рамках одного запроса
+      // (несколько onError подряд). Повтор той же ошибки в НОВОМ запросе обязан
+      // показываться: иначе пользователь отправляет правку и не видит вообще
+      // ничего — визуально «протоколер молчит».
+      const now = Date.now();
+      const isEcho =
+        Boolean(signature) &&
+        lastErrorSignatureRef.current === signature &&
+        now - lastErrorAtRef.current < 3000;
+      lastErrorAtRef.current = now;
+      if (isEcho) {
         // Всё равно обеспечиваем восстановление
         if (errorRecoveryTimeoutRef.current) clearTimeout(errorRecoveryTimeoutRef.current);
         errorRecoveryTimeoutRef.current = setTimeout(() => {

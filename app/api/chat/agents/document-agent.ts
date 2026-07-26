@@ -14,6 +14,7 @@ import { verifyProtocolSections } from '@/lib/protocol-verify';
 import { SGR_DOCUMENT_AGENT_PROMPT } from '@/lib/prompts/sgr-prompts';
 import { PROTOCOL_REGULATION } from '@/lib/prompts/regulation';
 import { ollamaProtocolMaxOutputTokens } from '@/lib/ollama-limits';
+import { consumePartialObjectStream } from './partial-object-stream';
 import {
   buildProtocolDraftFromChat,
   formatChatDraftForPrompt,
@@ -114,11 +115,18 @@ export async function runDocumentAgent(context: AgentContext) {
         writer.write({ type: 'text-end', id: doneId });
       } catch (error) {
         console.error('Document generation error:', error);
+        // Панель уже очищена (data-clear) перед стримом — если генерация упала,
+        // возвращаем предыдущую версию протокола, иначе пользователь теряет документ.
+        if (typeof documentContent === 'string' && documentContent.trim()) {
+          writer.write({ type: 'data-clear', data: null, transient: true });
+          writer.write({ type: 'data-documentDelta', data: documentContent, transient: true });
+        }
+        const detail = error instanceof Error && error.message ? ` ${error.message}` : '';
         writer.write({ type: 'text-start', id: 'error' });
         writer.write({
           type: 'text-delta',
           id: 'error',
-          delta: 'Произошла ошибка при формировании документа. Попробуйте снова.',
+          delta: `Не удалось сформировать документ.${detail} Предыдущая версия протокола сохранена — попробуйте ещё раз.`,
         });
         writer.write({ type: 'text-end', id: 'error' });
       }
@@ -275,6 +283,16 @@ export async function generateFinalDocument(
       ...(abortSignal ? { abortSignal } : {}),
     });
 
+    // ВАЖНО: обработчик к streamResult.object вешаем СРАЗУ, до разбора
+    // partialObjectStream. Если провайдер отвалится в самом начале (пустой ответ,
+    // 4xx, обрыв), промис `object` отклонится, пока мы ещё читаем partial-поток —
+    // без подписчика это unhandledRejection, который на Vercel убивает функцию
+    // (FUNCTION_INVOCATION_FAILED → 500 без единого байта ответа клиенту).
+    const objectSettled = streamResult.object.then(
+      (value) => ({ ok: true as const, value: value as unknown }),
+      (error) => ({ ok: false as const, error: error as unknown }),
+    );
+
     let lastMarkdown = '';
     let lastTitle = '';
     // Track exactly what has been sent to the frontend to compute true deltas.
@@ -282,17 +300,17 @@ export async function generateFinalDocument(
     writeData({ type: 'data-clear', data: null, transient: true });
     let sentContent = '';
 
-    for await (const partial of streamResult.partialObjectStream) {
+    const partialStreamError = await consumePartialObjectStream(streamResult.partialObjectStream, async (partial) => {
       const safeProtocol = coerceProtocolPartial(partial);
 
       let nextMarkdown = '';
       try {
         nextMarkdown = protocolToMarkdown(safeProtocol);
       } catch {
-        continue;
+        return;
       }
 
-      if (!nextMarkdown || nextMarkdown === lastMarkdown) continue;
+      if (!nextMarkdown || nextMarkdown === lastMarkdown) return;
 
       if (safeProtocol.protocolNumber) {
         const nextTitle = `ПРОТОКОЛ ОБСЛЕДОВАНИЯ ${safeProtocol.protocolNumber}`.trim();
@@ -318,16 +336,35 @@ export async function generateFinalDocument(
 
       lastMarkdown = nextMarkdown;
       markdownContent = nextMarkdown;
+    });
+    if (partialStreamError) {
+      console.warn(
+        '[generateFinalDocument] partial structured stream failed; continuing with final object recovery:',
+        partialStreamError,
+      );
     }
 
     let validated: Protocol;
     let rawFinal: unknown;
-    try {
-      rawFinal = await streamResult.object;
-    } catch (objErr) {
+    const settled = await objectSettled;
+    if (settled.ok) {
+      rawFinal = settled.value;
+    } else {
+      const objErr = settled.error;
       const fallbackText = extractNoObjectGeneratedText(objErr);
       const recovered = fallbackText ? parseLooseJsonObject(fallbackText) : null;
-      if (!recovered) throw objErr;
+      if (!recovered) {
+        // Пустой ответ модели (finishReason='other', text='') — типичная беда
+        // бесплатных облачных слагов. Понятное сообщение вместо стектрейса.
+        const raw = String((objErr as any)?.message ?? objErr ?? '');
+        if (/no object generated|unexpected end of json input/i.test(raw)) {
+          throw new Error(
+            'Модель вернула пустой ответ при сборке протокола (перегрузка или лимит бесплатного слага). ' +
+              'Повторите генерацию или переключитесь на локальную модель.',
+          );
+        }
+        throw objErr;
+      }
       rawFinal = recovered;
       console.warn('[generateFinalDocument] recovered JSON from fenced / non-schema LLM output');
     }

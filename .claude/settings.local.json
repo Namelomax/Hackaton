@@ -63,7 +63,13 @@
       "Bash(python e2e_long.py L2)",
       "Bash(grep -oE \"договор[^,.;]{0,40}№[^,.;]{0,25}|№ ?47[^ ]{0,5}|10\\\\.01\\\\.2026|12\\\\.01\\\\.2026|01 марта 2026|марта 2026\" combined_test_vse.txt)",
       "Bash(npx jest *)",
-      "Bash(grep -oE \"Ответственный: [^|<]{3,40}\" protocol_run7.md)"
+      "Bash(grep -oE \"Ответственный: [^|<]{3,40}\" protocol_run7.md)",
+      "Bash(python provider_probe.py send)",
+      "Bash(curl -s -m 30 -o /dev/null -w \"root=%{http_code}\\\\n\" -H \"Authorization: Bearer 1913de7b07f34d61a28792a88f613767\" \"https://jh.interfonica.cloud/user/ts-bdfzametjv73gxxu/proxy/8000/\")",
+      "Bash(curl -s -m 30 -w \"\\\\nanonymize=%{http_code}\\\\n\" -H \"Authorization: Bearer 1913de7b07f34d61a28792a88f613767\" -H \"Content-Type: application/json\" -d '{\"text\":\"Иванов Иван работает в ООО Ромашка\"}' \"https://jh.interfonica.cloud/user/ts-bdfzametjv73gxxu/proxy/8000/anonymize\")",
+      "Bash(curl -s -m 25 -H 'Authorization: Bearer 1913de7b07f34d61a28792a88f613767' https://jh.interfonica.cloud/user/ts-bdfzametjv73gxxu/proxy/11434/api/tags)",
+      "Bash(node anon_probe.mjs)",
+      "Bash(python provider_probe.py edit)"
     ],
     "additionalDirectories": [
       "d:\\Jacob\\Hakaton\\.claude"
