@@ -340,6 +340,24 @@ async function extractXlsxTextFromAttachment(att: any): Promise<string | null> {
   return bestEffortBinaryText(buf);
 }
 
+async function extractPlainTextFromAttachment(att: any): Promise<string | null> {
+  const buf = await urlToBuffer(att?.url || att?.data);
+  if (!buf) return null;
+  for (const enc of ['utf8', 'utf16le', 'latin1'] as const) {
+    try {
+      const text = buf.toString(enc).trim();
+      if (text && !text.includes('�')) return text;
+    } catch {}
+  }
+  return bestEffortBinaryText(buf);
+}
+
+async function extractRtfTextFromAttachment(att: any): Promise<string | null> {
+  const buf = await urlToBuffer(att?.url || att?.data);
+  if (!buf) return null;
+  return bestEffortBinaryText(buf);
+}
+
 async function extractPptxTextFromAttachment(att: any): Promise<string | null> {
   // Поддерживаем PPTX и best-effort для PPT (application/vnd.ms-powerpoint)
   if (!att) return null;
@@ -613,6 +631,10 @@ export async function POST(req: Request) {
             extracted = await extractXlsxTextFromAttachment(att);
           } else if (ext === 'ppt' || ext === 'pptx') {
             extracted = await extractPptxTextFromAttachment(att);
+          } else if (mt === 'application/rtf' || mt === 'text/rtf' || ext === 'rtf') {
+            extracted = await extractRtfTextFromAttachment(att);
+          } else if ((typeof mt === 'string' && mt.startsWith('text/')) || ext === 'txt' || ext === 'md' || ext === 'markdown' || ext === 'csv') {
+            extracted = await extractPlainTextFromAttachment(att);
           }
         } catch (err) {
           console.error('Failed to parse attachment', name, mt, err);
