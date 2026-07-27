@@ -6,6 +6,10 @@
  * к УЖЕ собранному протоколу перед выводом в DOCX. Все функции чистые и тестируемые.
  */
 import type { Protocol } from '@/lib/schemas/protocol-schema';
+import { parseRuDate, formatRuDate, resolveRelativeDatesInText } from '@/lib/date-context';
+
+/** Единая формулировка незаполненного места во всём документе. */
+export const UNRESOLVED_MARKER = 'требует уточнения';
 
 /**
  * Корни названий месяцев для разбора словесных дат («1 марта 2026», «24 февраля
@@ -357,6 +361,172 @@ function flagRelativeInText(text: string, label: string, flags: string[]): strin
     flags.push(`${label}: относительная дата «${m}» — требуется конкретная дата ДД.ММ.ГГГГ`);
     return `${m} ${ALREADY_FLAGGED}`;
   });
+}
+
+/**
+ * Переводит относительные выражения в конкретные даты, считая от даты встречи.
+ * Работает ДО flagRelativeDates: что удалось вычислить — станет датой, что не
+ * удалось («скоро», «в ближайшее время») — уйдёт под маркер уточнения.
+ * Все вычисленные даты возвращаются списком, чтобы показать их пользователю:
+ * это расчёт кода, а не факт из расшифровки, и его нужно подтвердить.
+ */
+export function resolveRelativeDates(p: Protocol): { protocol: Protocol; notes: string[] } {
+  const anchor = parseRuDate(p.meetingDate);
+  if (!anchor) return { protocol: p, notes: [] };
+
+  const notes: string[] = [];
+  const fix = (text: string, label: string): string => {
+    if (!text) return text;
+    const { text: next, resolutions } = resolveRelativeDatesInText(text, anchor);
+    for (const r of resolutions) {
+      notes.push(`${label}: «${r.from}» → ${r.to} (рассчитано от даты встречи ${p.meetingDate}) — проверьте`);
+    }
+    return next;
+  };
+
+  const topics = p.meetingContent.topics.map((t) => ({
+    ...t,
+    discussed: fix(t.discussed, t.title || 'Обсудили'),
+    decided: fix(t.decided, t.title || 'Решили'),
+  }));
+  const summary = p.meetingContent.summary.map((r) => ({
+    ...r,
+    decision: fix(r.decision, r.question || 'Резюме'),
+  }));
+
+  return {
+    protocol: { ...p, meetingContent: { topics, summary } },
+    notes: [...new Set(notes)],
+  };
+}
+
+/**
+ * Дата встречи, взятая «с потолка». Типовой сбой: модель видит в системном
+ * промпте сегодняшнюю дату и ставит её в шапку, хотя в расшифровке даты нет.
+ * Если дата встречи равна сегодняшней и при этом не встречается ни в
+ * расшифровке, ни в ответах пользователя — это выдумка.
+ */
+export function dropInventedMeetingDate(
+  p: Protocol,
+  sourceText: string,
+  userTexts: string[] = [],
+  today: Date = new Date(),
+): { protocol: Protocol; note: string | null } {
+  const meeting = parseRuDate(p.meetingDate);
+  if (!meeting) return { protocol: p, note: null };
+  if (formatRuDate(meeting) !== formatRuDate(today)) return { protocol: p, note: null };
+
+  const known = new Set([
+    ...extractNormalizedDates(sourceText || ''),
+    ...extractNormalizedDates(userTexts.join('\n')),
+  ]);
+  const key = `${meeting.getDate()}.${meeting.getMonth() + 1}.${meeting.getFullYear()}`;
+  if (known.has(key)) return { protocol: p, note: null };
+
+  return {
+    protocol: { ...p, meetingDate: UNRESOLVED_MARKER },
+    note: `Дата встречи: в расшифровке её нет, подставлена сегодняшняя (${p.meetingDate}) — заменена на «${UNRESOLVED_MARKER}», уточните`,
+  };
+}
+
+/** «№№14», «№ №14», «No14» в номерах → чистый номер: рендер сам добавит «№». */
+export function normalizeProtocolNumbers(p: Protocol): Protocol {
+  const clean = (value?: string) => {
+    const s = String(value ?? '').trim();
+    if (!s) return value;
+    return s.replace(/^(?:№|N[оo]?|#)\s*/i, '').replace(/^(?:№|N[оo]?|#)\s*/i, '').trim();
+  };
+  return {
+    ...p,
+    protocolNumber: clean(p.protocolNumber) ?? p.protocolNumber,
+    ...(p.contractNumber ? { contractNumber: clean(p.contractNumber) } : {}),
+  };
+}
+
+/**
+ * Единый маркер незаполненного места. Модель произвольно чередует «требует
+ * уточнения» и «подлежит уточнению» в одном документе — заказчику это видно
+ * как небрежность.
+ */
+export function unifyUnresolvedMarkers(p: Protocol): Protocol {
+  const fix = (value: unknown): any => {
+    if (typeof value === 'string') {
+      return value
+        .replace(/подлежащ(ий|ая|ее|ие|его|ую)\s+уточнени[юя]/gi, 'требующий уточнения')
+        .replace(/подлежит\s+уточнению/gi, UNRESOLVED_MARKER)
+        .replace(/нужд[а-яё]*\s+в\s+уточнении/gi, UNRESOLVED_MARKER);
+    }
+    if (Array.isArray(value)) return value.map(fix);
+    if (value && typeof value === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = fix(v);
+      return out;
+    }
+    return value;
+  };
+  return fix(p) as Protocol;
+}
+
+/** Основа имени без падежного окончания: «Сергея» и «Сергей» → «Серге». */
+function nameStem(name: string): string {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .split(/\s+/)
+    .map((word) => word.replace(/[аеиоуыэюяйь]$/i, ''))
+    .join(' ');
+}
+
+/**
+ * Убирает дубли участников, появившиеся из-за падежей: пользователь пишет
+ * «Сергея включай», модель заводит и «Сергей», и «Сергея». Оставляем первую
+ * запись, при равенстве основ предпочитаем ту, у которой заполнена должность.
+ */
+export function dedupeParticipants(p: Protocol): { protocol: Protocol; notes: string[] } {
+  const notes: string[] = [];
+  const dedupeList = (list: any[] | undefined, side: string) => {
+    if (!Array.isArray(list)) return list;
+    const byStem = new Map<string, any>();
+    for (const row of list) {
+      const stem = nameStem(row?.fullName ?? '');
+      if (!stem) continue;
+      const existing = byStem.get(stem);
+      if (!existing) {
+        byStem.set(stem, row);
+        continue;
+      }
+      // ФИО берём из ПЕРВОЙ записи: она пришла из расшифровки и стоит в
+      // именительном падеже, тогда как дубль обычно родился из склонения в
+      // сообщении пользователя («Сергея включай»). Должность добираем из той
+      // записи, где она заполнена.
+      const existingHasPosition = !NO_POSITION_RX.test(String(existing?.position ?? ''));
+      const rowHasPosition = !NO_POSITION_RX.test(String(row?.position ?? ''));
+      const keep = existingHasPosition || !rowHasPosition
+        ? existing
+        : { ...existing, position: row.position };
+      byStem.set(stem, keep);
+      notes.push(
+        `Участники (${side}): «${row?.fullName}» — дубль «${existing?.fullName}» в другом падеже, удалён`,
+      );
+    }
+    return [...byStem.values()];
+  };
+
+  const participants: any = { ...(p as any).participants };
+  if (Array.isArray(participants?.customer?.people)) {
+    participants.customer = {
+      ...participants.customer,
+      people: dedupeList(participants.customer.people, 'Заказчик'),
+    };
+  }
+  if (Array.isArray(participants?.executor?.people)) {
+    participants.executor = {
+      ...participants.executor,
+      people: dedupeList(participants.executor.people, 'Исполнитель'),
+    };
+  }
+  return { protocol: { ...p, participants }, notes: [...new Set(notes)] };
 }
 
 /** Помечает относительные даты в содержательных полях протокола. */

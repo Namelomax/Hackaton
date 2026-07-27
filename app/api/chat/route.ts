@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation } from '@/lib/getPromt';
 import { resolveChatLanguageModel } from '@/lib/resolve-chat-model';
 import { normalizeCloudModel } from '@/lib/chat-models';
+import { buildDateContextBlock } from '@/lib/date-context';
 import { PROTOCOL_CHAT_TIMECODE_APPENDIX } from '@/lib/protocol-timecodes';
 import { analyzeTranscriptSlots, formatSlotScanForPrompt } from '@/lib/protocol-slot-scan';
 import { fetchRagSnippet } from '@/lib/rag-client';
@@ -1086,16 +1087,9 @@ export async function POST(req: Request) {
     }
   }
 
-  // Inject current date + day-of-week so the LLM can resolve relative dates ("до конца недели" etc.)
-  {
-    const DAY_NAMES_RU = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
-    const now = new Date();
-    const dd = String(now.getDate()).padStart(2, '0');
-    const mm = String(now.getMonth() + 1).padStart(2, '0');
-    const yyyy = now.getFullYear();
-    const dayName = DAY_NAMES_RU[now.getDay()];
-    systemPrompt += `\n\n[КОНТЕКСТ ДАТЫ: Текущая дата — ${dd}.${mm}.${yyyy} (${dayName}). Используй для вычисления абсолютных дат из относительных выражений. Если выражение требует знания дня недели даты встречи и ты не можешь вычислить точную дату — задай уточняющий вопрос пользователю.]`;
-  }
+  // Справка о сегодняшней дате: одна и та же для чат-агента и агента документа
+  // (lib/date-context.ts), чтобы «сегодня» не подменяло дату встречи.
+  systemPrompt += buildDateContextBlock();
 
   // Режим анонимизации: жёстко запрещаем модели выдумывать имена и подставлять
   // примеры из системного промпта вместо плейсхолдеров.
