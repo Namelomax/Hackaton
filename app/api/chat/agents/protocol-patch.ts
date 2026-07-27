@@ -17,7 +17,7 @@ import { generateObject } from 'ai';
 import { z } from 'zod';
 import type { Protocol } from '@/lib/schemas/protocol-schema';
 import { documentReasoningOptions, formatUsage } from '@/lib/reasoning-options';
-import { buildDateContextBlock, parseRuDate } from '@/lib/date-context';
+import { buildDateContextBlock, parseRuDate, resolveRelativeDatesInText } from '@/lib/date-context';
 
 export type ProtocolEdit = { find: string; replace: string };
 
@@ -75,14 +75,28 @@ export async function planProtocolPatch(options: {
   abortSignal?: AbortSignal;
 }): Promise<ProtocolPatchPlan> {
   const { model, documentMarkdown, userRequest, abortSignal } = options;
-  // Планировщику нужна та же справка о дате, что и агенту документа: без неё
-  // он не знает, какое «завтра», и выдумывает. Реальный сбой: на просьбу
-  // «все сроки на завтра» при сегодняшнем 28.07.2026 он проставил 20.06.2025.
+  // Текст просьбы НЕ переписываем — решает модель. Но если в ней есть
+  // относительная дата, считаем её и кладём рядом готовой подсказкой: модель
+  // сама плохо считает от «сегодня» (выдавала то 20.06.2025, то сегодняшнее
+  // число вместо завтрашнего), а с посчитанным значением ошибиться негде.
+  const today = new Date();
+  const resolved = resolveRelativeDatesInText(userRequest, today);
+  const dateHint = resolved.resolutions.length
+    ? `\n\n[РАСЧЁТ ДАТ ПО ПРОСЬБЕ: ${resolved.resolutions
+        .map((r) => `«${r.from}» = ${r.to}`)
+        .join('; ')}. Используй именно эти значения.]`
+    : '';
+  if (dateHint) console.log(`[protocol-patch] подсказка по датам:${dateHint.trim()}`);
+
+  // Справку о дате кладём В НАЧАЛО: в хвосте промпта длиной в десятки тысяч
+  // символов модель её попросту не замечала.
   const prompt =
+    buildDateContextBlock(today).trim() +
+    '\n\n' +
     PATCH_PLANNER_PROMPT.replace('{{DOCUMENT}}', documentMarkdown).replace(
       '{{REQUEST}}',
-      userRequest,
-    ) + buildDateContextBlock();
+      userRequest + dateHint,
+    );
 
   try {
     const result = await generateObject({
@@ -200,6 +214,15 @@ export function applyEditsToProtocol(
       const normalized = find.replace(/⚠️/g, '').replace(/\s{2,}/g, ' ').trim();
       if (normalized && normalized !== find && countOccurrences(current, normalized) > 0) {
         find = normalized;
+      }
+    }
+
+    // Хвостовая пунктуация: модель дописывает точку, которой в поле нет
+    // («…Ответственный: Исполнитель, Заказчик.» против «…Заказчик» в JSON).
+    if (countOccurrences(current, find) === 0) {
+      const trimmed = find.replace(/[.,;:\s]+$/u, '');
+      if (trimmed && trimmed !== find && countOccurrences(current, trimmed) > 0) {
+        find = trimmed;
       }
     }
 
