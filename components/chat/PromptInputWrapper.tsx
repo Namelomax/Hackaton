@@ -238,9 +238,21 @@ export const PromptInputWrapper = ({
         if (!res) throw new Error('нет ответа от /api/anonymize');
         if (res.status === 503) {
           setPreviewOpen(false);
-          toast.warning('Анонимизатор недоступен', {
-            description: 'Документ будет обработан локальной моделью (данные не уходят в облако).',
-          });
+          // Сервер различает «не отвечает» и «не успел за бюджет»: во втором
+          // случае анонимизатор жив, и писать «недоступен» — обманывать.
+          let info: any = null;
+          try {
+            info = JSON.parse(await res.clone().text());
+          } catch {}
+          if (info?.timeout) {
+            toast.warning('Анонимизация не успела', {
+              description: `Обработка заняла больше ${info.elapsedSec ?? '—'} с. Отправляю через локальную модель (данные не уходят в облако).`,
+            });
+          } else {
+            toast.warning('Анонимизатор недоступен', {
+              description: 'Документ будет обработан локальной моделью (данные не уходят в облако).',
+            });
+          }
           return 'fallback';
         }
         // Тело может оказаться НЕ JSON: при таймауте функции Vercel отдаёт

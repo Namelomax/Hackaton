@@ -7,3 +7,22 @@ $ next dev --turbopack
 
 ✓ Starting...
 ✓ Ready in 661ms
+ GET / 200 in 767ms (compile: 250ms, render: 517ms)
+[SurrealDB] connected ns=demo db=wild_mountain host=wild-mountain-06cupioiq9vpbadmqsbcb609a8.aws-euw1.surreal.cloud (users persist only in this database)
+ GET /api/conversations?userId=users%3Ayi6xqu8ahpa7hpi5u9at 200 in 6.8s (compile: 62ms, render: 6.8s)
+ GET /api/anonymize?conversationId=conversations%3A46lbykpjrvhd3xs0xruk 200 in 417ms (compile: 67ms, render: 350ms)
+📨 chat req: msgs=7 user=anon conv=conversations:46lbykpjrvhd3xs0xruk doc=true
+🔒 anonymize active: mapping=8 entries → nvidia/nemotron-3-ultra-550b-a55b:free
+📐 context: system≈1681tok doc≈665tok inline=false msgs=7 anon=true
+🧭 Main agent: chat stream + publishInvestigationProtocol tool
+🤖 streamText start: msgs=9 dialog=7 input≈14891tok (sys=9364c) maxOut=16000 rag=false inlineDoc=false
+  ↳ step done (attempt 0): reason=stop tools=[none] tokens=13750 outChars=246 maxOut=16000
+🛟 tool fallback: textualJson=false editIntent=true → generateFinalDocument напрямую
+[generateFinalDocument] chat draft: agenda=0 topics=0 summary=0 approval_cust=0 corrections=4
+[protocol-patch] база найдена, планирую точечные замены
+[protocol-patch] план получен, in=3307 out=37 reasoning=0
+[protocol-patch] замена применена во всех 2 местах: "чат проекта в Telegram"
+[protocol-patch] применено замен: 1 (без пересборки документа)
+✅ agent done: 7268ms total, protocol=7145 chars
+ POST /api/chat 200 in 30.6s (compile: 256ms, render: 30.4s)
+ PUT /api/conversations 200 in 1799ms (compile: 5ms, render: 1794ms)

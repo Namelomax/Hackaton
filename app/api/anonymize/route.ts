@@ -56,21 +56,38 @@ export async function POST(req: Request) {
     return Response.json({ ok: false, error: 'нет текста для анонимизации' }, { status: 400 });
   }
 
-  // Бюджет на весь запрос. Без него функция висит до лимита платформы, и
-  // Vercel отдаёт СВОЙ текст «An error occurred…» вместо JSON — клиент падал на
-  // разборе с «Unexpected token 'A'». Лучше честный 503: UI уйдёт на локальную
-  // модель. Держать заметно меньше maxDuration.
-  const budgetMs = Number(process.env.ANONYMIZE_ROUTE_BUDGET_MS ?? 110000);
+  // Собственного таймаута здесь НЕТ. Пробовали ограничивать запрос (110 с) —
+  // получили обратный эффект: анонимизатор был жив и заканчивал на второй
+  // минуте, а мы обрывали его и писали «анонимизатор недоступен». Когда пора
+  // прекращать, решает платформа по maxDuration; клиент при этом не падает —
+  // он защищённо разбирает не-JSON ответ.
+  //
+  // Ограничение можно вернуть точечно через ANONYMIZE_ROUTE_BUDGET_MS (мс),
+  // по умолчанию выключено.
+  const budgetMs = Number(process.env.ANONYMIZE_ROUTE_BUDGET_MS ?? 0);
+  const startedAt = Date.now();
+  let timedOut = false;
   let budgetTimer: ReturnType<typeof setTimeout> | undefined;
-  const budget = new Promise<never>((_, reject) => {
-    budgetTimer = setTimeout(
-      () => reject(new AnonymizerUnavailableError(`анонимизация не уложилась в ${budgetMs} мс`)),
-      budgetMs,
-    );
-  });
+  const work = anonymizeNewText(fullText, conversationId);
+  const raced =
+    budgetMs > 0
+      ? Promise.race([
+          work,
+          new Promise<never>((_, reject) => {
+            budgetTimer = setTimeout(() => {
+              timedOut = true;
+              reject(
+                new AnonymizerUnavailableError(
+                  `анонимизация не завершилась за ${Math.round(budgetMs / 1000)} с`,
+                ),
+              );
+            }, budgetMs);
+          }),
+        ])
+      : work;
 
   try {
-    const result = await Promise.race([anonymizeNewText(fullText, conversationId), budget]);
+    const result = await raced;
     if (conversationId) {
       try {
         await saveConversationPreview(conversationId, result.anonymizedText);
@@ -87,8 +104,15 @@ export async function POST(req: Request) {
     });
   } catch (e) {
     if (e instanceof AnonymizerUnavailableError) {
+      // Разделяем «сервис не отвечает» и «не успел за бюджет»: во втором случае
+      // анонимизатор жив, и говорить пользователю «недоступен» — вводить в
+      // заблуждение (он видит в логах, что тот работает).
+      const elapsed = Math.round((Date.now() - startedAt) / 1000);
+      console.warn(
+        `[anonymize] ${timedOut ? 'бюджет исчерпан' : 'сервис недоступен'} за ${elapsed} с: ${e.message}`,
+      );
       return Response.json(
-        { ok: false, unavailable: true, error: e.message },
+        { ok: false, unavailable: true, timeout: timedOut, elapsedSec: elapsed, error: e.message },
         { status: 503 },
       );
     }
