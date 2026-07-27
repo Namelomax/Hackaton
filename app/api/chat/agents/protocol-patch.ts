@@ -17,6 +17,7 @@ import { generateObject } from 'ai';
 import { z } from 'zod';
 import type { Protocol } from '@/lib/schemas/protocol-schema';
 import { documentReasoningOptions, formatUsage } from '@/lib/reasoning-options';
+import { buildDateContextBlock, parseRuDate } from '@/lib/date-context';
 
 export type ProtocolEdit = { find: string; replace: string };
 
@@ -53,7 +54,8 @@ const PATCH_PLANNER_PROMPT = `Ты — редактор готового про�
 2.1. Если правка касается КОНКРЕТНОГО места (срок в одном пункте, решение по одному вопросу), оставь "all": false — тогда "find" обязан встречаться РОВНО ОДИН раз, добавь соседний текст для уникальности. Никогда не ставь "all": true для повторяющихся служебных фраз вроде «Срок: требует уточнения» — они относятся к разным пунктам.
 3. Меняй ТОЛЬКО то, что прямо просит пользователь. Не улучшай стиль, не переставляй ФИО, не трогай соседние предложения.
 4. Если пользователь уточняет то, что помечено «⚠️ требует уточнения» — заменяй именно маркер (вместе с пояснением в скобках, если оно есть) на конкретное значение.
-5. Относительные даты («на следующей неделе», «в четверг») заменяй на конкретные ДД.ММ.ГГГГ, только если пользователь их назвал.
+5. Даты. «Завтра», «послезавтра», «через неделю», «в четверг» считай ОТ ДАТЫ ОБРАБОТКИ из блока [КОНТЕКСТ ДАТЫ] ниже, а сроки внутри протокола — от даты встречи из шапки. Никогда не бери дату «из головы»: если посчитать не от чего, оставь «требует уточнения».
+5.1. Срок не может быть РАНЬШЕ даты встречи — это будущее действие. Получилась более ранняя дата — значит расчёт неверный, оставь маркер уточнения.
 6. canPatch = false, если правка требует пересборки структуры: добавить/убрать участника, пункт повестки, раздел, переписать «Обсудили» целиком, поменять нумерацию. В этом случае edits оставь пустым.
 7. Ничего не выдумывай: значений, которых нет в сообщении пользователя, в "replace" быть не должно.
 
@@ -73,10 +75,14 @@ export async function planProtocolPatch(options: {
   abortSignal?: AbortSignal;
 }): Promise<ProtocolPatchPlan> {
   const { model, documentMarkdown, userRequest, abortSignal } = options;
-  const prompt = PATCH_PLANNER_PROMPT.replace('{{DOCUMENT}}', documentMarkdown).replace(
-    '{{REQUEST}}',
-    userRequest,
-  );
+  // Планировщику нужна та же справка о дате, что и агенту документа: без неё
+  // он не знает, какое «завтра», и выдумывает. Реальный сбой: на просьбу
+  // «все сроки на завтра» при сегодняшнем 28.07.2026 он проставил 20.06.2025.
+  const prompt =
+    PATCH_PLANNER_PROMPT.replace('{{DOCUMENT}}', documentMarkdown).replace(
+      '{{REQUEST}}',
+      userRequest,
+    ) + buildDateContextBlock();
 
   try {
     const result = await generateObject({
@@ -163,12 +169,29 @@ export function applyEditsToProtocol(
   let current = protocol;
   const applied: ProtocolEdit[] = [];
   const warnings: string[] = [];
+  // Патч не проходит через гарды полной сборки (enforceDateProvenance и др.),
+  // поэтому выдуманную дату здесь ловить больше некому. Минимальная проверка:
+  // срок не может быть раньше даты встречи.
+  const meetingDate = parseRuDate((protocol as any)?.meetingDate);
 
   for (const edit of edits) {
     let find = String(edit?.find ?? '');
     const replace = String(edit?.replace ?? '');
     if (!find.trim()) continue;
     if (find === replace) continue;
+
+    if (meetingDate && /срок/i.test(find + ' ' + replace)) {
+      const bad = [...replace.matchAll(/\b(\d{2})\.(\d{2})\.(\d{4})\b/g)]
+        .map((m) => ({ raw: m[0], date: parseRuDate(m[0]) }))
+        .find((d) => d.date && d.date.getTime() < meetingDate.getTime());
+      if (bad) {
+        warnings.push(
+          `срок ${bad.raw} раньше даты встречи — замена пропущена, укажите дату явно`,
+        );
+        console.log(`[protocol-patch] пропуск: срок ${bad.raw} раньше даты встречи`);
+        continue;
+      }
+    }
 
     // В полях Protocol JSON значка ⚠️ нет — он навешивается при отрисовке
     // markdown. Модель всё равно копирует его из текста, поэтому подстраховываемся:
