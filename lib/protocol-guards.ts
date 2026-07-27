@@ -370,16 +370,28 @@ function flagRelativeInText(text: string, label: string, flags: string[]): strin
  * Все вычисленные даты возвращаются списком, чтобы показать их пользователю:
  * это расчёт кода, а не факт из расшифровки, и его нужно подтвердить.
  */
-export function resolveRelativeDates(p: Protocol): { protocol: Protocol; notes: string[] } {
-  const anchor = parseRuDate(p.meetingDate);
-  if (!anchor) return { protocol: p, notes: [] };
+export function resolveRelativeDates(
+  p: Protocol,
+  today: Date = new Date(),
+): { protocol: Protocol; notes: string[]; computedDates: string[] } {
+  const meetingAnchor = parseRuDate(p.meetingDate);
+  // Даты встречи может не быть («требует уточнения»). Тогда считаем от даты
+  // обработки — расшифровка свежая, промах максимум в несколько дней, а «в
+  // четверг» в готовом протоколе недопустим в любом случае. Каждый такой
+  // расчёт помечаем отдельно, чтобы пользователь его подтвердил.
+  const anchor = meetingAnchor ?? today;
+  const anchorLabel = meetingAnchor
+    ? `от даты встречи ${p.meetingDate}`
+    : `от сегодняшней даты ${formatRuDate(today)} — дата встречи неизвестна`;
 
   const notes: string[] = [];
+  const computedDates: string[] = [];
   const fix = (text: string, label: string): string => {
     if (!text) return text;
     const { text: next, resolutions } = resolveRelativeDatesInText(text, anchor);
     for (const r of resolutions) {
-      notes.push(`${label}: «${r.from}» → ${r.to} (рассчитано от даты встречи ${p.meetingDate}) — проверьте`);
+      computedDates.push(r.to);
+      notes.push(`${label}: «${r.from}» → ${r.to} (рассчитано ${anchorLabel}) — проверьте`);
     }
     return next;
   };
@@ -397,6 +409,22 @@ export function resolveRelativeDates(p: Protocol): { protocol: Protocol; notes: 
   return {
     protocol: { ...p, meetingContent: { topics, summary } },
     notes: [...new Set(notes)],
+    computedDates: [...new Set(computedDates)],
+  };
+}
+
+/**
+ * Номер протокола не должен уезжать в «требует уточнения»: регламент разрешает
+ * предложить первый номер, и документ с «ПРОТОКОЛ № требует уточнения» в шапке
+ * выглядит сломанным.
+ */
+export function ensureProtocolNumber(p: Protocol): { protocol: Protocol; note: string | null } {
+  const raw = String(p.protocolNumber ?? '').trim();
+  const isEmptyOrMarker = !raw || /уточнени[юя]|не указан/i.test(raw);
+  if (!isEmptyOrMarker) return { protocol: p, note: null };
+  return {
+    protocol: { ...p, protocolNumber: '1' },
+    note: 'Номер протокола не назван — поставлен №1, измените при необходимости',
   };
 }
 

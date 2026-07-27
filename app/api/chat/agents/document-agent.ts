@@ -43,6 +43,7 @@ import {
   fillHeaderFromDialogue,
   resolveRelativeDates,
   dropInventedMeetingDate,
+  ensureProtocolNumber,
   normalizeProtocolNumbers,
   unifyUnresolvedMarkers,
   dedupeParticipants,
@@ -455,16 +456,19 @@ export async function generateFinalDocument(
     // Выдуманные даты → «подлежит уточнению». Ответы пользователя (userCorrections)
     // привилегированы: названные им даты действительны в любом формате записи
     // («02022025» без точек) и даже при совпадении с датой встречи/договора.
-    const dateGuard = enforceDateProvenance(validated, conversationContext, userCorrections);
-    validated = dateGuard.protocol;
     // Сегодняшняя дата в шапке вместо даты встречи — типовая выдумка модели.
     const meetingDateGuard = dropInventedMeetingDate(validated, conversationContext, userCorrections);
     validated = meetingDateGuard.protocol;
-    // «в четверг», «до конца недели» → конкретные даты, считая от даты встречи.
-    // Строго ПОСЛЕ enforceDateProvenance: иначе тот сотрёт вычисленные даты как
-    // «отсутствующие в расшифровке».
+    // «в четверг», «до конца недели» → конкретные даты. Считаем ДО проверки
+    // происхождения дат и передаём результат в неё как привилегированные
+    // значения: это расчёт кода от известного якоря, а не выдумка модели.
     const relResolved = resolveRelativeDates(validated);
     validated = relResolved.protocol;
+    const dateGuard = enforceDateProvenance(validated, conversationContext, [
+      ...userCorrections,
+      ...relResolved.computedDates,
+    ]);
+    validated = dateGuard.protocol;
     // Что вычислить не удалось («скоро», «в ближайшее время») — под маркер.
     const relFlags = flagRelativeDates(validated);
     validated = relFlags.protocol;
@@ -472,11 +476,14 @@ export async function generateFinalDocument(
     // дубли участников в разных падежах.
     validated = normalizeProtocolNumbers(validated);
     validated = unifyUnresolvedMarkers(validated);
+    const numberGuard = ensureProtocolNumber(validated);
+    validated = numberGuard.protocol;
     const participantsGuard = dedupeParticipants(validated);
     validated = participantsGuard.protocol;
     const guardWarnings = [
       ...relResolved.notes,
       ...(meetingDateGuard.note ? [meetingDateGuard.note] : []),
+      ...(numberGuard.note ? [numberGuard.note] : []),
       ...participantsGuard.notes,
       ...relFlags.flags,
       ...new Set([
