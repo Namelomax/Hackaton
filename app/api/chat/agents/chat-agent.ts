@@ -468,7 +468,7 @@ export async function runChatAgent(
         if (shouldForce) {
           try {
             console.warn(
-              `🛟 tool fallback: textualJson=${textualToolJson} editIntent=${editIntent} → generateFinalDocument напрямую`,
+              `🛟 tool fallback: textualJson=${textualToolJson} publishIntent=${intent} → generateFinalDocument напрямую`,
             );
             const md = await generateFinalDocument(
               safeOriginalUIMessages(context),
