@@ -41,7 +41,13 @@ import {
   fillContractFromDialogue,
   flagRelativeDates,
   fillHeaderFromDialogue,
+  resolveRelativeDates,
+  dropInventedMeetingDate,
+  normalizeProtocolNumbers,
+  unifyUnresolvedMarkers,
+  dedupeParticipants,
 } from '@/lib/protocol-guards';
+import { buildDateContextBlock } from '@/lib/date-context';
 import {
   cleanProtocolText,
   formatProtocolSectionHeading,
@@ -282,7 +288,11 @@ export async function generateFinalDocument(
       '{{AGREED_CHAT_CONTEXT}}',
       promptAgreedChatContext ||
         '(Отдельный блок согласованных разделов не выделен — используйте подтверждённые пользователем формулировки из истории диалога.)',
-    );
+    ) +
+    // Агенту документа справка о дате нужна не меньше, чем чат-агенту: без неё
+    // «в четверг» не превратить в дату. Блок явно отделяет «сегодня» от даты
+    // встречи — раньше модель ставила сегодняшнее число в шапку протокола.
+    buildDateContextBlock();
 
   let markdownContent = '';
 
@@ -447,10 +457,27 @@ export async function generateFinalDocument(
     // («02022025» без точек) и даже при совпадении с датой встречи/договора.
     const dateGuard = enforceDateProvenance(validated, conversationContext, userCorrections);
     validated = dateGuard.protocol;
-    // Относительные даты («сегодня», «вчера»…) в финальном тексте — пометить.
+    // Сегодняшняя дата в шапке вместо даты встречи — типовая выдумка модели.
+    const meetingDateGuard = dropInventedMeetingDate(validated, conversationContext, userCorrections);
+    validated = meetingDateGuard.protocol;
+    // «в четверг», «до конца недели» → конкретные даты, считая от даты встречи.
+    // Строго ПОСЛЕ enforceDateProvenance: иначе тот сотрёт вычисленные даты как
+    // «отсутствующие в расшифровке».
+    const relResolved = resolveRelativeDates(validated);
+    validated = relResolved.protocol;
+    // Что вычислить не удалось («скоро», «в ближайшее время») — под маркер.
     const relFlags = flagRelativeDates(validated);
     validated = relFlags.protocol;
+    // Косметика, которую модель делает нестабильно: «№№14», разнобой маркеров,
+    // дубли участников в разных падежах.
+    validated = normalizeProtocolNumbers(validated);
+    validated = unifyUnresolvedMarkers(validated);
+    const participantsGuard = dedupeParticipants(validated);
+    validated = participantsGuard.protocol;
     const guardWarnings = [
+      ...relResolved.notes,
+      ...(meetingDateGuard.note ? [meetingDateGuard.note] : []),
+      ...participantsGuard.notes,
       ...relFlags.flags,
       ...new Set([
         ...dateGuard.unresolved,
@@ -678,7 +705,10 @@ async function tryPatchExistingProtocol(options: {
 
   const plan = await planProtocolPatch({
     model,
-    documentMarkdown: markUnresolvedInMarkdown(protocolToMarkdown(baseForModel)),
+    // Без markUnresolvedInMarkdown: значок ⚠️ живёт только в отрисовке, в полях
+    // JSON его нет. Показав модели текст со значком, мы получали find, который
+    // потом не находился, и патч всегда откатывался на полную генерацию.
+    documentMarkdown: protocolToMarkdown(baseForModel),
     userRequest: requestForModel,
     abortSignal,
   });
@@ -754,6 +784,7 @@ async function tryPatchExistingProtocol(options: {
 function markUnresolvedInMarkdown(md: string): string {
   return md
     .replace(/требует уточнени[йя]/gi, (m) => `⚠️ ${m}`)
+    .replace(/требующ(ий|ая|ее|ие|его|ую)\s+уточнени[яю]/gi, (m) => `⚠️ ${m}`)
     .replace(/подлежит уточнению/gi, '⚠️ подлежит уточнению')
     .replace(/не указано в расшифровке/gi, '⚠️ не указано в расшифровке — требует уточнения')
     .replace(/⚠️\s*⚠️/g, '⚠️')
