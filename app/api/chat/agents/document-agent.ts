@@ -163,7 +163,13 @@ export async function runDocumentAgent(context: AgentContext) {
     }
   });
 
-  const readable = stream.pipeThrough(new JsonToSseTransformStream());
+  // Поток должен быть БАЙТОВЫМ: wrapResponseWithDeanonymization в route.ts
+  // (облачный режим с анонимизацией) ожидает Uint8Array-чанки, а
+  // JsonToSseTransformStream по умолчанию отдаёт строки — без этого шага
+  // деанонимизация падала с TypeError на decoder.decode(chunk).
+  const readable = stream
+    .pipeThrough(new JsonToSseTransformStream())
+    .pipeThrough(new TextEncoderStream());
   return new Response(readable, { headers: { 'Content-Type': 'text/event-stream' } });
 }
 
@@ -518,7 +524,9 @@ export async function generateFinalDocument(
     // База для будущих точечных правок: сохраняем валидный Protocol JSON с
     // реальными данными. Без него правка = полная пересборка документа.
     if (conversationId) {
-      await saveConversationProtocolJson(conversationId, validatedOut).catch(() => {});
+      await saveConversationProtocolJson(conversationId, validatedOut)
+        .then(() => console.log(`[protocol-patch] база сохранена для диалога ${conversationId}`))
+        .catch((e) => console.warn('[protocol-patch] база НЕ сохранена:', (e as Error)?.message));
     }
 
     const docxBuffer = await generateProtocolDocx(validatedOut);
@@ -689,14 +697,32 @@ async function tryPatchExistingProtocol(options: {
     abortSignal,
   } = options;
 
-  if (process.env.PROTOCOL_PATCH_MODE === 'off') return null;
-  if (!conversationId || !userRequest) return null;
+  // Диагностика: без явного лога на КАЖДОМ выходе непонятно, почему патч не
+  // сработал — в логах просто нет ни одной строки [protocol-patch].
+  if (process.env.PROTOCOL_PATCH_MODE === 'off') {
+    console.log('[protocol-patch] выключен через PROTOCOL_PATCH_MODE=off');
+    return null;
+  }
+  if (!conversationId) {
+    console.log('[protocol-patch] пропуск: нет conversationId');
+    return null;
+  }
+  if (!userRequest) {
+    console.log('[protocol-patch] пропуск: пустое сообщение пользователя');
+    return null;
+  }
 
   let base: Protocol;
   try {
     const stored = await getConversationProtocolJson(conversationId);
-    if (!stored) return null;
+    if (!stored) {
+      console.log(
+        `[protocol-patch] пропуск: в диалоге ${conversationId} ещё нет сохранённого document_json (первая генерация) → полная сборка`,
+      );
+      return null;
+    }
     base = parseProtocolStrict(stored);
+    console.log('[protocol-patch] база найдена, планирую точечные замены');
   } catch (e) {
     console.warn('[protocol-patch] сохранённый протокол не читается:', (e as Error)?.message);
     return null;

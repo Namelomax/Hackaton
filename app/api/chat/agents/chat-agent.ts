@@ -469,8 +469,9 @@ export async function runChatAgent(
               model,
               documentContent,
               conversationId ?? null,
-              0.1,
+              0,
               abortSignal ?? undefined,
+              { anonymize: anonymizeActive, mapping: anonMapping },
             );
             sink.markdown = md;
             const okId = `tool-fallback-${Date.now()}`;
