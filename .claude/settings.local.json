@@ -69,7 +69,7 @@
       "Bash(curl -s -m 30 -w \"\\\\nanonymize=%{http_code}\\\\n\" -H \"Authorization: Bearer 1913de7b07f34d61a28792a88f613767\" -H \"Content-Type: application/json\" -d '{\"text\":\"Иванов Иван работает в ООО Ромашка\"}' \"https://jh.interfonica.cloud/user/ts-bdfzametjv73gxxu/proxy/8000/anonymize\")",
       "Bash(curl -s -m 25 -H 'Authorization: Bearer 1913de7b07f34d61a28792a88f613767' https://jh.interfonica.cloud/user/ts-bdfzametjv73gxxu/proxy/11434/api/tags)",
       "Bash(node anon_probe.mjs)",
-      "Bash(python provider_probe.py edit)"
+      "Bash(python provider_probe.py edit)",
       "Bash(curl -s -m 5 -o /dev/null -w \"localhost:3000 -> HTTP %{http_code}\\\\n\" http://127.0.0.1:3000/)",
       "Read(//tmp/**)",
       "Bash(curl -s -m 5 -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://127.0.0.1:3000/)",
@@ -100,7 +100,13 @@
       "Bash(git log *)",
       "Bash(grep -viE \"//|/\\\\*|\\\\*\")",
       "Bash(git add *)",
-      "Bash(git commit -q -m ' *)"
+      "Bash(git commit -q -m ' *)",
+      "Bash(echo \"=== ollama /api/ps ===\")",
+      "Bash(curl -s -m 25 -H 'Authorization: Bearer 1913de7b07f34d61a28792a88f613767' https://jh.interfonica.cloud/user/ts-bdfzametjv73gxxu/proxy/11434/api/ps)",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(m['name'],'vram=%.2fGB'%\\(m['size_vram']/1e9\\),'ctx=',m.get\\('context_length'\\)\\) for m in d.get\\('models',[]\\)] or print\\('НИЧЕГО НЕ ЗАГРУЖЕНО'\\)\")",
+      "Bash(node anon_inspect.mjs)",
+      "Bash(python anon_e2e.py gen)",
+      "Bash(node -e \"console.log\\(typeof Response, typeof ReadableStream, typeof TextEncoder\\)\")"
     ],
     "additionalDirectories": [
       "d:\\Jacob\\Hakaton\\.claude"

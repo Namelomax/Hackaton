@@ -140,9 +140,12 @@ export function wrapResponseWithDeanonymization(
     }
   };
 
-  const transform = new TransformStream<Uint8Array, Uint8Array>({
+  const transform = new TransformStream<Uint8Array | string, Uint8Array>({
     transform(chunk, controller) {
-      textBuf += decoder.decode(chunk, { stream: true });
+      // Defense-in-depth: чанк ожидается байтовым (см. document-agent.ts,
+      // где поток теперь явно кодируется через TextEncoderStream), но на
+      // случай если какой-то источник отдаст строку напрямую — не падаем.
+      textBuf += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true });
       let idx: number;
       // Делим по границам SSE-событий (\n\n)
       while ((idx = textBuf.indexOf('\n\n')) !== -1) {
@@ -192,7 +195,9 @@ export function prependNoticeToResponse(response: Response, notice: string): Res
         for (;;) {
           const { done, value } = await reader.read();
           if (done) break;
-          if (value) controller.enqueue(value);
+          // Defense-in-depth: исходный поток ожидается байтовым, но на
+          // случай строковых чанков — приводим к Uint8Array перед enqueue.
+          if (value) controller.enqueue(typeof value === 'string' ? encoder.encode(value) : value);
         }
       } finally {
         controller.close();
