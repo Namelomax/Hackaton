@@ -49,6 +49,7 @@ import {
   dedupeParticipants,
 } from '@/lib/protocol-guards';
 import { buildDateContextBlock } from '@/lib/date-context';
+import { documentReasoningOptions, formatUsage } from '@/lib/reasoning-options';
 import {
   cleanProtocolText,
   formatProtocolSectionHeading,
@@ -132,11 +133,10 @@ export async function runDocumentAgent(context: AgentContext) {
         writer.write({ type: 'text-end', id: doneId });
       } catch (error) {
         console.error('Document generation error:', error);
-        // Панель уже очищена (data-clear) перед стримом — если генерация упала,
-        // возвращаем предыдущую версию протокола, иначе пользователь теряет документ.
+        // Если генерация успела частично перезаписать панель — возвращаем
+        // предыдущую версию одним обновлением, без промежуточной пустоты.
         if (typeof documentContent === 'string' && documentContent.trim()) {
-          writer.write({ type: 'data-clear', data: null, transient: true });
-          writer.write({ type: 'data-documentDelta', data: documentContent, transient: true });
+          writer.write({ type: 'data-documentSet', data: documentContent, transient: true });
         }
         const detail = error instanceof Error && error.message ? ` ${error.message}` : '';
         writer.write({ type: 'text-start', id: 'error' });
@@ -325,13 +325,10 @@ export async function generateFinalDocument(
       maxOutputTokens,
       schema: ProtocolSchema,
       prompt: protocolPrompt,
-      // Облачная reasoning-модель: thinking выключен — при генерации JSON
-      // протокола размышления только жгут токены и время до тайм-аута.
-      // exclude нужен вдобавок к enabled: на моделях, где отключить нельзя,
-      // рассуждения хотя бы не попадают в ответ и не ломают разбор JSON.
-      ...(anonymizeActive
-        ? { providerOptions: { openrouter: cloudReasoningOptions() } }
-        : {}),
+      // Размышления выключены ВСЕГДА, а не только в облачном режиме: любая
+      // работа с документом от них только теряет время (замер: 12 810 токенов
+      // ради 145 символов ответа). Ключ openrouter локальный провайдер игнорирует.
+      providerOptions: documentReasoningOptions(),
       ...(abortSignal ? { abortSignal } : {}),
     });
 
@@ -347,9 +344,10 @@ export async function generateFinalDocument(
 
     let lastMarkdown = '';
     let lastTitle = '';
-    // Track exactly what has been sent to the frontend to compute true deltas.
-    // Clear once upfront so the panel is blank before streaming begins.
-    writeData({ type: 'data-clear', data: null, transient: true });
+    // ВАЖНО: панель НЕ очищаем заранее. Раньше здесь стоял data-clear, и старый
+    // протокол исчезал сразу, а новый появлялся только после того, как модель
+    // закончит думать — замеры на стенде показали пустую панель 3 мин 40 с.
+    // Теперь прежняя версия висит до первого куска новой (data-documentSet).
     let sentContent = '';
 
     const partialStreamError = await consumePartialObjectStream(streamResult.partialObjectStream, async (partial) => {
@@ -372,17 +370,17 @@ export async function generateFinalDocument(
         }
       }
 
-      // Send only the new delta so the frontend can append without clearing.
-      // If content was reorganized (doesn't start with what we sent), do a full reset.
-      if (nextMarkdown.startsWith(sentContent)) {
+      // Первый кусок новой версии заменяет старую целиком одним обновлением
+      // (без промежуточного пустого кадра), дальше идут обычные дельты.
+      // Если модель перестроила текст — снова полная замена, но опять без clear.
+      if (sentContent && nextMarkdown.startsWith(sentContent)) {
         const delta = nextMarkdown.slice(sentContent.length);
         if (delta) {
           writeData({ type: 'data-documentDelta', data: delta, transient: true });
           sentContent = nextMarkdown;
         }
       } else {
-        writeData({ type: 'data-clear', data: null, transient: true });
-        writeData({ type: 'data-documentDelta', data: nextMarkdown, transient: true });
+        writeData({ type: 'data-documentSet', data: nextMarkdown, transient: true });
         sentContent = nextMarkdown;
       }
 
@@ -500,14 +498,13 @@ export async function generateFinalDocument(
 
     const finalMarkdown = markUnresolvedInMarkdown(protocolToMarkdown(validated));
     markdownContent = finalMarkdown;
-    // Append only what hasn't been sent yet; full reset if final was restructured.
+    // Досылаем хвост; если гарды перестроили текст — полная замена без очистки.
     if (finalMarkdown !== sentContent) {
-      if (finalMarkdown.startsWith(sentContent)) {
+      if (sentContent && finalMarkdown.startsWith(sentContent)) {
         const remaining = finalMarkdown.slice(sentContent.length);
         if (remaining) writeData({ type: 'data-documentDelta', data: remaining, transient: true });
       } else {
-        writeData({ type: 'data-clear', data: null, transient: true });
-        writeData({ type: 'data-documentDelta', data: finalMarkdown, transient: true });
+        writeData({ type: 'data-documentSet', data: finalMarkdown, transient: true });
       }
     }
 
@@ -584,21 +581,6 @@ export async function generateFinalDocument(
 
 
 /**
- * Опции reasoning для облачной генерации протокола.
- * `enabled: false` отключает размышления там, где модель это умеет; `exclude`
- * страхует на остальных — рассуждения не попадут в ответ и не сломают JSON.
- */
-function cloudReasoningOptions(): Record<string, any> {
-  const opts: Record<string, any> = { reasoning: { enabled: false, exclude: true } };
-  const fallbacks = (process.env.OPENROUTER_FALLBACK_MODELS ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (fallbacks.length > 0) opts.models = fallbacks;
-  return opts;
-}
-
-/**
  * Разбор AI_NoObjectGeneratedError в лог: без этого в Vercel видно только
  * `usage: [Object]` и непонятно, съели ли бюджет рассуждения.
  */
@@ -643,10 +625,10 @@ async function retryProtocolGeneration(options: {
       maxOutputTokens: anonymizeActive
         ? cloudProtocolMaxOutputTokens()
         : ollamaProtocolMaxOutputTokens(),
-      ...(anonymizeActive ? { providerOptions: { openrouter: cloudReasoningOptions() } } : {}),
+      providerOptions: documentReasoningOptions(),
       ...(abortSignal ? { abortSignal } : {}),
     });
-    console.log('[generateFinalDocument] повтор успешен');
+    console.log(`[generateFinalDocument] повтор успешен, ${formatUsage((result as any).usage)}`);
     return result.object;
   } catch (err) {
     logGenerationFailure(err);
@@ -777,8 +759,17 @@ async function tryPatchExistingProtocol(options: {
   // В панель отдаём ту же версию, что и при полной генерации: обезличенную —
   // деанонимизацию SSE делает обёртка роута.
   const streamMarkdown = markUnresolvedInMarkdown(protocolToMarkdown(applied.protocol));
-  writeData({ type: 'data-clear', data: null, transient: true });
-  writeData({ type: 'data-documentDelta', data: streamMarkdown, transient: true });
+
+  // Сначала — САМИ замены. Клиент применит их к тексту, который уже открыт у
+  // пользователя: перерисуется только затронутый фрагмент, документ не мигает
+  // и не собирается заново. Затем эталонная версия целиком (без очистки) —
+  // страховка на случай, если фрагмент на клиенте не нашёлся.
+  writeData({
+    type: 'data-documentEdits',
+    data: applied.applied.map((e) => ({ find: e.find, replace: e.replace })),
+    transient: true,
+  });
+  writeData({ type: 'data-documentSet', data: streamMarkdown, transient: true });
   writeData({ type: 'data-finish', data: null, transient: true });
 
   const finalMarkdown = markUnresolvedInMarkdown(protocolToMarkdown(patchedOut));
@@ -801,12 +792,17 @@ async function tryPatchExistingProtocol(options: {
   const changed = applied.applied
     .map((e) => `• «${e.find.slice(0, 70)}» → «${e.replace.slice(0, 70)}»`)
     .join('\n');
+  // То, что применить не удалось, пользователь должен увидеть — иначе он решит,
+  // что учтено всё, а часть мест осталась со старым текстом.
+  const warns = (applied.warnings ?? []).length
+    ? `\n\n⚠️ Требует вашего внимания:\n${applied.warnings.map((w) => `• ${w}`).join('\n')}`
+    : '';
   const noteId = `patch-${Date.now()}`;
   dataStream.write({ type: 'text-start', id: noteId });
   dataStream.write({
     type: 'text-delta',
     id: noteId,
-    delta: `Правка внесена точечно, остальной текст протокола не менялся.\n${changed}`,
+    delta: `Правка внесена точечно, остальной текст протокола не менялся.\n${changed}${warns}`,
   });
   dataStream.write({ type: 'text-end', id: noteId });
 
@@ -821,7 +817,11 @@ function markUnresolvedInMarkdown(md: string): string {
     .replace(/подлежит уточнению/gi, '⚠️ подлежит уточнению')
     .replace(/не указано в расшифровке/gi, '⚠️ не указано в расшифровке — требует уточнения')
     .replace(/⚠️\s*⚠️/g, '⚠️')
-    .replace(/(— требует уточнения)(\s*—\s*требует уточнения)+/g, '$1');
+    // Схлопываем хвосты маркера. Без этого при каждой повторной сборке к строке
+    // «не указано в расшифровке — требует уточнения» дописывался ещё один хвост,
+    // и после трёх правок получалось «— требует уточнения — ⚠️ требует уточнения
+    // — ⚠️ требует уточнения». Учитываем значок между повторами.
+    .replace(/(—\s*(?:⚠️\s*)?требует уточнения)(\s*—\s*(?:⚠️\s*)?требует уточнения)+/gi, '$1');
 }
 
 /** Проверяет, что название организации — реальное имя, а не заглушка или мусор из LLM. */

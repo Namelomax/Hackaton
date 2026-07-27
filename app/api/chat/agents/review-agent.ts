@@ -2,6 +2,7 @@
 
 import { generateText } from 'ai';
 import { resolveChatLanguageModel, type ResolveChatModelOptions } from '@/lib/resolve-chat-model';
+import { documentReasoningOptions } from '@/lib/reasoning-options';
 
 export interface ReviewIssue {
   level: 'error' | 'warning' | 'info';
@@ -276,10 +277,9 @@ INFO (информация — не требует исправления):
       prompt: reviewPrompt,
       temperature: 0.0, // Нулевая температура для максимальной детерминированности
       seed: 42, // Фиксированный seed для воспроизводимости
-      // Облачная reasoning-модель: thinking выключен (жжёт токены и время).
-      ...(modelOptions?.chatProvider === 'openrouter'
-        ? { providerOptions: { openrouter: { reasoning: { enabled: false } } } }
-        : {}),
+      // Проверка документа — тоже работа с документом: размышления выключены
+      // безусловно (единый набор опций из lib/reasoning-options).
+      providerOptions: documentReasoningOptions(),
     });
 
     const elapsedTime = Date.now() - startTime;

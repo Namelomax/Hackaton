@@ -499,6 +499,33 @@ export default function ChatPage() {
         }));
       }
 
+      // Полная замена содержимого ОДНИМ обновлением состояния — без
+      // предварительного data-clear. Раньше пара «очистить + вставить» давала
+      // пустую панель на всё время работы модели (замер: 3 мин 40 с).
+      if (normalized.type === 'data-documentSet') {
+        updateEngineDocument((prev: DocumentState) => ({
+          ...prev,
+          content: String(normalized.data ?? ''),
+          isStreaming: true,
+        }));
+      }
+
+      // Точечные правки: применяем к уже открытому тексту, поэтому меняется
+      // только затронутый фрагмент, а не весь документ.
+      if (normalized.type === 'data-documentEdits' && Array.isArray(normalized.data)) {
+        updateEngineDocument((prev: DocumentState) => {
+          let next = prev.content;
+          for (const edit of normalized.data as Array<{ find?: string; replace?: string }>) {
+            const find = String(edit?.find ?? '');
+            if (!find) continue;
+            const idx = next.indexOf(find);
+            if (idx === -1) continue; // не нашли — исправит следующий data-documentSet
+            next = next.slice(0, idx) + String(edit?.replace ?? '') + next.slice(idx + find.length);
+          }
+          return { ...prev, content: next, isStreaming: true };
+        });
+      }
+
       if (normalized.type === 'data-finish') {
         console.log('✅ Document finished');
         updateEngineDocument((prev: DocumentState) => ({

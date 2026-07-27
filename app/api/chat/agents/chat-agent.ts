@@ -16,6 +16,7 @@ import { PROTOCOL_TIMECODE_ADAPTATION_LINE } from "@/lib/protocol-timecodes";
 import { createRetrieveFromIndexedDocumentsTool } from "./rag-tools";
 import { createAddGlossaryRuleTool } from "./glossary-tools";
 import { formatGlossaryForPrompt } from "@/lib/prompts/glossary";
+import { documentReasoningOptions } from "@/lib/reasoning-options";
 import {
   ollamaStreamHeartbeatMs,
   pickChatMaxOutputTokens,
@@ -361,12 +362,11 @@ export async function runChatAgent(
           messages: continueMessages,
           system: adaptedSystemPrompt,
           tools,
-          // Облако (nemotron — reasoning-модель): thinking полностью выключен —
-          // effort:'low' его лишь сокращал, модель всё равно думала и упиралась
-          // в тайм-аут функции. enabled:false отключает reasoning-токены совсем.
-          ...(cloudMode
-            ? { providerOptions: { openrouter: { reasoning: { enabled: false } } } }
-            : {}),
+          // Единый набор опций отключения размышлений (lib/reasoning-options):
+          // тот же, что у генерации документа, правок и проверки. Раньше здесь
+          // не хватало exclude:true, и модель всё равно думала — замер показал
+          // 12 810 токенов ради ответа в 145 символов.
+          providerOptions: documentReasoningOptions(),
           stopWhen: stepCountIs(ragRetrievalEnabled ? 4 : 3),
           ...(abortSignal ? { abortSignal } : {}),
           onChunk: ({ chunk }) => {

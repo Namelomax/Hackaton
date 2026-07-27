@@ -125,6 +125,29 @@ export function wrapResponseWithDeanonymization(
         emit(evt);
         return;
       }
+      // Полная замена содержимого панели: текст приходит целиком, «разрезанных»
+      // плейсхолдеров быть не может — подставляем оригиналы сразу и сбрасываем
+      // буфер дельт. Без этой ветки пользователь видел в панели [DATE_1] и
+      // [PERSON_1] вместо реальных данных.
+      case 'data-documentSet': {
+        carries.clear(DOC_KEY);
+        emit({ ...evt, data: deanonymize(String(evt.data ?? ''), mapping) });
+        return;
+      }
+      // Точечные правки: деанонимизируем обе стороны каждой замены, иначе на
+      // клиенте фрагмент не найдётся (в панели реальные данные, в правке —
+      // плейсхолдеры).
+      case 'data-documentEdits': {
+        const edits = Array.isArray(evt.data) ? evt.data : [];
+        emit({
+          ...evt,
+          data: edits.map((e: any) => ({
+            find: deanonymize(String(e?.find ?? ''), mapping),
+            replace: deanonymize(String(e?.replace ?? ''), mapping),
+          })),
+        });
+        return;
+      }
       case 'data-finish': {
         const rest = carries.flush(DOC_KEY, mapping);
         if (rest) emit({ type: 'data-documentDelta', data: rest, transient: true });
