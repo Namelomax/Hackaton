@@ -23,21 +23,48 @@ export function ollamaFileTurnMaxOutputTokens(): number {
   return Number.isFinite(n) && n > 0 ? n : 2048;
 }
 
-/** Полный JSON протокола может быть объёмным — отдельный, больший лимит. */
+/**
+ * Полный JSON протокола может быть объёмным — отдельный, больший лимит.
+ * 8192 не хватало: у qwen3 это общий бюджет на размышления и JSON, длинный
+ * протокол обрывался на середине. Держим тот же запас, что и в облаке.
+ */
 export function ollamaProtocolMaxOutputTokens(): number {
-  const protocol = Number(process.env.OLLAMA_PROTOCOL_MAX_OUTPUT_TOKENS);
-  if (Number.isFinite(protocol) && protocol > 0) return protocol;
-  return 8192;
+  const explicit = Number(process.env.OLLAMA_PROTOCOL_MAX_OUTPUT_TOKENS);
+  const desired = Number.isFinite(explicit) && explicit > 0 ? explicit : 32000;
+  // Страховка от узкого num_ctx: если под ответ уйдёт слишком много окна,
+  // Ollama МОЛЧА отрежет начало промпта вместе с системными инструкциями.
+  // Оставляем минимум 60% окна под промпт.
+  const ctx = Number(process.env.OLLAMA_CONTEXT_LENGTH);
+  if (Number.isFinite(ctx) && ctx > 0) {
+    return Math.max(8192, Math.min(desired, Math.floor(ctx * 0.4)));
+  }
+  return desired;
+}
+
+/**
+ * Потолок вывода для генерации протокола ОБЛАЧНОЙ моделью.
+ *
+ * Раньше сюда шёл ollamaProtocolMaxOutputTokens() = 8192. Для reasoning-модели
+ * это общий бюджет на размышления + JSON: рассуждения съедали его целиком, и
+ * ответ приходил пустым (text='', finishReason='other' → AI_NoObjectGeneratedError).
+ * У облачных моделей окно вывода несопоставимо больше — держим запас.
+ */
+export function cloudProtocolMaxOutputTokens(): number {
+  const n = Number(process.env.CLOUD_PROTOCOL_MAX_OUTPUT_TOKENS);
+  if (Number.isFinite(n) && n > 0) return n;
+  return 32000;
 }
 
 /**
  * Глобальный жёсткий потолок max_tokens на стороне fetch-обёртки.
  * Это НЕ дефолт ответа, а предохранитель: не даёт ни одному запросу попросить
- * абсурдно много. Должен быть ≥ ollamaProtocolMaxOutputTokens().
+ * абсурдно много. Должен быть ≥ ollamaProtocolMaxOutputTokens(), иначе бюджет
+ * протокола молча срежется здесь (было 16384 при протоколе 32000).
  */
 export function ollamaHardCapOutputTokens(): number {
   const n = Number(process.env.OLLAMA_HARD_MAX_OUTPUT_TOKENS);
-  return Number.isFinite(n) && n > 0 ? n : 16384;
+  if (Number.isFinite(n) && n > 0) return Math.max(n, ollamaProtocolMaxOutputTokens());
+  return Math.max(32768, ollamaProtocolMaxOutputTokens());
 }
 
 export function pickChatMaxOutputTokens(options: {
