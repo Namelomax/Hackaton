@@ -60,7 +60,10 @@ function postJson(
         method: 'POST',
         headers,
         insecureHTTPParser: true,
-        timeout: timeoutMs,
+        // timeoutMs = 0 → без ограничения: анонимизатор работает минутами, и
+        // рубить его на полпути хуже, чем дождаться. Когда пора прекращать,
+        // решает платформа по maxDuration функции.
+        ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -89,7 +92,10 @@ export async function anonymizeRemote(
 ): Promise<RemoteAnonymizeResult> {
   const base = anonymizerBaseUrl();
   const token = process.env.ANONYMIZER_TOKEN?.trim() ?? '';
-  const timeoutMs = Number(process.env.ANONYMIZER_TIMEOUT_MS ?? 60000);
+  // По умолчанию БЕЗ таймаута (0). Прежние 60 с обрывали живой анонимизатор:
+  // на боевой расшифровке он честно работает две минуты. Ограничение можно
+  // вернуть через ANONYMIZER_TIMEOUT_MS.
+  const timeoutMs = Number(process.env.ANONYMIZER_TIMEOUT_MS ?? 0);
 
   if (!text || !text.trim()) {
     return { anonymized_text: text, mapping: {}, summary: {}, spans: [] };
