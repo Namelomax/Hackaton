@@ -26,3 +26,8 @@ $ next dev --turbopack
 ✅ agent done: 7268ms total, protocol=7145 chars
  POST /api/chat 200 in 30.6s (compile: 256ms, render: 30.4s)
  PUT /api/conversations 200 in 1799ms (compile: 5ms, render: 1794ms)
+✓ Compiled in 109ms
+  Reload env: .env
+ GET / 200 in 113ms (compile: 82ms, render: 30ms)
+  Reload env: .env
+ GET / 200 in 122ms (compile: 93ms, render: 29ms)

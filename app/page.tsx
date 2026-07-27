@@ -401,6 +401,18 @@ export default function ChatPage() {
       return 'Ошибка авторизации к модели (API key). Проверь `OPENROUTER_API_KEY` и перезапусти сервер.';
     }
 
+    // Суточный лимит бесплатных слагов OpenRouter — ждать бесполезно, он
+    // сбрасывается только на следующий день. Отделяем от обычного rate limit,
+    // иначе совет «подожди немного» вводит в заблуждение.
+    if (lower.includes('free-models-per-day') || lower.includes('free model requests per day')) {
+      return (
+        'Исчерпан дневной лимит бесплатных моделей OpenRouter.\n' +
+        'Варианты: переключиться на «🖥️ Локальная LLM» и продолжить сейчас, ' +
+        'пополнить баланс OpenRouter на $10 (даёт 1000 бесплатных запросов в сутки) ' +
+        'или указать платный слаг в OPENROUTER_MODEL_DEFAULT.'
+      );
+    }
+
     if (lower.includes('429') || lower.includes('rate limit')) {
       return 'Слишком много запросов (rate limit). Подожди немного и попробуй снова.';
     }
@@ -518,9 +530,22 @@ export default function ChatPage() {
           for (const edit of normalized.data as Array<{ find?: string; replace?: string }>) {
             const find = String(edit?.find ?? '');
             if (!find) continue;
-            const idx = next.indexOf(find);
+            // В панели у маркеров стоит значок ⚠️ (его добавляет рендер), а в
+            // замене его нет — поэтому ищем и по варианту со значком, иначе
+            // фрагмент «не находится» и точечная правка вырождается в полную
+            // замену следующим data-documentSet.
+            const variants = [find, find.replace(/(требует|подлежит)/gi, '⚠️ $1')];
+            let idx = -1;
+            let hit = find;
+            for (const v of variants) {
+              idx = next.indexOf(v);
+              if (idx !== -1) {
+                hit = v;
+                break;
+              }
+            }
             if (idx === -1) continue; // не нашли — исправит следующий data-documentSet
-            next = next.slice(0, idx) + String(edit?.replace ?? '') + next.slice(idx + find.length);
+            next = next.slice(0, idx) + String(edit?.replace ?? '') + next.slice(idx + hit.length);
           }
           return { ...prev, content: next, isStreaming: true };
         });

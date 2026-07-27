@@ -744,6 +744,28 @@ async function tryPatchExistingProtocol(options: {
     return null;
   }
 
+  // Нормализующие гарды. Патч раньше шёл вообще мимо них, и в документ могли
+  // попасть вещи, которые полная сборка отфильтровала бы: относительная дата
+  // текстом, второй вариант маркера, тайм-код, жаргон, задвоенный «№».
+  // Берём только детерминированную косметику — те гарды, что ДОПОЛНЯЮТ данные
+  // (fillContractFromDialogue, mergeProtocolWithChatDraft), здесь не нужны:
+  // они переписали бы то, что пользователь только что поправил.
+  const patchGuardNotes: string[] = [];
+  {
+    let p = applied.protocol;
+    p = stripProtocolTimecodes(p);
+    p = applyGlossaryToProtocol(p);
+    const rel = resolveRelativeDates(p);
+    p = rel.protocol;
+    patchGuardNotes.push(...rel.notes);
+    const flags = flagRelativeDates(p);
+    p = flags.protocol;
+    patchGuardNotes.push(...flags.flags);
+    p = normalizeProtocolNumbers(p);
+    p = unifyUnresolvedMarkers(p);
+    applied.protocol = p;
+  }
+
   let patchedOut: Protocol;
   try {
     patchedOut = parseProtocolStrict(
@@ -794,8 +816,9 @@ async function tryPatchExistingProtocol(options: {
     .join('\n');
   // То, что применить не удалось, пользователь должен увидеть — иначе он решит,
   // что учтено всё, а часть мест осталась со старым текстом.
-  const warns = (applied.warnings ?? []).length
-    ? `\n\n⚠️ Требует вашего внимания:\n${applied.warnings.map((w) => `• ${w}`).join('\n')}`
+  const allWarnings = [...(applied.warnings ?? []), ...patchGuardNotes];
+  const warns = allWarnings.length
+    ? `\n\n⚠️ Требует вашего внимания:\n${allWarnings.map((w) => `• ${w}`).join('\n')}`
     : '';
   const noteId = `patch-${Date.now()}`;
   dataStream.write({ type: 'text-start', id: noteId });
