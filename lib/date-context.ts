@@ -105,23 +105,39 @@ export function resolveRelativeDatesInText(
   const replace = (
     rx: RegExp,
     compute: (match: string) => Date | null,
-    /** Оборот-срок («до конца недели») читается как дедлайн — сохраняем «до». */
-    prefix = '',
+    /**
+     * Предлог перед датой. Строка — фиксированный («до конца недели» → «до дата»).
+     * 'keep' — сохранить тот, что был в тексте («назначена НА четверг» → «назначена НА дата»),
+     * иначе фраза теряет грамматику.
+     */
+    prefix: string | 'keep' = '',
   ) => {
     out = out.replace(rx, (match) => {
       const date = compute(match);
       if (!date) return match;
       const formatted = formatRuDate(date);
       resolutions.push({ from: match.trim(), to: formatted });
+      if (prefix === 'keep') {
+        // «назначена НА четверг» → «назначена НА дату» (предлог нужен),
+        // «встреча В четверг» → «встреча 30.07.2026» (с датой предлог лишний).
+        // \b в JS не работает с кириллицей — граница слова только для латиницы.
+        const prep = match.trim().match(/^на\s/i);
+        return prep ? `на ${formatted}` : formatted;
+      }
       return prefix ? `${prefix} ${formatted}` : formatted;
     });
   };
 
-  // «в четверг», «во вторник», «в следующий понедельник», «в ближайшую пятницу»
+  // «в четверг», «во вторник», «на четверг» («встреча назначена на четверг»),
+  // «в следующий понедельник», «в ближайшую пятницу».
   for (const { rx, index } of WEEKDAY_FORMS) {
     replace(
-      new RegExp(`(?<![\\p{L}])(?:в|во)\\s+(?:следующ[ийуюего]{2,3}\\s+|ближайш[ийуюего]{2,3}\\s+)?${rx}(?![\\p{L}])`, 'giu'),
+      new RegExp(
+        `(?<![\\p{L}])(?:в|во|на)\\s+(?:следующ[ийуюего]{2,3}\\s+|ближайш[ийуюего]{2,3}\\s+)?${rx}(?![\\p{L}])`,
+        'giu',
+      ),
       () => nextWeekday(anchor, index),
+      'keep',
     );
   }
 

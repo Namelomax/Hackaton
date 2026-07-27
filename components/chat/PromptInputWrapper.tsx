@@ -243,7 +243,22 @@ export const PromptInputWrapper = ({
           });
           return 'fallback';
         }
-        const json = await res.json();
+        // Тело может оказаться НЕ JSON: при таймауте функции Vercel отдаёт
+        // текст «An error occurred…», и res.json() ронял SyntaxError, который
+        // пользователь видел сырым («Unexpected token 'A'»).
+        const rawBody = await res.text();
+        let json: any = null;
+        try {
+          json = rawBody ? JSON.parse(rawBody) : null;
+        } catch {
+          setPreviewOpen(false);
+          toast.error('Анонимизатор не ответил', {
+            description:
+              `Сервис вернул не JSON (код ${res.status}) — вероятно, таймаут. ` +
+              'Отправляю через локальную модель.',
+          });
+          return 'fallback';
+        }
         if (!res.ok || !json?.ok) {
           setPreviewOpen(false);
           toast.error('Не удалось анонимизировать документ', {

@@ -56,8 +56,21 @@ export async function POST(req: Request) {
     return Response.json({ ok: false, error: 'нет текста для анонимизации' }, { status: 400 });
   }
 
+  // Бюджет на весь запрос. Без него функция висит до лимита платформы, и
+  // Vercel отдаёт СВОЙ текст «An error occurred…» вместо JSON — клиент падал на
+  // разборе с «Unexpected token 'A'». Лучше честный 503: UI уйдёт на локальную
+  // модель. Держать заметно меньше maxDuration.
+  const budgetMs = Number(process.env.ANONYMIZE_ROUTE_BUDGET_MS ?? 110000);
+  let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<never>((_, reject) => {
+    budgetTimer = setTimeout(
+      () => reject(new AnonymizerUnavailableError(`анонимизация не уложилась в ${budgetMs} мс`)),
+      budgetMs,
+    );
+  });
+
   try {
-    const result = await anonymizeNewText(fullText, conversationId);
+    const result = await Promise.race([anonymizeNewText(fullText, conversationId), budget]);
     if (conversationId) {
       try {
         await saveConversationPreview(conversationId, result.anonymizedText);
@@ -84,6 +97,8 @@ export async function POST(req: Request) {
       { ok: false, error: e instanceof Error ? e.message : 'unknown' },
       { status: 500 },
     );
+  } finally {
+    if (budgetTimer) clearTimeout(budgetTimer);
   }
 }
 
