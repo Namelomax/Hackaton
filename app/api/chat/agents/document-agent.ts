@@ -1,4 +1,4 @@
-import { createUIMessageStream, JsonToSseTransformStream, streamObject } from 'ai';
+import { createUIMessageStream, JsonToSseTransformStream, streamObject, generateObject } from 'ai';
 import { AgentContext } from './types';
 import {
   updateConversation,
@@ -23,7 +23,7 @@ import { generateProtocolDocx } from '@/lib/docx-generator';
 import { verifyProtocolSections } from '@/lib/protocol-verify';
 import { SGR_DOCUMENT_AGENT_PROMPT } from '@/lib/prompts/sgr-prompts';
 import { PROTOCOL_REGULATION } from '@/lib/prompts/regulation';
-import { ollamaProtocolMaxOutputTokens } from '@/lib/ollama-limits';
+import { ollamaProtocolMaxOutputTokens, cloudProtocolMaxOutputTokens } from '@/lib/ollama-limits';
 import { consumePartialObjectStream } from './partial-object-stream';
 import {
   buildProtocolDraftFromChat,
@@ -230,7 +230,7 @@ export async function generateFinalDocument(
 
   // Подготовка контекста существующего документа (если есть ручные правки)
   const existingDocumentContext = existingDocument && existingDocument.trim()
-    ? `\n\nСУЩЕСТВУЮЩАЯ ВЕРСИЯ ДОКУМЕНТА (пользователь редактировал вручную):\n"""\n${existingDocument}\n"""\n\n`
+    ? `\n\nСУЩЕСТВУЮЩАЯ ВЕРСИЯ ДОКУМЕНТА — ЭТО БАЗА ДЛЯ СБОРКИ.\nПеренесите её в JSON дословно и внесите только те изменения, о которых просил пользователь. Всё остальное — теми же словами, что и здесь.\n"""\n${existingDocument}\n"""\n\n`
     : '';
 
   const chatDraft = buildProtocolDraftFromChat(uiMessages);
@@ -293,8 +293,15 @@ export async function generateFinalDocument(
   }
 
   try {
-    const maxOutputTokens = ollamaProtocolMaxOutputTokens();
-    console.log(`[generateFinalDocument] maxOutputTokens=${maxOutputTokens}`);
+    // Локальная Ollama и облако живут по разным бюджетам вывода: 8192 хватает
+    // qwen3, но для облачной reasoning-модели это общий лимит на размышления +
+    // JSON, и протокол не помещался (пустой ответ → AI_NoObjectGeneratedError).
+    const maxOutputTokens = anonymizeActive
+      ? cloudProtocolMaxOutputTokens()
+      : ollamaProtocolMaxOutputTokens();
+    console.log(
+      `[generateFinalDocument] maxOutputTokens=${maxOutputTokens} (${anonymizeActive ? 'cloud' : 'local'})`,
+    );
     const streamResult = streamObject({
       model,
       temperature,
@@ -303,8 +310,10 @@ export async function generateFinalDocument(
       prompt: protocolPrompt,
       // Облачная reasoning-модель: thinking выключен — при генерации JSON
       // протокола размышления только жгут токены и время до тайм-аута.
+      // exclude нужен вдобавок к enabled: на моделях, где отключить нельзя,
+      // рассуждения хотя бы не попадают в ответ и не ломают разбор JSON.
       ...(anonymizeActive
-        ? { providerOptions: { openrouter: { reasoning: { enabled: false } } } }
+        ? { providerOptions: { openrouter: cloudReasoningOptions() } }
         : {}),
       ...(abortSignal ? { abortSignal } : {}),
     });
@@ -377,22 +386,35 @@ export async function generateFinalDocument(
       rawFinal = settled.value;
     } else {
       const objErr = settled.error;
+      logGenerationFailure(objErr);
       const fallbackText = extractNoObjectGeneratedText(objErr);
       const recovered = fallbackText ? parseLooseJsonObject(fallbackText) : null;
-      if (!recovered) {
-        // Пустой ответ модели (finishReason='other', text='') — типичная беда
-        // бесплатных облачных слагов. Понятное сообщение вместо стектрейса.
-        const raw = String((objErr as any)?.message ?? objErr ?? '');
-        if (/no object generated|unexpected end of json input/i.test(raw)) {
-          throw new Error(
-            'Модель вернула пустой ответ при сборке протокола (перегрузка или лимит бесплатного слага). ' +
-              'Повторите генерацию или переключитесь на локальную модель.',
-          );
+      if (recovered) {
+        rawFinal = recovered;
+        console.warn('[generateFinalDocument] recovered JSON from fenced / non-schema LLM output');
+      } else {
+        // Пустой ответ модели — ретраим один раз без стриминга: другой роутинг
+        // OpenRouter (список запасных слагов) и увеличенный бюджет вывода.
+        const retried = await retryProtocolGeneration({
+          model,
+          prompt: protocolPrompt,
+          temperature,
+          anonymizeActive,
+          abortSignal,
+        });
+        if (retried) {
+          rawFinal = retried;
+        } else {
+          const raw = String((objErr as any)?.message ?? objErr ?? '');
+          if (/no object generated|unexpected end of json input/i.test(raw)) {
+            throw new Error(
+              'Модель дважды вернула пустой ответ при сборке протокола (перегрузка или лимит бесплатного слага). ' +
+                'Повторите генерацию или переключитесь на локальную модель.',
+            );
+          }
+          throw objErr;
         }
-        throw objErr;
       }
-      rawFinal = recovered;
-      console.warn('[generateFinalDocument] recovered JSON from fenced / non-schema LLM output');
     }
     try {
       validated = parseProtocolStrict(rawFinal);
@@ -518,6 +540,83 @@ export async function generateFinalDocument(
   return markdownContent;
 }
 
+
+/**
+ * Опции reasoning для облачной генерации протокола.
+ * `enabled: false` отключает размышления там, где модель это умеет; `exclude`
+ * страхует на остальных — рассуждения не попадут в ответ и не сломают JSON.
+ */
+function cloudReasoningOptions(): Record<string, any> {
+  const opts: Record<string, any> = { reasoning: { enabled: false, exclude: true } };
+  const fallbacks = (process.env.OPENROUTER_FALLBACK_MODELS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (fallbacks.length > 0) opts.models = fallbacks;
+  return opts;
+}
+
+/**
+ * Разбор AI_NoObjectGeneratedError в лог: без этого в Vercel видно только
+ * `usage: [Object]` и непонятно, съели ли бюджет рассуждения.
+ */
+function logGenerationFailure(err: unknown): void {
+  const e = err as any;
+  const usage = e?.usage ?? {};
+  console.error(
+    '[generateFinalDocument] модель не вернула объект:',
+    JSON.stringify({
+      message: String(e?.message ?? err).slice(0, 200),
+      finishReason: e?.finishReason,
+      textLength: typeof e?.text === 'string' ? e.text.length : null,
+      textPreview: typeof e?.text === 'string' ? e.text.slice(0, 200) : null,
+      inputTokens: usage?.inputTokens ?? usage?.promptTokens,
+      outputTokens: usage?.outputTokens ?? usage?.completionTokens,
+      reasoningTokens: usage?.reasoningTokens,
+      totalTokens: usage?.totalTokens,
+    }),
+  );
+}
+
+/**
+ * Один повтор генерации без стриминга. Стрим тут не нужен (панель всё равно
+ * получит финальный текст), зато меньше движущихся частей: если первая попытка
+ * упала на пустом ответе, вторая идёт с запасными слагами OpenRouter.
+ */
+async function retryProtocolGeneration(options: {
+  model: any;
+  prompt: string;
+  temperature: number;
+  anonymizeActive: boolean;
+  abortSignal?: AbortSignal;
+}): Promise<unknown | null> {
+  const { model, prompt, temperature, anonymizeActive, abortSignal } = options;
+  console.warn('[generateFinalDocument] повтор генерации протокола (попытка 2/2)');
+  try {
+    const result = await generateObject({
+      model,
+      schema: ProtocolSchema,
+      prompt,
+      temperature,
+      maxOutputTokens: anonymizeActive
+        ? cloudProtocolMaxOutputTokens()
+        : ollamaProtocolMaxOutputTokens(),
+      ...(anonymizeActive ? { providerOptions: { openrouter: cloudReasoningOptions() } } : {}),
+      ...(abortSignal ? { abortSignal } : {}),
+    });
+    console.log('[generateFinalDocument] повтор успешен');
+    return result.object;
+  } catch (err) {
+    logGenerationFailure(err);
+    const text = extractNoObjectGeneratedText(err);
+    const recovered = text ? parseLooseJsonObject(text) : null;
+    if (recovered) {
+      console.warn('[generateFinalDocument] повтор: JSON восстановлен из сырого текста');
+      return recovered;
+    }
+    return null;
+  }
+}
 
 /** Текст последнего сообщения пользователя — источник правки для patch-режима. */
 function lastUserMessageText(uiMessages: any[]): string {
