@@ -31,3 +31,7 @@ $ next dev --turbopack
  GET / 200 in 113ms (compile: 82ms, render: 30ms)
   Reload env: .env
  GET / 200 in 122ms (compile: 93ms, render: 29ms)
+✓ Compiled in 117ms
+  Reload env: .env
+ GET / 200 in 99ms (compile: 75ms, render: 24ms)
+✓ Compiled in 128ms

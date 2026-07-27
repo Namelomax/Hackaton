@@ -17,6 +17,7 @@ import { createRetrieveFromIndexedDocumentsTool } from "./rag-tools";
 import { createAddGlossaryRuleTool } from "./glossary-tools";
 import { formatGlossaryForPrompt } from "@/lib/prompts/glossary";
 import { documentReasoningOptions } from "@/lib/reasoning-options";
+import { shouldPublishDocument } from "./publish-intent";
 import {
   ollamaStreamHeartbeatMs,
   pickChatMaxOutputTokens,
@@ -444,19 +445,26 @@ export async function runChatAgent(
         // инструмента, в русском ответе пользователю оно не встречается никогда,
         // поэтому его наличие ГДЕ УГОДНО в тексте — надёжный признак утечки tool-call.
         const textualToolJson = /"?reasonBrief"?\s*:/i.test(t);
-        const claimsUpdated =
-          /(обновл|внес|внёс|исправл|замен|сформирован|правк[аи].{0,20}(принят|учтен|учтён))/i.test(t);
-        const isQuoteEdit = lastUserText.trim().startsWith('[Цитата из протокола]');
-        // Раньше требовали hasFixRequest/isQuoteEdit — но detectFixRequest ловит только
-        // узкий набор формулировок («обнови документ/протокол», «замечания», «исправь»).
-        // Если пользователь просит иначе («поправь правую часть», «обнови панель» и т.п.)
-        // и модель НЕ распознала это как триггер для инструмента, но всё равно текстом
-        // заявляет об обновлении — это тот самый баг «raz na raz»: сообщение есть,
-        // панель не меняется. hasDocument + claimsUpdated + отсутствие вопроса уже
-        // достаточно специфичны, чтобы не срабатывать на посторонние ответы.
-        const editIntent = hasDocument;
-        const shouldForce =
-          textualToolJson || (editIntent && claimsUpdated && !t.includes('?'));
+        // Намерение обновить документ определяет МОДЕЛЬ, а не список подстрок.
+        // Список ожидаемо промахивался: ответ «Формирую протокол» мимо него
+        // прошёл (в списке было причастие «сформирован»), инструмент не
+        // вызвался, и документ не собрался вообще — 2 секунды и protocol=none.
+        let intent: boolean | null = null;
+        if (hasDocument && !textualToolJson) {
+          intent = await shouldPublishDocument({
+            model,
+            userText: lastUserText,
+            assistantText: t,
+            abortSignal: abortSignal ?? undefined,
+          });
+          // Классификатор недоступен — грубая подстраховка прежним признаком,
+          // чтобы не потерять обновление совсем.
+          if (intent === null) {
+            intent =
+              /(обновл|внес|внёс|исправл|замен|формир|соберу|собираю)/i.test(t) && !t.includes('?');
+          }
+        }
+        const shouldForce = textualToolJson || Boolean(intent);
         if (shouldForce) {
           try {
             console.warn(
