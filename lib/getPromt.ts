@@ -1121,14 +1121,20 @@ export async function getConversationMapping(
  * Сохранить последний валидный Protocol JSON диалога (с реальными данными).
  * Нужен для точечных правок: без базового объекта единственный вариант —
  * пересобирать весь протокол заново, что переписывает и незатронутые места.
+ *
+ * Хранится в таблице anonymization_mappings (SCHEMALESS, per-conversation
+ * side-storage), а не в conversations: у последней в облачной БД сохранилось
+ * legacy-ограничение на обязательное поле document_content TYPE string,
+ * из-за которого upsert/merge новой записи только с document_json падает
+ * либо молча ничего не пишет.
  */
 export async function saveConversationProtocolJson(
   conversationId: string,
   protocol: unknown,
 ): Promise<void> {
   await connectDB();
-  const clean = String(conversationId).replace(/^conversations:/, '');
-  const rid = new RecordId('conversations', clean);
+  const clean = String(conversationId).replace(/^anonymization_mappings:/, '').replace(/^conversations:/, '');
+  const rid = new RecordId('anonymization_mappings', clean);
   let payload: string;
   try {
     payload = JSON.stringify(protocol);
@@ -1136,9 +1142,14 @@ export async function saveConversationProtocolJson(
     return;
   }
   try {
-    await db.merge(rid, { document_json: payload } as any);
+    await db.upsert(rid, { document_json: payload } as any);
   } catch (e) {
-    console.warn('saveConversationProtocolJson failed:', (e as Error)?.message);
+    // Фолбек на merge, если upsert недоступен в этой версии SDK.
+    try {
+      await db.merge(rid, { document_json: payload } as any);
+    } catch (ee) {
+      console.warn('saveConversationProtocolJson failed:', (ee as Error)?.message);
+    }
   }
 }
 
@@ -1147,9 +1158,9 @@ export async function getConversationProtocolJson(
   conversationId: string,
 ): Promise<unknown | null> {
   await connectDB();
-  const clean = String(conversationId).replace(/^conversations:/, '');
+  const clean = String(conversationId).replace(/^anonymization_mappings:/, '').replace(/^conversations:/, '');
   try {
-    const rec = await db.select(new RecordId('conversations', clean));
+    const rec = await db.select(new RecordId('anonymization_mappings', clean));
     const row: any = Array.isArray(rec) ? rec[0] : rec;
     const raw = row?.document_json;
     if (typeof raw === 'string' && raw.trim()) return JSON.parse(raw);

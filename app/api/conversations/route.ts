@@ -1,5 +1,34 @@
 import { NextRequest } from 'next/server';
-import { createConversation, deleteConversation, getConversations, renameConversation, saveConversation, updateConversation } from '@/lib/getPromt';
+import { createConversation, deleteConversation, getConversations, renameConversation, saveConversation, updateConversation, getConversationMapping } from '@/lib/getPromt';
+import { deanonymize } from '@/lib/anonymization';
+
+const PLACEHOLDER_RX = /\[(?:PERSON|ORG|DATE|SENSITIVE|FILE|EMAIL|PHONE)_\d+\]/;
+
+/**
+ * Страховка: в сохранённом документе плейсхолдеров быть не должно.
+ *
+ * Панель получает текст через SSE, и если хоть один тип события пройдёт мимо
+ * деанонимизатора (так было с новыми data-documentSet/data-documentEdits),
+ * клиент сохранит в БД текст с `[PERSON_3]`, и пользователь увидит его снова
+ * после перезагрузки. Подстановка тут детерминированная, по сохранённому
+ * mapping диалога — без всякой модели.
+ */
+async function restoreRealData(conversationId: string, text: string): Promise<string> {
+  if (!text || !PLACEHOLDER_RX.test(text)) return text;
+  try {
+    const stored = await getConversationMapping(conversationId);
+    const mapping = stored?.mapping ?? {};
+    if (Object.keys(mapping).length === 0) return text;
+    const restored = deanonymize(text, mapping);
+    console.warn(
+      `[conversations] в документе диалога ${conversationId} были плейсхолдеры — подставлены оригиналы`,
+    );
+    return restored;
+  } catch (e) {
+    console.warn('[conversations] деанонимизация документа не удалась:', (e as Error)?.message);
+    return text;
+  }
+}
 
 export async function GET(req: Request) {
   try {
@@ -7,7 +36,16 @@ export async function GET(req: Request) {
     const userId = url.searchParams.get('userId');
     if (!userId) return new Response(JSON.stringify({ success: false, message: 'userId required' }), { status: 400 });
     const convs = await getConversations(userId);
-    return new Response(JSON.stringify({ success: true, conversations: convs }), { status: 200 });
+    // Чиним уже испорченные записи на чтении: документ мог сохраниться с
+    // плейсхолдерами до фикса деанонимизации SSE.
+    const cleaned = await Promise.all(
+      (convs ?? []).map(async (c: any) => {
+        const doc = typeof c?.document_content === 'string' ? c.document_content : '';
+        if (!doc || !PLACEHOLDER_RX.test(doc)) return c;
+        return { ...c, document_content: await restoreRealData(String(c.id), doc) };
+      }),
+    );
+    return new Response(JSON.stringify({ success: true, conversations: cleaned }), { status: 200 });
   } catch (err) {
     console.error('Conversations GET error', err);
     return new Response(JSON.stringify({ success: false }), { status: 500 });
@@ -48,16 +86,21 @@ export async function PUT(req: Request) {
     }
     
     let updated = null;
-    
+
+    // Плейсхолдеры не должны попадать в хранилище — подставляем оригиналы.
+    const safeDocument = hasDocument
+      ? await restoreRealData(conversationId, documentContent)
+      : documentContent;
+
     // Сначала обновляем messages и/или documentContent
     if (hasMessages || hasDocument) {
-      updated = await updateConversation(conversationId, messages || [], documentContent);
+      updated = await updateConversation(conversationId, messages || [], safeDocument);
     }
-    
+
     if (hasTitle) {
       updated = await renameConversation(conversationId, title.trim());
-      if (updated && hasDocument && documentContent) {
-        updated.document_content = documentContent;
+      if (updated && hasDocument && safeDocument) {
+        updated.document_content = safeDocument;
       }
     }
     
