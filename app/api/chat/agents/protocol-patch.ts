@@ -57,6 +57,8 @@ const PATCH_PLANNER_PROMPT = `Ты — редактор готового про�
 5. Даты. «Завтра», «послезавтра», «через неделю», «в четверг» считай ОТ ДАТЫ ОБРАБОТКИ из блока [КОНТЕКСТ ДАТЫ] ниже, а сроки внутри протокола — от даты встречи из шапки. Никогда не бери дату «из головы»: если посчитать не от чего, оставь «требует уточнения».
 5.1. Срок не может быть РАНЬШЕ даты встречи — это будущее действие. Получилась более ранняя дата — значит расчёт неверный, оставь маркер уточнения.
 6. canPatch = false, если правка требует пересборки структуры: добавить/убрать участника, пункт повестки, раздел, переписать «Обсудили» целиком, поменять нумерацию. В этом случае edits оставь пустым.
+6.1. canPatch = false и для МАССОВЫХ правок, где одно и то же поле меняется по всему документу с разным окружением: «все сроки поставь на …», «везде смени ответственного», «проставь даты во всех пунктах». Точечные замены для этого не годятся — такие правки делает полная пересборка. Не пытайся выразить их десятком замен.
+6.2. "find" НИКОГДА не должен быть голым значением — датой, числом, одним словом. Это приведёт к замене в случайном месте. Всегда бери фразу целиком, вместе с окружением: не «28.07.2026», а «Срок: 28.07.2026. Ответственный: Исполнитель».
 7. Ничего не выдумывай: значений, которых нет в сообщении пользователя, в "replace" быть не должно.
 
 Ответ — только JSON по схеме.
@@ -192,7 +194,22 @@ export function applyEditsToProtocol(
     let find = String(edit?.find ?? '');
     const replace = String(edit?.replace ?? '');
     if (!find.trim()) continue;
-    if (find === replace) continue;
+    if (find.trim() === replace.trim()) continue; // замена сама на себя — пустая работа
+
+    // Голое значение как «якорь» — гарантированный промах: на стенде модель
+    // прислала десять замен с find="28.07.2026", и каждая била в случайное
+    // место (первым шло число из шапки, а не срок). Фрагмент без окружения
+    // не принимаем: такую правку сделает полная пересборка.
+    const bare = find.trim();
+    const isBareValue =
+      /^\d{1,2}\.\d{1,2}\.\d{4}$/.test(bare) || /^[\d\s.,%№-]+$/.test(bare) || bare.length < 12;
+    if (isBareValue) {
+      warnings.push(
+        `фрагмент «${bare}» слишком короткий и встречается в разных местах — правка по нему не применялась`,
+      );
+      console.log(`[protocol-patch] пропуск: голое значение в find — "${bare}"`);
+      continue;
+    }
 
     if (meetingDate && /срок/i.test(find + ' ' + replace)) {
       const bad = [...replace.matchAll(/\b(\d{2})\.(\d{2})\.(\d{4})\b/g)]
@@ -278,6 +295,18 @@ export function applyEditsToProtocol(
       }
     }
 
+    // Дата встречи и номер протокола живут в шапке и сроками не являются.
+    // Правка сроков не должна их задевать — иначе «поставь сроки на завтра»
+    // сдвигает дату самой встречи.
+    const isDeadlineEdit = /срок/i.test(find + ' ' + replace);
+    const header = isDeadlineEdit
+      ? {
+          meetingDate: (current as any)?.meetingDate,
+          protocolNumber: (current as any)?.protocolNumber,
+          contractDate: (current as any)?.contractDate,
+        }
+      : null;
+
     let done = false;
     current = mapStrings(current, (s) => {
       if (done && !replaceAll) return s;
@@ -291,6 +320,15 @@ export function applyEditsToProtocol(
       }
       return out;
     });
+    if (header) {
+      current = {
+        ...(current as any),
+        meetingDate: header.meetingDate,
+        protocolNumber: header.protocolNumber,
+        ...(header.contractDate !== undefined ? { contractDate: header.contractDate } : {}),
+      } as Protocol;
+    }
+
     applied.push({ find, replace });
     if (replaceAll && occurrences > 1) {
       console.log(`[protocol-patch] замена применена во всех ${occurrences} местах: "${find.slice(0, 50)}"`);
@@ -300,7 +338,8 @@ export function applyEditsToProtocol(
   if (applied.length === 0) {
     return { ok: false, reason: 'ни одна замена не подошла' };
   }
-  return { ok: true, protocol: current, applied, warnings };
+  // Одинаковые предупреждения по десятку однотипных замен читать невозможно.
+  return { ok: true, protocol: current, applied, warnings: [...new Set(warnings)] };
 }
 
 /** Анонимизация всех строковых полей протокола (для отправки в облако). */
