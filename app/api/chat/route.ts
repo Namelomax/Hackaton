@@ -2,7 +2,7 @@ import {
   convertToModelMessages,
 } from 'ai';
 import crypto from 'crypto';
-import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation } from '@/lib/getPromt';
+import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation, assertConversationOwnership } from '@/lib/getPromt';
 import { resolveChatLanguageModel } from '@/lib/resolve-chat-model';
 import { normalizeCloudModel } from '@/lib/chat-models';
 import { buildDateContextBlock } from '@/lib/date-context';
@@ -499,6 +499,21 @@ export async function POST(req: Request) {
     req.headers.get('x-forwarded-for') ||
     req.headers.get('x-real-ip') ||
     'unknown';
+
+  // ИЗОЛЯЦИЯ: диалог должен принадлежать этому пользователю, иначе сообщения/mapping
+  // одного пользователя утекут в чужой диалог (см. инцидент с [PERSON_N] в новом чате).
+  try {
+    await assertConversationOwnership(conversationId, userId);
+  } catch (e) {
+    if (e instanceof Error && e.message === 'Forbidden') {
+      console.warn(`🚫 chat: conv ${conversationId} не принадлежит user ${userId || 'anon'} — отказ`);
+      return new Response(
+        JSON.stringify({ error: 'Доступ к этому диалогу запрещён (не ваш диалог).' }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    console.error('ownership check failed:', e);
+  }
 
   console.log(`📨 chat req: msgs=${messages.length} user=${userId || 'anon'} conv=${conversationId || 'none'} doc=${!!documentContent}`);
 
