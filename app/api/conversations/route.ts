@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { createConversation, deleteConversation, getConversations, renameConversation, saveConversation, updateConversation, getConversationMapping } from '@/lib/getPromt';
+import { createConversation, deleteConversation, getConversations, renameConversation, saveConversation, updateConversation, getConversationMapping, assertConversationOwnership } from '@/lib/getPromt';
 import { deanonymize } from '@/lib/anonymization';
 
 const PLACEHOLDER_RX = /\[(?:PERSON|ORG|DATE|SENSITIVE|FILE|EMAIL|PHONE)_\d+\]/;
@@ -75,8 +75,17 @@ export async function POST(req: Request) {
 export async function PUT(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const { conversationId, messages, title, documentContent } = body as any;
+    const { conversationId, messages, title, documentContent, userId } = body as any;
     if (!conversationId) return new Response(JSON.stringify({ success: false, message: 'conversationId required' }), { status: 400 });
+
+    // ИЗОЛЯЦИЯ: нельзя писать в чужой диалог.
+    try {
+      await assertConversationOwnership(conversationId, userId);
+    } catch (e) {
+      if (e instanceof Error && e.message === 'Forbidden') {
+        return new Response(JSON.stringify({ success: false, message: 'Forbidden' }), { status: 403 });
+      }
+    }
     const hasMessages = Array.isArray(messages);
     const hasTitle = typeof title === 'string' && title.trim().length > 0;
     const hasDocument = typeof documentContent === 'string';

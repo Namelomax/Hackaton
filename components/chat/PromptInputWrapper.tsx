@@ -326,6 +326,7 @@ export const PromptInputWrapper = ({
               signal,
               body: JSON.stringify({
                 conversationId: convId,
+                ...(authUser?.id ? { userId: authUser.id } : {}),
                 files: payloadFiles,
                 ...(payloadText ? { text: payloadText } : {}),
               }),
