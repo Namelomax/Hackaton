@@ -48,6 +48,10 @@ function postJson(
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Content-Length': String(body.length),
+    // Если анонимизатор проброшен через VS Code dev tunnel, туннель может
+    // отдать HTML-заглушку с предупреждением вместо ответа сервиса. Заголовок
+    // её отключает; на обычных адресах он просто игнорируется.
+    'X-Tunnel-Skip-AntiPhishing-Page': 'true',
   };
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
@@ -161,7 +165,10 @@ export async function anonymizerHealthy(): Promise<boolean> {
           port: url.port ? Number(url.port) : isHttps ? 443 : 80,
           path: url.pathname,
           method: 'GET',
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          headers: {
+            'X-Tunnel-Skip-AntiPhishing-Page': 'true',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
           insecureHTTPParser: true,
           timeout: 8000,
         },
