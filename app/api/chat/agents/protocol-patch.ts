@@ -15,7 +15,11 @@
 
 import { generateObject } from 'ai';
 import { z } from 'zod';
-import type { Protocol } from '@/lib/schemas/protocol-schema';
+import {
+  extractNoObjectGeneratedText,
+  parseLooseJsonObject,
+  type Protocol,
+} from '@/lib/schemas/protocol-schema';
 import { documentReasoningOptions, formatUsage } from '@/lib/reasoning-options';
 import { buildDateContextBlock, parseRuDate, resolveRelativeDatesInText } from '@/lib/date-context';
 
@@ -116,6 +120,20 @@ export async function planProtocolPatch(options: {
     console.log(`[protocol-patch] план получен, ${formatUsage((result as any).usage)}`);
     return result.object;
   } catch (err) {
+    // Модель часто заворачивает JSON в ```json … ``` или добавляет пояснение до
+    // и после. В основной генерации такой ответ восстанавливается, а
+    // планировщик просто падал с «Invalid JSON response» и уводил на полную
+    // пересборку. Пробуем достать объект из сырого текста тем же способом.
+    const raw = extractNoObjectGeneratedText(err);
+    const recovered = raw ? parseLooseJsonObject(raw) : null;
+    if (recovered) {
+      const parsed = PatchPlanSchema.safeParse(recovered);
+      if (parsed.success) {
+        console.warn('[protocol-patch] план восстановлен из «грязного» ответа модели');
+        return parsed.data;
+      }
+      console.warn('[protocol-patch] восстановленный ответ не подошёл под схему плана');
+    }
     console.warn('[protocol-patch] план замен не построен:', (err as Error)?.message ?? err);
     return { canPatch: false, reason: 'planner failed', edits: [] };
   }

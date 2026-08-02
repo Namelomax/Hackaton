@@ -48,7 +48,7 @@ import {
   unifyUnresolvedMarkers,
   dedupeParticipants,
 } from '@/lib/protocol-guards';
-import { buildDateContextBlock } from '@/lib/date-context';
+import { buildDateContextBlock, resolveRelativeDatesInText } from '@/lib/date-context';
 import { documentReasoningOptions, formatUsage } from '@/lib/reasoning-options';
 import {
   cleanProtocolText,
@@ -266,6 +266,10 @@ export async function generateFinalDocument(
   const patchedMarkdown = await tryPatchExistingProtocol({
     conversationId,
     userRequest: lastUserMessageText(uiMessages),
+    // Документ, который СЕЙЧАС открыт у пользователя: нужен, чтобы убедиться,
+    // что сохранённая база патча — та же версия. Иначе правим одно, а человек
+    // смотрит на другое.
+    visibleDocument: existingDocument ?? '',
     model,
     writeData,
     dataStream,
@@ -468,9 +472,23 @@ export async function generateFinalDocument(
     // значения: это расчёт кода от известного якоря, а не выдумка модели.
     const relResolved = resolveRelativeDates(validated);
     validated = relResolved.protocol;
+    // Даты, которые пользователь назвал ОТНОСИТЕЛЬНО («завтра», «в четверг»),
+    // тоже считаются названными им. Без этого происходило вот что: человек
+    // просит «срок на завтра», модель верно ставит 29.07.2026, а гард
+    // происхождения стирает её как «отсутствующую в расшифровке» — в документе
+    // снова «подлежит уточнению», хотя в чате написано, что срок проставлен.
+    const userRelativeDates = userCorrections.flatMap((t) =>
+      resolveRelativeDatesInText(String(t ?? ''), new Date()).resolutions.map((r) => r.to),
+    );
+    if (userRelativeDates.length > 0) {
+      console.log(
+        `[generateFinalDocument] даты из просьб пользователя: ${[...new Set(userRelativeDates)].join(', ')}`,
+      );
+    }
     const dateGuard = enforceDateProvenance(validated, conversationContext, [
       ...userCorrections,
       ...relResolved.computedDates,
+      ...userRelativeDates,
     ]);
     validated = dateGuard.protocol;
     // Что вычислить не удалось («скоро», «в ближайшее время») — под маркер.
@@ -642,6 +660,33 @@ async function retryProtocolGeneration(options: {
   }
 }
 
+/**
+ * Показывает, ЧТО именно изменилось, а не первые 70 символов строки.
+ * Раньше отчёт выглядел как «Исполнитель выберет оптимальную…» → «Исполнитель
+ * выберет оптимальную…»: обрезка съедала различие, и понять правку было нельзя.
+ */
+function describeEdit(find: string, replace: string): string {
+  let start = 0;
+  while (start < find.length && start < replace.length && find[start] === replace[start]) start++;
+  let end = 0;
+  while (
+    end < find.length - start &&
+    end < replace.length - start &&
+    find[find.length - 1 - end] === replace[replace.length - 1 - end]
+  ) {
+    end++;
+  }
+  const was = find.slice(start, find.length - end).trim();
+  const now = replace.slice(start, replace.length - end).trim();
+  if (!was && !now) return `«${find.slice(0, 60)}» — без изменений`;
+
+  const context = find.slice(Math.max(0, start - 30), start).trim();
+  const prefix = context ? `…${context} ` : '';
+  if (!was) return `${prefix}добавлено «${now}»`;
+  if (!now) return `${prefix}удалено «${was}»`;
+  return `${prefix}«${was}» → «${now}»`;
+}
+
 /** Текст последнего сообщения пользователя — источник правки для patch-режима. */
 function lastUserMessageText(uiMessages: any[]): string {
   if (!Array.isArray(uiMessages)) return '';
@@ -661,6 +706,7 @@ function lastUserMessageText(uiMessages: any[]): string {
 async function tryPatchExistingProtocol(options: {
   conversationId?: string | null;
   userRequest: string;
+  visibleDocument?: string;
   model: any;
   writeData: (payload: { type: string; data: any; id?: string; transient?: boolean }) => void;
   dataStream: any;
@@ -671,6 +717,7 @@ async function tryPatchExistingProtocol(options: {
   const {
     conversationId,
     userRequest,
+    visibleDocument,
     model,
     writeData,
     dataStream,
@@ -704,7 +751,33 @@ async function tryPatchExistingProtocol(options: {
       return null;
     }
     base = parseProtocolStrict(stored);
-    console.log('[protocol-patch] база найдена, планирую точечные замены');
+
+    // База и открытый у пользователя документ должны совпадать. Если версия в
+    // хранилище отстала (предыдущая сборка не сохранилась, документ правили
+    // вручную), патч ляжет на СТАРЫЙ текст и вернёт его в панель — правка
+    // «исчезнет», а рядом всплывут старые значения. Реальный случай: срок
+    // 20.06.2025 из давнего прогона снова оказался в документе.
+    const visible = String(visibleDocument ?? '').trim();
+    if (visible) {
+      const baseText = markUnresolvedInMarkdown(protocolToMarkdown(base));
+      const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
+      const a = norm(baseText);
+      const b = norm(visible);
+      if (a !== b) {
+        // Небольшой люфт: рендер панели и markdown могут отличаться мелочами.
+        const shorter = Math.min(a.length, b.length);
+        const longer = Math.max(a.length, b.length);
+        const closeEnough = longer > 0 && shorter / longer > 0.97 && Math.abs(a.length - b.length) < 200;
+        if (!closeEnough) {
+          console.log(
+            `[protocol-patch] сохранённая база разошлась с документом в панели (${a.length} против ${b.length} символов) → полная сборка`,
+          );
+          return null;
+        }
+      }
+    }
+
+    console.log('[protocol-patch] база найдена и совпадает с панелью, планирую точечные замены');
   } catch (e) {
     console.warn('[protocol-patch] сохранённый протокол не читается:', (e as Error)?.message);
     return null;
@@ -811,9 +884,7 @@ async function tryPatchExistingProtocol(options: {
 
   await saveConversationProtocolJson(conversationId, patchedOut).catch(() => {});
 
-  const changed = applied.applied
-    .map((e) => `• «${e.find.slice(0, 70)}» → «${e.replace.slice(0, 70)}»`)
-    .join('\n');
+  const changed = applied.applied.map((e) => `• ${describeEdit(e.find, e.replace)}`).join('\n');
   // То, что применить не удалось, пользователь должен увидеть — иначе он решит,
   // что учтено всё, а часть мест осталась со старым текстом.
   const allWarnings = [...(applied.warnings ?? []), ...patchGuardNotes];
