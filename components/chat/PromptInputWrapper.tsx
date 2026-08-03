@@ -16,6 +16,7 @@ import {
   usePromptInputAttachments,
 } from '@/components/ai-elements/prompt-input';
 import { isTextExtractable } from '@/lib/utils';
+import { buildAnonymizePayload, MAX_REQUEST_BODY_BYTES } from '@/lib/attachment-extract-client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 export type ChatTransportBodyExtras = {
@@ -287,11 +288,31 @@ export const PromptInputWrapper = ({
       setPreviewMapping({});
       setPreviewOpen(true);
       try {
-        const payloadFiles = files.map((f: any) => ({
-          url: f?.url || f?.data,
-          mediaType: f?.mediaType || f?.mimeType,
-          filename: f?.filename || f?.name,
-        }));
+        // Извлекаем текст вложений ЗДЕСЬ, в браузере: у серверless-функции
+        // жёсткий лимит на размер тела (~4.5 МБ), и base64 стостраничного
+        // документа в него не влезал — платформа отвечала 413 «Request Entity
+        // Too Large» ещё до вызова функции. Текст того же документа примерно
+        // на порядок меньше. Форматы, которые браузер не осилил (PDF, XLSX),
+        // уходят файлом, как раньше — их разберёт сервер.
+        const prepared = await buildAnonymizePayload(files, text);
+        const payloadFiles = prepared.files;
+        const payloadText = prepared.text;
+        if (prepared.extractedCount > 0) {
+          console.log(
+            `[anonymize-preview] извлечено в браузере: ${prepared.extractedCount} вложение(й), ` +
+              `тело запроса ${(prepared.bytes / 1024 / 1024).toFixed(2)} МБ`,
+          );
+        }
+        if (prepared.bytes > MAX_REQUEST_BODY_BYTES) {
+          setPreviewOpen(false);
+          toast.error('Документ слишком большой', {
+            description:
+              `Вложение весит ${(prepared.bytes / 1024 / 1024).toFixed(1)} МБ, а сервер принимает до ` +
+              `${(MAX_REQUEST_BODY_BYTES / 1024 / 1024).toFixed(1)} МБ. Сохраните расшифровку в .txt или .docx ` +
+              '(из них текст извлекается прямо в браузере) либо разбейте на части.',
+          });
+          return 'fallback';
+        }
         // Сетевой обрыв (например, браузер приостановил фоновую вкладку и убил
         // соединение) — не повод отключать анонимизацию: повторяем запрос.
         // Повторный вызов дёшев для уже известных значений (mapping-кеш диалога).
@@ -306,7 +327,7 @@ export const PromptInputWrapper = ({
               body: JSON.stringify({
                 conversationId: convId,
                 files: payloadFiles,
-                ...(text && text.trim() ? { text: text.trim() } : {}),
+                ...(payloadText ? { text: payloadText } : {}),
               }),
             });
             break;
@@ -320,6 +341,18 @@ export const PromptInputWrapper = ({
           }
         }
         if (!res) throw new Error('нет ответа от /api/anonymize');
+        if (res.status === 413) {
+          // Платформа режет запрос ДО вызова функции и отвечает не-JSON
+          // («Request Entity Too Large»). Раньше это доезжало до пользователя
+          // сырым SyntaxError про «Unexpected token 'R'».
+          setPreviewOpen(false);
+          toast.error('Документ слишком большой', {
+            description:
+              'Сервер отклонил запрос по размеру. Сохраните расшифровку в .txt или .docx — ' +
+              'из них текст извлекается прямо в браузере и запрос становится в разы легче.',
+          });
+          return 'fallback';
+        }
         if (res.status === 503) {
           setPreviewOpen(false);
           // Сервер различает «не отвечает» и «не успел за бюджет»: во втором
