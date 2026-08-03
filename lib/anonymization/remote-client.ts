@@ -34,7 +34,8 @@ function anonymizerBaseUrl(): string {
   return url.replace(/\/+$/, '');
 }
 
-function postJson(
+function request(
+  method: 'GET' | 'POST',
   urlStr: string,
   payload: unknown,
   token: string,
@@ -43,11 +44,15 @@ function postJson(
   const url = new URL(urlStr);
   const isHttps = url.protocol === 'https:';
   const requestFn = isHttps ? https.request : http.request;
-  const body = Buffer.from(JSON.stringify(payload), 'utf-8');
+  const body =
+    payload === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(payload), 'utf-8');
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Content-Length': String(body.length),
+    // Некоторые релеи (в т.ч. dev tunnel) отдают закешированный ответ на
+    // повторный GET того же URL — для поллинга статуса это смертельно.
+    'Cache-Control': 'no-cache',
     // Если анонимизатор проброшен через VS Code dev tunnel, туннель может
     // отдать HTML-заглушку с предупреждением вместо ответа сервиса. Заголовок
     // её отключает; на обычных адресах он просто игнорируется.
@@ -61,7 +66,7 @@ function postJson(
         hostname: url.hostname,
         port: url.port ? Number(url.port) : isHttps ? 443 : 80,
         path: url.pathname + url.search,
-        method: 'POST',
+        method,
         headers,
         insecureHTTPParser: true,
         // timeoutMs = 0 → без ограничения: анонимизатор работает минутами, и
@@ -84,9 +89,110 @@ function postJson(
       req.destroy(new Error(`таймаут ${timeoutMs} мс`));
     });
     req.on('error', reject);
-    req.write(body);
+    if (body.length) req.write(body);
     req.end();
   });
+}
+
+function postJson(
+  urlStr: string,
+  payload: unknown,
+  token: string,
+  timeoutMs: number,
+): Promise<{ status: number; body: string }> {
+  return request('POST', urlStr, payload, token, timeoutMs);
+}
+
+/**
+ * Асинхронный режим: POST /jobs/anonymize -> 202 {job_id}, дальше поллинг
+ * GET /jobs/<id> до status=done|error.
+ *
+ * Зачем: между нами и анонимизатором стоит релей (VS Code dev tunnel), у
+ * которого фиксированный таймаут на ОДИН запрос (~100 с, не настраивается —
+ * мы ловили от него HTTP 504 на 101-103-й секунде). Полный пайплайн на боевой
+ * расшифровке идёт дольше. Поллинг делает каждый HTTP-запрос коротким, и
+ * лимит релея перестаёт что-либо значить: сколько бы ни считал пайплайн, ни
+ * одно соединение не живёт дольше пары секунд.
+ *
+ * Возвращает null, если сервер не знает про /jobs (старая версия анонимизатора
+ * ответит 404) — вызывающий код тогда откатывается на синхронный /anonymize.
+ */
+async function anonymizeViaJob(
+  base: string,
+  payload: unknown,
+  token: string,
+): Promise<RemoteAnonymizeResult | null> {
+  const submit = await request('POST', `${base}/jobs/anonymize`, payload, token, 30_000);
+  if (submit.status === 404) return null; // сервер без job-API
+  if (submit.status !== 202) {
+    throw new AnonymizerUnavailableError(
+      `Анонимизатор вернул HTTP ${submit.status} на постановку задачи: ${submit.body.slice(0, 200)}`,
+    );
+  }
+
+  let jobId: string;
+  try {
+    jobId = (JSON.parse(submit.body) as { job_id: string }).job_id;
+  } catch {
+    throw new AnonymizerUnavailableError(
+      `Анонимизатор вернул не-JSON на постановку задачи: ${submit.body.slice(0, 200)}`,
+    );
+  }
+  if (!jobId) throw new AnonymizerUnavailableError('Анонимизатор не вернул job_id');
+
+  // Потолок ожидания. Держим ниже maxDuration роута (300 с), чтобы вернуть
+  // осмысленную ошибку самим, а не быть убитыми платформой на полуслове.
+  const deadline = Date.now() + Number(process.env.ANONYMIZER_JOB_MAX_MS ?? 270_000);
+  // Первые опросы частые (короткие тексты успевают за секунды), дальше реже,
+  // чтобы не молотить релей сотнями запросов на трёхминутной задаче.
+  let delayMs = 1000;
+  let transientFailures = 0;
+
+  for (;;) {
+    await new Promise((r) => setTimeout(r, delayMs));
+    delayMs = Math.min(delayMs * 1.4, 5000);
+
+    if (Date.now() > deadline) {
+      throw new AnonymizerUnavailableError(
+        `Анонимизация не завершилась за ${Math.round(
+          Number(process.env.ANONYMIZER_JOB_MAX_MS ?? 270_000) / 1000,
+        )} с (задача ${jobId} всё ещё выполняется)`,
+      );
+    }
+
+    let poll: { status: number; body: string };
+    try {
+      poll = await request('GET', `${base}/jobs/${jobId}`, undefined, token, 30_000);
+    } catch {
+      // Единичный обрыв опроса — не повод хоронить задачу: она считается на
+      // сервере независимо от того, доехал ли до нас конкретный GET.
+      if (++transientFailures > 5) {
+        throw new AnonymizerUnavailableError('Анонимизатор перестал отвечать на опрос статуса');
+      }
+      continue;
+    }
+    transientFailures = 0;
+
+    if (poll.status === 404) {
+      throw new AnonymizerUnavailableError(`Анонимизатор забыл задачу ${jobId}`);
+    }
+    if (poll.status < 200 || poll.status >= 300) continue; // 5xx релея — пробуем ещё
+
+    let state: { status: string; result: RemoteAnonymizeResult | null; error: string | null };
+    try {
+      state = JSON.parse(poll.body);
+    } catch {
+      continue; // релей вклинился HTML-заглушкой — следующий опрос
+    }
+
+    if (state.status === 'error') {
+      throw new AnonymizerUnavailableError(`Анонимизатор упал: ${state.error ?? 'без сообщения'}`);
+    }
+    if (state.status === 'done') {
+      if (!state.result) throw new AnonymizerUnavailableError('Задача завершена без результата');
+      return state.result;
+    }
+  }
 }
 
 /** Вызвать удалённый /anonymize. Бросает AnonymizerUnavailableError при сбое. */
@@ -105,6 +211,23 @@ export async function anonymizeRemote(
     return { anonymized_text: text, mapping: {}, summary: {}, spans: [] };
   }
 
+  const payload = { text, ...(stages ?? {}) };
+
+  // Сначала пробуем асинхронный режим: он не упирается в таймаут релея.
+  // ANONYMIZER_SYNC=1 форсирует старый синхронный путь (отладка вживую).
+  if (process.env.ANONYMIZER_SYNC !== '1') {
+    try {
+      const viaJob = await anonymizeViaJob(base, payload, token);
+      if (viaJob) return viaJob;
+      // null = сервер старой версии, без /jobs — проваливаемся в синхронный путь.
+    } catch (err) {
+      if (err instanceof AnonymizerUnavailableError) throw err;
+      throw new AnonymizerUnavailableError(
+        `Анонимизатор недоступен: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   let res: { status: number; body: string };
   try {
     res = await postJson(`${base}/anonymize`, { text, ...(stages ?? {}) }, token, timeoutMs);
@@ -117,7 +240,7 @@ export async function anonymizeRemote(
     if (!isTimeout) {
       try {
         await new Promise((r) => setTimeout(r, 1000));
-        res = await postJson(`${base}/anonymize`, { text, ...(stages ?? {}) }, token, timeoutMs);
+        res = await postJson(`${base}/anonymize`, payload, token, timeoutMs);
       } catch (retryErr) {
         throw new AnonymizerUnavailableError(
           `Анонимизатор недоступен: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
