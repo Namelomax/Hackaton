@@ -1,15 +1,27 @@
 /**
  * Единственная модель чата (пока без выбора в UI).
+ *
  * ВАЖНО: это же значение — дефолт, когда ALLOWED_OLLAMA_MODELS не задан в env
- * (см. parseAllowedOllamaModelsFromServerEnv). Раньше здесь стоял qwen3.5:9b —
- * из-за этого любой инстанс без ALLOWED_OLLAMA_MODELS (напр. прод-деплой, где
- * переменную забыли) грузил qwen ВМЕСТО gemma и на общей карте копились две
- * модели → OOM. Держим тут актуальную модель.
+ * (см. parseAllowedOllamaModelsFromServerEnv). Значение здесь и значение в env
+ * ОБЯЗАНЫ совпадать: если они разойдутся, инстанс без переменной поднимет
+ * другую модель, и на общей карте окажутся загружены две сразу → OOM. Именно
+ * это уже случалось, когда тут стоял qwen, а в env — gemma.
+ *
+ * Сейчас qwen3.5:9b: gemma4:12b в Q4 занимает 6.86 ГБ и на 10-гигабайтной карте
+ * (RTX 3080, ~7 ГБ свободных под модель) грузилась лишь частично —
+ * `offloaded 34/49 layers`, 2.7 ГБ весов оставались на CPU. Отсюда 18 ток/с
+ * генерации и провалы prompt eval до 27 ток/с при промахе кэша. 9B помещается
+ * в карту целиком.
+ *
+ * После смены модели проверьте в логе Ollama строку `load_tensors: offloaded
+ * N/M layers to GPU` — N должно равняться M. Если нет, уменьшайте
+ * OLLAMA_CONTEXT_LENGTH (KV-кэш ест VRAM линейно по контексту) или снимайте
+ * GLiNER с видеокарты: `server.py --device cpu`.
  */
-export const FIXED_CHAT_MODEL = 'gemma4:12b';
+export const FIXED_CHAT_MODEL = 'qwen3.5:9b';
 
 /** Allowed local chat models (must match `ollama list` names). */
-export const DEFAULT_LOCAL_CHAT_MODELS = ['gemma4:12b'] as const;
+export const DEFAULT_LOCAL_CHAT_MODELS = ['qwen3.5:9b'] as const;
 
 /** Короткие подписи для селектора моделей в UI */
 export const LOCAL_MODEL_LABELS: Record<string, string> = {
