@@ -27,6 +27,86 @@ export type ChatTransportBodyExtras = {
   anonymize?: boolean;
 };
 
+/**
+ * Опрос фоновой задачи анонимизации: GET /api/anonymize?jobId=... пока не
+ * вернётся {done:true}.
+ *
+ * Потолка по времени здесь СОЗНАТЕЛЬНО нет. Раньше ожидание сидело внутри
+ * серверной инвокации, и её предел (maxDuration) становился пределом
+ * анонимизации: на 270-й секунде мы обрывали живую задачу. Теперь ждёт
+ * браузер, а он никем не ограничен — задача считается ровно столько, сколько
+ * нужно. Цикл заканчивается только по готовности, по ошибке сервера или по
+ * отмене пользователем (signal).
+ *
+ * Возвращает финальный JSON, либо null — если нужно уйти в fallback.
+ */
+async function pollAnonymizeJob(
+  jobId: string,
+  convId: string | null,
+  signal: AbortSignal | undefined,
+  onTick: (elapsedSec: number) => void,
+): Promise<any | null> {
+  const startedAt = Date.now();
+  // Короткие тексты успевают за секунду; на длинных разряжаем опрос, чтобы не
+  // молотить релей сотнями запросов.
+  let delayMs = 1000;
+  let networkFailures = 0;
+
+  for (;;) {
+    await new Promise((r) => setTimeout(r, delayMs));
+    delayMs = Math.min(delayMs * 1.4, 5000);
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+    onTick(Math.round((Date.now() - startedAt) / 1000));
+
+    let res: Response;
+    try {
+      const qs = new URLSearchParams({ jobId });
+      if (convId) qs.set('conversationId', convId);
+      res = await fetch(`/api/anonymize?${qs}`, { signal, cache: 'no-store' });
+    } catch (err) {
+      if ((err as any)?.name === 'AbortError' || signal?.aborted) throw err;
+      // Вкладка ушла в фон, сеть моргнула — задача на сервере от этого не
+      // умирает. Сдаёмся только после серии подряд неудачных опросов.
+      if (++networkFailures > 10) {
+        toast.error('Связь с анонимизатором потеряна', {
+          description: 'Отправляю через локальную модель (данные не уходят в облако).',
+        });
+        return null;
+      }
+      continue;
+    }
+    networkFailures = 0;
+
+    if (res.status === 503) {
+      let info: any = null;
+      try {
+        info = JSON.parse(await res.text());
+      } catch {}
+      toast.warning('Анонимизатор недоступен', {
+        description: info?.error
+          ? `${info.error} Отправляю через локальную модель.`
+          : 'Документ будет обработан локальной моделью (данные не уходят в облако).',
+      });
+      return null;
+    }
+
+    let json: any = null;
+    try {
+      json = JSON.parse(await res.text());
+    } catch {
+      continue; // не JSON — считаем сбоем одного опроса, спросим ещё раз
+    }
+
+    if (!res.ok || !json?.ok) {
+      toast.error('Не удалось анонимизировать документ', {
+        description: json?.error || 'Отправляю через локальную модель.',
+      });
+      return null;
+    }
+    if (json.done) return json;
+  }
+}
+
 const AttachmentsSection = () => {
   const attachments = usePromptInputAttachments();
 
@@ -172,6 +252,9 @@ export const PromptInputWrapper = ({
   // ── Preview анонимизации документа перед отправкой в облако ──
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
+  // Секунды с момента постановки задачи — чтобы ожидание в 3-4 минуты не
+  // выглядело зависанием.
+  const [previewElapsed, setPreviewElapsed] = useState(0);
   const [previewText, setPreviewText] = useState('');
   const [previewSummary, setPreviewSummary] = useState<Record<string, number>>({});
   const [previewMapping, setPreviewMapping] = useState<Record<string, string>>({});
@@ -198,6 +281,7 @@ export const PromptInputWrapper = ({
       signal?: AbortSignal,
     ): Promise<'confirm' | 'cancel' | 'fallback'> => {
       setPreviewLoading(true);
+      setPreviewElapsed(0);
       setPreviewText('');
       setPreviewSummary({});
       setPreviewMapping({});
@@ -277,6 +361,17 @@ export const PromptInputWrapper = ({
             description: json?.error || 'Отправляю через локальную модель.',
           });
           return 'fallback';
+        }
+        // POST только ПОСТАВИЛ задачу (202 {jobId}) — досматриваем её опросом.
+        // Само ожидание живёт здесь, в браузере, поэтому лимит серверной
+        // функции больше не ограничивает длительность анонимизации.
+        if (json.jobId && !json.done) {
+          const finished = await pollAnonymizeJob(json.jobId, convId, signal, setPreviewElapsed);
+          if (!finished) {
+            setPreviewOpen(false);
+            return 'fallback';
+          }
+          json = finished;
         }
         setPreviewText(String(json.anonymizedText || ''));
         setPreviewSummary(json.summary || {});
@@ -505,7 +600,7 @@ return (
             <div className="max-h-[45vh] overflow-auto rounded-md border bg-muted/30 p-3">
               {previewLoading ? (
                 <div className="text-sm text-muted-foreground">
-                  Анонимизация… (короткое сообщение — быстро; для больших расшифровок от 30 секунд до пары минут — можно переключиться на другую вкладку, процесс продолжится)
+                  Анонимизация{previewElapsed > 0 ? `… ${previewElapsed} с` : '…'} (короткое сообщение — быстро; для больших расшифровок от 30 секунд до нескольких минут — можно переключиться на другую вкладку, процесс продолжится)
                 </div>
               ) : (
                 <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed">{previewText}</pre>
