@@ -9,7 +9,12 @@ import {
   getConversationMapping,
   saveConversationMapping,
 } from '@/lib/getPromt';
-import { anonymizeRemote, AnonymizerUnavailableError } from './remote-client';
+import {
+  anonymizeRemote,
+  AnonymizerUnavailableError,
+  fetchAnonymizeJob,
+  submitAnonymizeJob,
+} from './remote-client';
 import {
   applyMappingForward,
   applyMappingForwardDeep,
@@ -68,6 +73,71 @@ export async function anonymizeNewText(
     mapping: merged.conversation.mapping,
     added: merged.added,
     summary: remote.summary ?? {},
+  };
+}
+
+/**
+ * Старт анонимизации в фоне: ставим задачу на сервере и сразу отдаём её id.
+ *
+ * Возвращает:
+ *   {kind:'job', jobId}   — задача принята, опрашивать `completeAnonymizeJob`;
+ *   {kind:'done', result} — работы не было (пустой текст) либо сервер старой
+ *                           версии без /jobs и мы отработали синхронно.
+ *
+ * Смысл разделения на старт и завершение — в том, чтобы НИ ОДИН HTTP-запрос
+ * не жил дольше пары секунд: и релей туннеля, и Vercel ограничивают именно
+ * длительность одного запроса, а не общее время работы.
+ */
+export type AnonymizeStart =
+  | { kind: 'job'; jobId: string }
+  | { kind: 'done'; result: AnonymizeTextResult };
+
+export async function startAnonymizeJob(
+  text: string,
+  conversationId?: string | null,
+): Promise<AnonymizeStart> {
+  if (!text || !text.trim()) {
+    const conv = await loadConversation(conversationId);
+    return {
+      kind: 'done',
+      result: { anonymizedText: text, mapping: conv.mapping, added: 0, summary: {} },
+    };
+  }
+
+  const jobId = await submitAnonymizeJob(text);
+  if (jobId) return { kind: 'job', jobId };
+
+  // Анонимизатор без job-API — отрабатываем по-старому, одним запросом.
+  return { kind: 'done', result: await anonymizeNewText(text, conversationId) };
+}
+
+/**
+ * Один опрос фоновой задачи. Пока не готово — {done:false}. Когда готово,
+ * вливаем результат в канонический mapping диалога и сохраняем: слияние
+ * происходит ровно один раз, в момент завершения, а не на каждом опросе.
+ */
+export async function completeAnonymizeJob(
+  jobId: string,
+  conversationId?: string | null,
+): Promise<{ done: false } | { done: true; result: AnonymizeTextResult }> {
+  const state = await fetchAnonymizeJob(jobId);
+  if (state.status !== 'done') return { done: false };
+
+  const conv = await loadConversation(conversationId);
+  const merged = mergeRemoteResult(conv, state.result);
+
+  if (conversationId && merged.added > 0) {
+    await saveConversationMapping(conversationId, merged.conversation);
+  }
+
+  return {
+    done: true,
+    result: {
+      anonymizedText: merged.anonymizedText,
+      mapping: merged.conversation.mapping,
+      added: merged.added,
+      summary: state.result.summary ?? {},
+    },
   };
 }
 
