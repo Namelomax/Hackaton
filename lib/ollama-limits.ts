@@ -1,12 +1,37 @@
+/**
+ * Понимает ли эндпоинт вендорские поля Ollama (`think`, `keep_alive`).
+ *
+ * Зачем проверка: обычный OpenAI-совместимый шлюз на неизвестное поле в теле
+ * отвечает 400, а не игнорирует его. Пока LLM жила в Ollama, поля можно было
+ * слать всегда; после переезда на внешний API это ломает каждый запрос.
+ *
+ * Определяем по адресу, с возможностью переопределить:
+ *   LLM_VENDOR_EXTENSIONS=ollama — слать всегда,
+ *   LLM_VENDOR_EXTENSIONS=none  — не слать никогда.
+ */
+export function supportsOllamaExtensions(baseUrl?: string): boolean {
+  const forced = process.env.LLM_VENDOR_EXTENSIONS?.trim().toLowerCase();
+  if (forced === 'ollama') return true;
+  if (forced === 'none') return false;
+
+  const url = (baseUrl || process.env.OLLAMA_BASE_URL || '').toLowerCase();
+  if (!url) return false;
+  // Локальный Ollama, он же за JupyterHub-прокси (порты 11433/11434),
+  // он же сервис `ollama` в compose.
+  return /(:1143[34]\b)|(\/proxy\/1143[34])|(\bollama\b)/.test(url);
+}
 
 export function applyOllamaOpenAiCompatOptions(
   body: Record<string, unknown>,
   useThinking: boolean,
+  baseUrl?: string,
 ): void {
+  // reasoning_effort — часть спецификации OpenAI, его понимают и сторонние
+  // шлюзы, поэтому шлём всегда. А `think` — вендорское поле Ollama.
   if (useThinking) {
-    body.think = true;
+    if (supportsOllamaExtensions(baseUrl)) body.think = true;
   } else {
-    body.think = false;
+    if (supportsOllamaExtensions(baseUrl)) body.think = false;
     body.reasoning_effort = 'none';
   }
 }
