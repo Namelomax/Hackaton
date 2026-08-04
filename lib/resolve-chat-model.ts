@@ -215,6 +215,11 @@ export function resolveChatLanguageModel(options: ResolveChatModelOptions = {}) 
             }
 
             parsed.stream = false;
+            // stream_options валиден ТОЛЬКО при stream=true. AI SDK добавляет его
+            // ({include_usage:true}) при стриминге; форсируя non-stream, обязаны его
+            // убрать — иначе строгие шлюзы (oui/Open WebUI) отвечают 400
+            // «Stream options can only be defined when stream=True».
+            delete parsed.stream_options;
 
             if (process.env.OLLAMA_LOG_CHAT_REQUEST === '1') {
               const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : (url as Request).url;
