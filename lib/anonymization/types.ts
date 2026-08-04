@@ -17,13 +17,31 @@ export interface ConversationMapping {
   counters: LabelCounters;
 }
 
-/** Ответ удалённого Python-сервиса /anonymize. */
+/**
+ * Фрагмент, который не удалось проверить через GLiNER.
+ *
+ * Один упавший кусок НЕ роняет весь документ: остальные куски анонимизируются
+ * штатно, а про этот честно сообщается наверх. Молча продолжать нельзя — в
+ * непроверенном фрагменте могли остаться ПДн, и пользователь должен решить,
+ * отправлять ли документ в облако.
+ */
+export interface AnonymizeWarning {
+  kind: 'gliner_chunk_failed';
+  /** Смещение фрагмента в исходном тексте. */
+  offset: number;
+  /** Длина фрагмента в символах. */
+  chars: number;
+  message: string;
+}
+
+/** Ответ удалённого Python-сервиса /anonymize или локального GLiNER-пайплайна. */
 export interface RemoteAnonymizeResult {
   anonymized_text: string;
   mapping: Mapping;
   summary: Record<string, number>;
   spans: { start: number; end: number; label: string; text: string }[];
   stages?: Record<string, boolean>;
+  warnings?: AnonymizeWarning[];
 }
 
 /** Результат канонической анонимизации одного текста. */

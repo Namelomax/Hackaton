@@ -10,7 +10,11 @@
  */
 import http from 'node:http';
 import https from 'node:https';
-import type { Mapping, RemoteAnonymizeResult } from './types';
+import { chunkText } from './chunking';
+import { canonicalizeEntities } from './canonicalize';
+import { applySpans, assignPlaceholders, findPlaceholderSpans } from './placeholders';
+import { rebalanceQuotes, resolveOverlaps, type Span } from './spans';
+import type { AnonymizeWarning, RemoteAnonymizeResult } from './types';
 
 export class AnonymizerUnavailableError extends Error {
   constructor(message: string) {
@@ -53,16 +57,59 @@ const DEFAULT_GLINER_LABELS = [
   'contract number',
 ];
 
-/** Метка GLiNER → placeholder-label (UPPERCASE, [A-Z_]). */
+/**
+ * Метка GLiNER → placeholder-label (UPPERCASE, [A-Z_]).
+ *
+ * Синонимы (`first name`, `city`, `company`…) взяты из `_DEFAULT_LABEL_MAP`
+ * Python-версии: набор меток задаётся через GLINER_LABELS и может отличаться
+ * от нашего дефолтного, а неизвестная метка иначе улетит в fallback-ветку и
+ * породит мусорный placeholder вроде `[FIRST_NAME]` вместо `[PERSON_N]`.
+ */
 const GLINER_LABEL_MAP: Record<string, string> = {
   person: 'PERSON',
+  name: 'PERSON',
+  'first name': 'PERSON',
+  'last name': 'PERSON',
+  nickname: 'PERSON',
   organization: 'ORG',
+  company: 'ORG',
   location: 'LOCATION',
+  address: 'LOCATION',
+  city: 'LOCATION',
+  street: 'LOCATION',
+  region: 'LOCATION',
+  country: 'LOCATION',
   date: 'DATE',
   email: 'EMAIL',
   'phone number': 'PHONE',
   'contract number': 'CONTRACT',
 };
+
+/**
+ * Размер куска, отправляемого в /extract.
+ *
+ * НЕ поднимать до лимита API (50 000 символов): GLiNER перестаёт видеть текст
+ * примерно после 1800 символов и молча отдаёт пустой список сущностей. Тихий
+ * пропуск опаснее HTTP 422 — документ «анонимизируется» успешно, а ПДн уходят
+ * в облако. 800 — то же значение, что в `RemoteGLiNERConfig.max_chars`.
+ */
+function glinerMaxChars(): number {
+  const raw = Number(process.env.GLINER_MAX_CHARS);
+  return Number.isFinite(raw) && raw > 0 ? Math.min(raw, 50_000) : 800;
+}
+
+/**
+ * Сколько запросов к /extract держать в полёте одновременно.
+ *
+ * Эндпоинт упирается в задержку сети, а не в вычисления: модель отвечает за
+ * 10–20 мс, а вызов целиком занимает ~1.2 с — это постоянные накладные расходы
+ * round-trip. Замер на Python-клиенте: 32 вызова за 40.7 с в один поток против
+ * 1.9 с в 32 потока. 16 — компромисс между скоростью и нагрузкой на общий шлюз.
+ */
+function glinerConcurrency(): number {
+  const raw = Number(process.env.GLINER_CONCURRENCY);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 16;
+}
 
 /** Сырая сущность из ответа GLiNER /extract. */
 export interface GlinerEntity {
@@ -98,63 +145,128 @@ function canonicalLabel(rawLabel: string): string {
     .replace(/^_+|_+$/g, '');
 }
 
+/** Пересекается ли спан хотя бы с одним из защищённых диапазонов. */
+function overlapsAny(start: number, end: number, ranges: [number, number][]): boolean {
+  return ranges.some(([a, b]) => start < b && a < end);
+}
+
 /**
- * Собрать результат анонимизации из сырых NER-сущностей GLiNER: разрешить
- * пересечения спанов, дедуплицировать одинаковый текст под одним плейсхолдером,
- * собрать anonymized_text/mapping/summary/spans. Чистая функция — без сети.
+ * Превратить сырые сущности GLiNER в спаны: отфильтровать неизвестные метки,
+ * проверить границы, срезать всё, что налезает на уже существующие в тексте
+ * плейсхолдеры.
+ *
+ * @param offset Смещение куска в исходном тексте — координаты сущностей
+ *   приходят локальные, относительно куска.
+ */
+function entitiesToSpans(
+  text: string,
+  entities: GlinerEntity[],
+  offset: number,
+  protectedRanges: [number, number][],
+): Span[] {
+  const out: Span[] = [];
+  for (const ent of entities) {
+    const label = canonicalLabel(String(ent?.label ?? ''));
+    if (!label) continue; // метка выродилась в пустую строку
+    const start = offset + Number(ent?.start);
+    const end = offset + Number(ent?.end);
+    if (!Number.isInteger(start) || !Number.isInteger(end)) continue;
+    if (end <= start || end > text.length || start < 0) continue;
+    if (overlapsAny(start, end, protectedRanges)) continue;
+    out.push({
+      start,
+      end,
+      label,
+      // Берём подстроку оригинала, а не ent.text: сервис мог вернуть текст с
+      // нормализованными пробелами, и тогда замена по offset'ам разъедется.
+      text: text.slice(start, end),
+      source: 'gliner',
+      score: Number.isFinite(ent?.score) ? ent.score : 0,
+    });
+  }
+  return out;
+}
+
+/**
+ * Полный пайплайн из спанов в результат: выравнивание кавычек → разрешение
+ * перекрытий по приоритету меток → канонизация падежных форм → назначение
+ * плейсхолдеров → подстановка.
+ */
+function buildResultFromSpans(
+  text: string,
+  rawSpans: Span[],
+  warnings: AnonymizeWarning[],
+): RemoteAnonymizeResult {
+  const balanced = rawSpans.map((s) => rebalanceQuotes(text, s));
+  const resolved = resolveOverlaps(balanced);
+  const canonical = canonicalizeEntities(resolved);
+  const { mapping, placeholderBySpan, summary } = assignPlaceholders(canonical);
+
+  return {
+    anonymized_text: applySpans(text, canonical, placeholderBySpan),
+    mapping,
+    summary,
+    spans: canonical.map((s) => ({ start: s.start, end: s.end, label: s.label, text: s.text })),
+    ...(warnings.length > 0 ? { warnings } : {}),
+  };
+}
+
+/**
+ * Собрать результат анонимизации из сырых NER-сущностей GLiNER. Чистая функция —
+ * без сети; используется и однокусковым путём, и тестами.
  */
 export function buildAnonymizationFromEntities(
   text: string,
   entities: GlinerEntity[],
 ): RemoteAnonymizeResult {
-  // Разрешаем пересечения: жадно по убыванию score, отбрасывая всё, что
-  // пересекается с уже принятым интервалом (защита от вложенных спанов).
-  const sortedByScore = [...entities].sort((a, b) => b.score - a.score);
-  const accepted: GlinerEntity[] = [];
-  for (const ent of sortedByScore) {
-    const overlaps = accepted.some((a) => ent.start < a.end && a.start < ent.end);
-    if (!overlaps) accepted.push(ent);
-  }
+  const protectedRanges = findPlaceholderSpans(text);
+  return buildResultFromSpans(text, entitiesToSpans(text, entities, 0, protectedRanges), []);
+}
 
-  // Порядок в тексте нужен, чтобы mapping брал originalText первого вхождения
-  // группы, а замены справа налево не сбивали offset'ы.
-  const acceptedByPosition = [...accepted].sort((a, b) => a.start - b.start);
+/**
+ * Сборка результата из ПОКУСКОВЫХ ответов GLiNER. Вся логика, идущая после
+ * сети, — здесь: сдвиг offset'ов, учёт упавших кусков, защита от повторной
+ * анонимизации. Чистая функция, поэтому тестируется без моков HTTP.
+ *
+ * Бросает `AnonymizerUnavailableError`, если не обработан НИ ОДИН кусок:
+ * молча вернуть исходный текст нельзя — вызывающий код счёл бы его
+ * анонимизированным и отправил в облако как есть.
+ */
+export function buildAnonymizationFromChunks(
+  text: string,
+  chunks: { offset: number; chunk: string }[],
+  results: (GlinerEntity[] | Error)[],
+): RemoteAnonymizeResult {
+  const protectedRanges = findPlaceholderSpans(text);
+  const spans: Span[] = [];
+  const warnings: AnonymizeWarning[] = [];
 
-  const mapping: Mapping = {};
-  const summary: Record<string, number> = {};
-  const spans: { start: number; end: number; label: string; text: string }[] = [];
-  const placeholderByGroup = new Map<string, string>();
-  const counters: Record<string, number> = {};
-  const placeholderForEntity = new Map<GlinerEntity, string>();
-
-  for (const ent of acceptedByPosition) {
-    const label = canonicalLabel(ent.label);
-    if (!label) continue; // метка выродилась в пустую строку — пропускаем
-    const groupKey = `${label}|${ent.text.trim().toLowerCase()}`;
-    let placeholder = placeholderByGroup.get(groupKey);
-    if (!placeholder) {
-      const next = (counters[label] ?? 0) + 1;
-      counters[label] = next;
-      placeholder = `[${label}_${next}]`;
-      placeholderByGroup.set(groupKey, placeholder);
-      mapping[placeholder] = ent.text;
-      summary[label] = next;
+  for (let i = 0; i < chunks.length; i++) {
+    const { offset, chunk } = chunks[i];
+    const result = results[i];
+    if (result instanceof Error || result === undefined) {
+      const reason = result instanceof Error ? result.message : 'ответ не получен';
+      const message =
+        `Фрагмент текста не удалось проверить через GLiNER (${reason}). ` +
+        'Персональные данные в этом фрагменте могли остаться незамаскированными.';
+      warnings.push({ kind: 'gliner_chunk_failed', offset, chars: chunk.length, message });
+      console.error(
+        `[anonymize] GLiNER: фрагмент ${offset}-${offset + chunk.length} не обработан ` +
+          `(${reason}) — возможна утечка ПДн`,
+      );
+      continue;
     }
-    placeholderForEntity.set(ent, placeholder);
-    spans.push({ start: ent.start, end: ent.end, label, text: ent.text });
+    spans.push(...entitiesToSpans(text, result, offset, protectedRanges));
   }
 
-  // Замены — справа налево по позиции в тексте, чтобы offset'ы не съезжали.
-  let anonymizedText = text;
-  const acceptedDescByPosition = [...acceptedByPosition].sort((a, b) => b.start - a.start);
-  for (const ent of acceptedDescByPosition) {
-    const placeholder = placeholderForEntity.get(ent);
-    if (!placeholder) continue;
-    anonymizedText =
-      anonymizedText.slice(0, ent.start) + placeholder + anonymizedText.slice(ent.end);
+  if (chunks.length > 0 && warnings.length === chunks.length) {
+    const first = results.find((r): r is Error => r instanceof Error);
+    throw new AnonymizerUnavailableError(
+      `Анонимизатор недоступен: ${first?.message ?? 'все фрагменты не обработаны'}`,
+    );
   }
 
-  return { anonymized_text: anonymizedText, mapping, summary, spans };
+  return buildResultFromSpans(text, spans, warnings);
 }
 
 function request(
@@ -344,50 +456,72 @@ export async function anonymizeRemote(
     return { anonymized_text: text, mapping: {}, summary: {}, spans: [] };
   }
 
-  const payload = { text, labels: glinerLabels(), threshold: glinerThreshold() };
+  const labels = glinerLabels();
+  const threshold = glinerThreshold();
 
-  let res: { status: number; body: string };
-  try {
-    res = await postJson(`${base}/extract`, payload, token, timeoutMs);
-  } catch (err) {
-    // Мгновенный обрыв (connection reset / refused) — не «анонимизатор упал»,
-    // а транзиентная сеть: пробуем ещё раз, прежде чем отключать анонимизацию.
-    // Настоящий таймаут (запрос шёл долго) не ретраим — время уже потрачено.
-    const elapsedGuess = String(err instanceof Error ? err.message : err);
-    const isTimeout = /таймаут|timeout/i.test(elapsedGuess);
-    if (!isTimeout) {
-      try {
-        await new Promise((r) => setTimeout(r, 1000));
-        res = await postJson(`${base}/extract`, payload, token, timeoutMs);
-      } catch (retryErr) {
-        throw new AnonymizerUnavailableError(
-          `Анонимизатор недоступен: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
-        );
-      }
-    } else {
-      throw new AnonymizerUnavailableError(
-        `Анонимизатор недоступен: ${err instanceof Error ? err.message : String(err)}`,
-      );
+  /** Один вызов /extract. Бросает Error — вызывающий ловит её по-кусочно. */
+  const extractChunk = async (chunk: string): Promise<GlinerEntity[]> => {
+    const payload = { text: chunk, labels, threshold };
+
+    let res: { status: number; body: string };
+    try {
+      res = await postJson(`${base}/extract`, payload, token, timeoutMs);
+    } catch (err) {
+      // Мгновенный обрыв (connection reset / refused) — не «сервис упал», а
+      // транзиентная сеть: пробуем ещё раз. Настоящий таймаут не ретраим —
+      // время уже потрачено, а кусков впереди ещё много.
+      const message = String(err instanceof Error ? err.message : err);
+      if (/таймаут|timeout/i.test(message)) throw err;
+      await new Promise((r) => setTimeout(r, 1000));
+      res = await postJson(`${base}/extract`, payload, token, timeoutMs);
     }
+
+    if (res.status < 200 || res.status >= 300) {
+      throw new Error(`GLiNER вернул HTTP ${res.status}: ${res.body.slice(0, 200)}`);
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(res.body);
+    } catch {
+      throw new Error(`GLiNER вернул не-JSON: ${res.body.slice(0, 200)}`);
+    }
+    // Сервис отдаёт {"entities": [...]}; принимаем и голый список — контракт у
+    // подобных обёрток любит меняться.
+    const entities = Array.isArray(parsed)
+      ? parsed
+      : (parsed as { entities?: unknown } | null)?.entities;
+    if (!Array.isArray(entities)) {
+      throw new Error('GLiNER вернул некорректную структуру');
+    }
+    return entities.filter((e): e is GlinerEntity => typeof e === 'object' && e !== null);
+  };
+
+  const chunks = chunkText(text, glinerMaxChars(), { group: false });
+  if (chunks.length === 0) {
+    return { anonymized_text: text, mapping: {}, summary: {}, spans: [] };
   }
 
-  if (res.status < 200 || res.status >= 300) {
-    throw new AnonymizerUnavailableError(
-      `GLiNER вернул HTTP ${res.status}: ${res.body.slice(0, 200)}`,
-    );
-  }
+  // Результаты собираются ПО ИНДЕКСУ куска, а не по порядку завершения —
+  // вывод детерминирован независимо от того, какой запрос ответил первым.
+  const results: (GlinerEntity[] | Error)[] = new Array(chunks.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= chunks.length) return;
+      try {
+        results[i] = await extractChunk(chunks[i].chunk);
+      } catch (err) {
+        results[i] = err instanceof Error ? err : new Error(String(err));
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(glinerConcurrency(), chunks.length) }, worker),
+  );
 
-  let parsed: { entities?: unknown };
-  try {
-    parsed = JSON.parse(res.body) as { entities?: unknown };
-  } catch {
-    throw new AnonymizerUnavailableError(`GLiNER вернул не-JSON: ${res.body.slice(0, 200)}`);
-  }
-  if (!Array.isArray(parsed.entities)) {
-    throw new AnonymizerUnavailableError('GLiNER вернул некорректную структуру');
-  }
-
-  return buildAnonymizationFromEntities(text, parsed.entities as GlinerEntity[]);
+  return buildAnonymizationFromChunks(text, chunks, results);
 }
 
 /** Проверка доступности (GET /health). */
