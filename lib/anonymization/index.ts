@@ -23,7 +23,7 @@ import {
 } from './merge';
 import { scrubStructured, scrubSensitiveOrgs, restoreNonSensitivePlaceholders } from './scrub';
 import { deanonymize, deepDeanonymize } from './deanonymize';
-import type { ConversationMapping, Mapping } from './types';
+import type { AnonymizeWarning, ConversationMapping, Mapping } from './types';
 
 export { AnonymizerUnavailableError };
 export { deanonymize, deepDeanonymize };
@@ -46,6 +46,12 @@ export interface AnonymizeTextResult {
   mapping: Mapping;
   added: number;
   summary: Record<string, number>;
+  /**
+   * Фрагменты, которые не удалось проверить. Пустой массив — норма; непустой
+   * означает, что часть текста ушла дальше НЕпроверенной, и это нужно показать
+   * пользователю до отправки в облако.
+   */
+  warnings?: AnonymizeWarning[];
 }
 
 /**
@@ -73,6 +79,7 @@ export async function anonymizeNewText(
     mapping: merged.conversation.mapping,
     added: merged.added,
     summary: remote.summary ?? {},
+    ...(remote.warnings?.length ? { warnings: remote.warnings } : {}),
   };
 }
 
@@ -137,6 +144,7 @@ export async function completeAnonymizeJob(
       mapping: merged.conversation.mapping,
       added: merged.added,
       summary: state.result.summary ?? {},
+      ...(state.result.warnings?.length ? { warnings: state.result.warnings } : {}),
     },
   };
 }
