@@ -1,7 +1,11 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { createOpenAI } from '@ai-sdk/openai';
 import { FIXED_CHAT_MODEL, normalizeCloudModel, parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
-import { applyOllamaOpenAiCompatOptions, ollamaHardCapOutputTokens } from '@/lib/ollama-limits';
+import {
+  applyOllamaOpenAiCompatOptions,
+  ollamaHardCapOutputTokens,
+  supportsOllamaExtensions,
+} from '@/lib/ollama-limits';
 import https from 'node:https';
 import http from 'node:http';
 import { Readable } from 'node:stream';
@@ -173,7 +177,7 @@ export function resolveChatLanguageModel(options: ResolveChatModelOptions = {}) 
           try {
             const parsed = JSON.parse(init.body) as Record<string, unknown>;
             const useThinking = Boolean(options.useThinking);
-            applyOllamaOpenAiCompatOptions(parsed, useThinking);
+            applyOllamaOpenAiCompatOptions(parsed, useThinking, baseURL);
             // Жёсткий потолок (предохранитель), а не дефолт ответа: per-call
             // maxOutputTokens задаётся в chat/document агентах.
             const cap = ollamaHardCapOutputTokens();
@@ -184,10 +188,16 @@ export function resolveChatLanguageModel(options: ResolveChatModelOptions = {}) 
             // Раньше было жёстко -1 (вечно) — на общей карте это копило модели при
             // переключении/RAG до OOM. Теперь конечный дефолт «30m» и override через
             // OLLAMA_KEEP_ALIVE ('-1' — прежнее поведение, '300' — секунды, '10m' — строка).
-            const kaEnv = process.env.OLLAMA_KEEP_ALIVE?.trim();
-            parsed.keep_alive = kaEnv
-              ? (/^-?\d+$/.test(kaEnv) ? Number(kaEnv) : kaEnv)
-              : '30m';
+            //
+            // Поле вендорское: у сторонних OpenAI-совместимых шлюзов его нет, и
+            // они отвечают на него 400, а не игнорируют. Управлением памятью
+            // GPU там занимается сам провайдер, так что и смысла слать нет.
+            if (supportsOllamaExtensions(baseURL)) {
+              const kaEnv = process.env.OLLAMA_KEEP_ALIVE?.trim();
+              parsed.keep_alive = kaEnv
+                ? (/^-?\d+$/.test(kaEnv) ? Number(kaEnv) : kaEnv)
+                : '30m';
+            }
 
             // Стриминг. Через прокси JupyterHub SSE часто буферизуется/обрывается,
             // поэтому по умолчанию форсим non-stream и сами заворачиваем ответ в SSE

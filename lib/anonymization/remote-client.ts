@@ -10,7 +10,7 @@
  */
 import http from 'node:http';
 import https from 'node:https';
-import type { RemoteAnonymizeResult } from './types';
+import type { Mapping, RemoteAnonymizeResult } from './types';
 
 export class AnonymizerUnavailableError extends Error {
   constructor(message: string) {
@@ -32,6 +32,129 @@ function anonymizerBaseUrl(): string {
     throw new AnonymizerUnavailableError('ANONYMIZER_URL не задан в окружении');
   }
   return url.replace(/\/+$/, '');
+}
+
+function glinerBaseUrl(): string {
+  const url = process.env.GLINER_URL?.trim();
+  if (!url) {
+    throw new AnonymizerUnavailableError('GLINER_URL не задан в окружении');
+  }
+  return url.replace(/\/+$/, '');
+}
+
+/** Метки по умолчанию, если GLINER_LABELS не задан в окружении. */
+const DEFAULT_GLINER_LABELS = [
+  'person',
+  'organization',
+  'location',
+  'date',
+  'email',
+  'phone number',
+  'contract number',
+];
+
+/** Метка GLiNER → placeholder-label (UPPERCASE, [A-Z_]). */
+const GLINER_LABEL_MAP: Record<string, string> = {
+  person: 'PERSON',
+  organization: 'ORG',
+  location: 'LOCATION',
+  date: 'DATE',
+  email: 'EMAIL',
+  'phone number': 'PHONE',
+  'contract number': 'CONTRACT',
+};
+
+/** Сырая сущность из ответа GLiNER /extract. */
+export interface GlinerEntity {
+  text: string;
+  label: string;
+  start: number;
+  end: number;
+  score: number;
+}
+
+function glinerLabels(): string[] {
+  const csv = process.env.GLINER_LABELS?.trim();
+  if (!csv) return DEFAULT_GLINER_LABELS;
+  const parsed = csv
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return parsed.length > 0 ? parsed : DEFAULT_GLINER_LABELS;
+}
+
+function glinerThreshold(): number {
+  const raw = Number(process.env.GLINER_THRESHOLD);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0.45;
+}
+
+/** Каноническая метка GLiNER → placeholder-label; неизвестная метка — fallback. */
+function canonicalLabel(rawLabel: string): string {
+  const known = GLINER_LABEL_MAP[rawLabel.toLowerCase()];
+  if (known) return known;
+  return rawLabel
+    .toUpperCase()
+    .replace(/[^A-Z]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+/**
+ * Собрать результат анонимизации из сырых NER-сущностей GLiNER: разрешить
+ * пересечения спанов, дедуплицировать одинаковый текст под одним плейсхолдером,
+ * собрать anonymized_text/mapping/summary/spans. Чистая функция — без сети.
+ */
+export function buildAnonymizationFromEntities(
+  text: string,
+  entities: GlinerEntity[],
+): RemoteAnonymizeResult {
+  // Разрешаем пересечения: жадно по убыванию score, отбрасывая всё, что
+  // пересекается с уже принятым интервалом (защита от вложенных спанов).
+  const sortedByScore = [...entities].sort((a, b) => b.score - a.score);
+  const accepted: GlinerEntity[] = [];
+  for (const ent of sortedByScore) {
+    const overlaps = accepted.some((a) => ent.start < a.end && a.start < ent.end);
+    if (!overlaps) accepted.push(ent);
+  }
+
+  // Порядок в тексте нужен, чтобы mapping брал originalText первого вхождения
+  // группы, а замены справа налево не сбивали offset'ы.
+  const acceptedByPosition = [...accepted].sort((a, b) => a.start - b.start);
+
+  const mapping: Mapping = {};
+  const summary: Record<string, number> = {};
+  const spans: { start: number; end: number; label: string; text: string }[] = [];
+  const placeholderByGroup = new Map<string, string>();
+  const counters: Record<string, number> = {};
+  const placeholderForEntity = new Map<GlinerEntity, string>();
+
+  for (const ent of acceptedByPosition) {
+    const label = canonicalLabel(ent.label);
+    if (!label) continue; // метка выродилась в пустую строку — пропускаем
+    const groupKey = `${label}|${ent.text.trim().toLowerCase()}`;
+    let placeholder = placeholderByGroup.get(groupKey);
+    if (!placeholder) {
+      const next = (counters[label] ?? 0) + 1;
+      counters[label] = next;
+      placeholder = `[${label}_${next}]`;
+      placeholderByGroup.set(groupKey, placeholder);
+      mapping[placeholder] = ent.text;
+      summary[label] = next;
+    }
+    placeholderForEntity.set(ent, placeholder);
+    spans.push({ start: ent.start, end: ent.end, label, text: ent.text });
+  }
+
+  // Замены — справа налево по позиции в тексте, чтобы offset'ы не съезжали.
+  let anonymizedText = text;
+  const acceptedDescByPosition = [...acceptedByPosition].sort((a, b) => b.start - a.start);
+  for (const ent of acceptedDescByPosition) {
+    const placeholder = placeholderForEntity.get(ent);
+    if (!placeholder) continue;
+    anonymizedText =
+      anonymizedText.slice(0, ent.start) + placeholder + anonymizedText.slice(ent.end);
+  }
+
+  return { anonymized_text: anonymizedText, mapping, summary, spans };
 }
 
 function request(
@@ -132,6 +255,10 @@ export async function submitAnonymizeJob(
   text: string,
   stages?: AnonymizeStages,
 ): Promise<string | null> {
+  // GLiNER не имеет job-API — сразу уходим на синхронный anonymizeNewText →
+  // anonymizeRemote (POST /extract).
+  if (process.env.GLINER_URL?.trim()) return null;
+
   const base = anonymizerBaseUrl();
   const token = process.env.ANONYMIZER_TOKEN?.trim() ?? '';
   const submit = await request(
@@ -195,27 +322,33 @@ export async function fetchAnonymizeJob(jobId: string): Promise<JobState> {
   return { status: 'running' };
 }
 
-/** Вызвать удалённый /anonymize. Бросает AnonymizerUnavailableError при сбое. */
+/**
+ * Вызвать GLiNER `/extract`. GLiNER отдаёт только сырые NER-сущности —
+ * плейсхолдеры/mapping/anonymized_text собираем сами (buildAnonymizationFromEntities),
+ * остальной пайплайн (mergeRemoteResult, scrub, restoreNonSensitivePlaceholders)
+ * работает поверх этого результата без изменений.
+ *
+ * Бросает AnonymizerUnavailableError при сбое.
+ */
 export async function anonymizeRemote(
   text: string,
-  stages?: AnonymizeStages,
+  _stages?: AnonymizeStages,
 ): Promise<RemoteAnonymizeResult> {
-  const base = anonymizerBaseUrl();
-  const token = process.env.ANONYMIZER_TOKEN?.trim() ?? '';
-  // По умолчанию БЕЗ таймаута (0). Прежние 60 с обрывали живой анонимизатор:
-  // на боевой расшифровке он честно работает две минуты. Ограничение можно
-  // вернуть через ANONYMIZER_TIMEOUT_MS.
+  const base = glinerBaseUrl();
+  const token = process.env.GLINER_API_KEY?.trim() || process.env.OLLAMA_API_KEY?.trim() || '';
+  // По умолчанию БЕЗ таймаута (0), как и для прежнего анонимизатора — см.
+  // ANONYMIZER_TIMEOUT_MS.
   const timeoutMs = Number(process.env.ANONYMIZER_TIMEOUT_MS ?? 0);
 
   if (!text || !text.trim()) {
     return { anonymized_text: text, mapping: {}, summary: {}, spans: [] };
   }
 
-  const payload = { text, ...(stages ?? {}) };
+  const payload = { text, labels: glinerLabels(), threshold: glinerThreshold() };
 
   let res: { status: number; body: string };
   try {
-    res = await postJson(`${base}/anonymize`, { text, ...(stages ?? {}) }, token, timeoutMs);
+    res = await postJson(`${base}/extract`, payload, token, timeoutMs);
   } catch (err) {
     // Мгновенный обрыв (connection reset / refused) — не «анонимизатор упал»,
     // а транзиентная сеть: пробуем ещё раз, прежде чем отключать анонимизацию.
@@ -225,7 +358,7 @@ export async function anonymizeRemote(
     if (!isTimeout) {
       try {
         await new Promise((r) => setTimeout(r, 1000));
-        res = await postJson(`${base}/anonymize`, payload, token, timeoutMs);
+        res = await postJson(`${base}/extract`, payload, token, timeoutMs);
       } catch (retryErr) {
         throw new AnonymizerUnavailableError(
           `Анонимизатор недоступен: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
@@ -240,26 +373,29 @@ export async function anonymizeRemote(
 
   if (res.status < 200 || res.status >= 300) {
     throw new AnonymizerUnavailableError(
-      `Анонимизатор вернул HTTP ${res.status}: ${res.body.slice(0, 200)}`,
+      `GLiNER вернул HTTP ${res.status}: ${res.body.slice(0, 200)}`,
     );
   }
 
-  let parsed: RemoteAnonymizeResult;
+  let parsed: { entities?: unknown };
   try {
-    parsed = JSON.parse(res.body) as RemoteAnonymizeResult;
+    parsed = JSON.parse(res.body) as { entities?: unknown };
   } catch {
-    throw new AnonymizerUnavailableError(
-      `Анонимизатор вернул не-JSON: ${res.body.slice(0, 200)}`,
-    );
+    throw new AnonymizerUnavailableError(`GLiNER вернул не-JSON: ${res.body.slice(0, 200)}`);
   }
-  if (typeof parsed.anonymized_text !== 'string' || typeof parsed.mapping !== 'object') {
-    throw new AnonymizerUnavailableError('Анонимизатор вернул некорректную структуру');
+  if (!Array.isArray(parsed.entities)) {
+    throw new AnonymizerUnavailableError('GLiNER вернул некорректную структуру');
   }
-  return parsed;
+
+  return buildAnonymizationFromEntities(text, parsed.entities as GlinerEntity[]);
 }
 
 /** Проверка доступности (GET /health). */
 export async function anonymizerHealthy(): Promise<boolean> {
+  // GLiNER не обязан иметь /health — реальная доступность проверится при
+  // первом /extract; ошибка там штатно уводит в fallback на локальную LLM.
+  if (process.env.GLINER_URL?.trim()) return true;
+
   try {
     const base = anonymizerBaseUrl();
     const token = process.env.ANONYMIZER_TOKEN?.trim() ?? '';

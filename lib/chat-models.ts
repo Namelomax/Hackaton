@@ -18,10 +18,16 @@
  * OLLAMA_CONTEXT_LENGTH (KV-кэш ест VRAM линейно по контексту) или снимайте
  * GLiNER с видеокарты: `server.py --device cpu`.
  */
-export const FIXED_CHAT_MODEL = 'qwen3.5:9b';
+export const FIXED_CHAT_MODEL = 'gemma-4-31b';
 
-/** Allowed local chat models (must match `ollama list` names). */
-export const DEFAULT_LOCAL_CHAT_MODELS = ['qwen3.5:9b'] as const;
+/**
+ * Разрешённые модели «локального» провайдера. Кавычки не случайны: с переездом
+ * на внешний шлюз (OLLAMA_BASE_URL указывает на него) провайдер остался
+ * OpenAI-совместимым, а вот идентификаторы моделей теперь в стиле шлюза
+ * (`gemma-4-31b`), а не тегов Ollama (`gemma4:31b`). Имя должно совпадать с
+ * тем, что отдаёт GET {BASE_URL}/models, символ в символ.
+ */
+export const DEFAULT_LOCAL_CHAT_MODELS = ['gemma-4-31b'] as const;
 
 /** Короткие подписи для селектора моделей в UI */
 export const LOCAL_MODEL_LABELS: Record<string, string> = {
