@@ -205,12 +205,80 @@ const DATE_VALUE_RE = new RegExp(
 /** Метки анонимайзера, которые всегда означают дату/время. */
 const DATE_LABEL_RE = /^(?:DATE|TIME|DATETIME|YEAR|MONTH|DAY|PERIOD|QUARTER|DEADLINE)/;
 
+/**
+ * Родовые слова, которые сервис анонимизации помечает как организации и людей.
+ * Маскировать их бессмысленно (ничего не раскрывают) и вредно: после обратной
+ * подстановки в протоколе появляются «Заказчик — организация заказчика» и
+ * «Заявку в организацию учреждение направлено» — исходная форма слова
+ * вставляется в чужой падеж.
+ *
+ * Фильтр живёт ЗДЕСЬ, на стороне протоколера, а не только в анонимизаторе:
+ * сервис теперь общий и его код нам не подчиняется.
+ */
+const GENERIC_ENTITY_WORDS = new Set([
+  'заказчик', 'исполнитель', 'подрядчик', 'поставщик', 'клиент',
+  'участник', 'участники', 'представитель', 'представители',
+  'сотрудник', 'сотрудники', 'коллега', 'коллеги', 'спикер',
+  'директор', 'руководитель', 'начальник', 'специалист', 'аналитик',
+  'команда', 'команды', 'сторона', 'стороны', 'пользователь',
+  'организация', 'организации', 'учреждение', 'учреждения',
+  'компания', 'компании', 'фирма', 'предприятие', 'отдел',
+  'департамент', 'служба', 'офис', 'филиал', 'подразделение',
+  'город', 'область', 'район', 'адрес', 'чат',
+  'протокол', 'договор', 'проект', 'система', 'программа', 'документ',
+]);
+
+/** Родовое ли это слово (в любом падеже). */
+export function isGenericEntityValue(value: string): boolean {
+  const cleaned = String(value ?? '')
+    .trim()
+    .replace(/^[«"'([]+|[»"')\].,;:!?—–-]+$/gu, '')
+    .toLowerCase()
+    .replace(/ё/g, 'е');
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return false;
+  return words.every((w) => {
+    for (const g of GENERIC_ENTITY_WORDS) {
+      if (w === g) return true;
+      // Падежи отсекаем по началу слова: «учреждению», «заказчика».
+      if (w.length > 4 && g.length >= 5 && w.startsWith(g.slice(0, 5))) return true;
+    }
+    return false;
+  });
+}
+
 function isNonSensitiveValue(placeholder: string, value: string): boolean {
   const label = labelOf(placeholder).toUpperCase();
   const v = String(value ?? '').trim();
   if (!v) return false;
   if (DATE_LABEL_RE.test(label) || DATE_VALUE_RE.test(v)) return true;
+  if (isGenericEntityValue(v)) return true;
   return NON_SENSITIVE_PHRASES.has(v.toLowerCase());
+}
+
+/**
+ * Убирает из mapping всё, что маскировать не нужно (даты, родовые слова), и
+ * возвращает оригиналы в тексте. Без чистки САМОГО mapping плейсхолдеры
+ * остаются в окне подтверждения и всплывают при деанонимизации ответа.
+ */
+export function dropNonSensitiveEntries(
+  text: string,
+  mapping: Record<string, string>,
+): { text: string; mapping: Record<string, string>; dropped: string[] } {
+  const nextMapping: Record<string, string> = {};
+  const dropped: string[] = [];
+  let out = text;
+
+  for (const [ph, original] of Object.entries(mapping)) {
+    if (isNonSensitiveValue(ph, original)) {
+      if (out.includes(ph)) out = out.split(ph).join(original);
+      dropped.push(`${ph}=«${original}»`);
+      continue;
+    }
+    nextMapping[ph] = original;
+  }
+
+  return { text: out, mapping: nextMapping, dropped };
 }
 
 /**

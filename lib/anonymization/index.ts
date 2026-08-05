@@ -21,14 +21,14 @@ import {
   countersFromMapping,
   mergeRemoteResult,
 } from './merge';
-import { scrubStructured, scrubSensitiveOrgs, restoreNonSensitivePlaceholders } from './scrub';
+import { scrubStructured, scrubSensitiveOrgs, restoreNonSensitivePlaceholders, dropNonSensitiveEntries, isGenericEntityValue } from './scrub';
 import { deanonymize, deepDeanonymize } from './deanonymize';
 import type { AnonymizeWarning, ConversationMapping, Mapping } from './types';
 
 export { AnonymizerUnavailableError };
 export { deanonymize, deepDeanonymize };
 export { applyMappingForward, applyMappingForwardDeep, countersFromMapping };
-export { scrubStructured, scrubSensitiveOrgs, restoreNonSensitivePlaceholders };
+export { scrubStructured, scrubSensitiveOrgs, restoreNonSensitivePlaceholders, dropNonSensitiveEntries, isGenericEntityValue };
 export type { Mapping, ConversationMapping };
 
 async function loadConversation(conversationId?: string | null): Promise<ConversationMapping> {
@@ -70,13 +70,27 @@ export async function anonymizeNewText(
   const remote = await anonymizeRemote(text);
   const merged = mergeRemoteResult(conv, remote);
 
+  // Сервис анонимизации общий, его настройки нам не подчиняются: он маскирует
+  // даты («Вчера», «следующей неделе», тайм-коды) и родовые слова («заказчик»,
+  // «учреждение»). И то и другое не ПДн, а в документе оборачивается
+  // «организация учреждение» и «Срок: следующей неделе». Чистим у себя: и
+  // текст, и сам mapping — иначе плейсхолдеры всплывут при деанонимизации.
+  const cleaned = dropNonSensitiveEntries(merged.anonymizedText, merged.conversation.mapping);
+  if (cleaned.dropped.length > 0) {
+    console.log(`🧹 не маскируем (не ПДн): ${cleaned.dropped.join(', ')}`);
+  }
+  const conversationOut =
+    cleaned.dropped.length > 0
+      ? { ...merged.conversation, mapping: cleaned.mapping }
+      : merged.conversation;
+
   if (conversationId && merged.added > 0) {
-    await saveConversationMapping(conversationId, merged.conversation);
+    await saveConversationMapping(conversationId, conversationOut);
   }
 
   return {
-    anonymizedText: merged.anonymizedText,
-    mapping: merged.conversation.mapping,
+    anonymizedText: cleaned.text,
+    mapping: conversationOut.mapping,
     added: merged.added,
     summary: remote.summary ?? {},
     ...(remote.warnings?.length ? { warnings: remote.warnings } : {}),
