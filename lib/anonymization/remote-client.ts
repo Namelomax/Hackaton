@@ -111,6 +111,53 @@ function glinerConcurrency(): number {
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 16;
 }
 
+/**
+ * Запасной лимит на кусок для /extract (символов), НЕ используется в основном
+ * пайплайне `anonymizeRemote` — там резка идёт через `chunkText` (см. выше),
+ * которая держит куски маленькими (~800 символов), потому что сама модель
+ * GLiNER «слепнет» и молча возвращает пустой список сущностей заметно раньше
+ * официального лимита API (~1800 символов) — см. комментарий в `chunking.ts`.
+ * `splitTextIntoChunks` ниже — самостоятельная чистая функция резки по
+ * границам блоков (абзац/строка), пригодная там, где нужен более крупный кусок
+ * и модель-блиндспот не актуален (например, другой NER-эндпоинт).
+ */
+const GLINER_MAX_CHARS = Number(process.env.GLINER_MAX_CHARS) || 45000;
+
+/**
+ * Разрезать текст на куски не длиннее `maxChars`, стараясь резать по границам
+ * БЛОКОВ, а не посреди слова: сначала ищем последний двойной перенос (граница
+ * абзаца) в пределах окна `maxChars`, если его нет — последний одиночный
+ * перенос, если и его нет — режем жёстко по `maxChars`. Конец куска включает
+ * сам перенос, поэтому конкатенация кусков даёт исходный текст без потерь, а
+ * `offset` — абсолютная позиция начала куска в исходном тексте.
+ */
+export function splitTextIntoChunks(
+  text: string,
+  maxChars: number,
+): Array<{ text: string; offset: number }> {
+  if (text.length <= maxChars) return [{ text, offset: 0 }];
+
+  const out: Array<{ text: string; offset: number }> = [];
+  let pos = 0;
+  while (pos < text.length) {
+    if (text.length - pos <= maxChars) {
+      out.push({ text: text.slice(pos), offset: pos });
+      break;
+    }
+    const window = text.slice(pos, pos + maxChars);
+    let boundary = window.lastIndexOf('\n\n');
+    let boundaryLen = 2;
+    if (boundary === -1) {
+      boundary = window.lastIndexOf('\n');
+      boundaryLen = 1;
+    }
+    const end = boundary === -1 ? pos + maxChars : pos + boundary + boundaryLen;
+    out.push({ text: text.slice(pos, end), offset: pos });
+    pos = end;
+  }
+  return out;
+}
+
 /** Сырая сущность из ответа GLiNER /extract. */
 export interface GlinerEntity {
   text: string;

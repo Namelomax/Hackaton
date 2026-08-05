@@ -1,4 +1,4 @@
-import { buildAnonymizationFromEntities } from '../remote-client';
+import { buildAnonymizationFromEntities, splitTextIntoChunks } from '../remote-client';
 
 describe('buildAnonymizationFromEntities — сборка результата из сырых GLiNER-сущностей', () => {
   it('базовый случай: person + organization → плейсхолдеры и mapping', () => {
@@ -43,5 +43,42 @@ describe('buildAnonymizationFromEntities — сборка результата �
     expect(res.anonymized_text).toBe('[PHONE_1] и [DATE_1]');
     expect(res.mapping['[PHONE_1]']).toBe('+7 999 123-45-67');
     expect(res.mapping['[DATE_1]']).toBe('10.01.2026');
+  });
+});
+
+describe('splitTextIntoChunks — резка текста на куски по границам блоков', () => {
+  it('короткий текст (< maxChars) → один кусок с offset 0', () => {
+    const text = 'Короткий текст без переносов';
+    const chunks = splitTextIntoChunks(text, 1000);
+    expect(chunks).toEqual([{ text, offset: 0 }]);
+  });
+
+  it('текст с двойным переносом режется по границе абзаца', () => {
+    const first = 'А'.repeat(30);
+    const second = 'Б'.repeat(30);
+    const text = `${first}\n\n${second}`;
+    // Окно чуть больше первого абзаца — граница \n\n должна попасть в него.
+    const maxChars = first.length + 5;
+    const chunks = splitTextIntoChunks(text, maxChars);
+
+    expect(chunks.length).toBe(2);
+    expect(chunks[0].offset).toBe(0);
+    expect(chunks[0].text).toBe(`${first}\n\n`);
+    expect(chunks[1].offset).toBe(chunks[0].text.length);
+    expect(chunks[1].text).toBe(second);
+    // Конкатенация кусков === исходный текст.
+    expect(chunks.map((c) => c.text).join('')).toBe(text);
+  });
+
+  it('offset корректен для всех кусков: text.slice(offset, offset+len) === chunk.text', () => {
+    const paragraphs = Array.from({ length: 20 }, (_, i) => `Абзац номер ${i}. `.repeat(20));
+    const text = paragraphs.join('\n\n');
+    const chunks = splitTextIntoChunks(text, 500);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) {
+      expect(text.slice(chunk.offset, chunk.offset + chunk.text.length)).toBe(chunk.text);
+    }
+    expect(chunks.map((c) => c.text).join('')).toBe(text);
   });
 });
