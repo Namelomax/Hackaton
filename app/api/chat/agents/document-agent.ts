@@ -58,7 +58,7 @@ import {
   isValidParticipantRow,
   resolveApprovalForDocument,
 } from '@/lib/protocol-markdown-format';
-import { applyMappingForward, deepDeanonymize, type Mapping } from '@/lib/anonymization';
+import { applyMappingForward, deanonymize, deepDeanonymize, type Mapping } from '@/lib/anonymization';
 import { ANONYMIZE_MODE_SYSTEM_APPENDIX } from '@/lib/anonymization/prompt';
 
 function extractMessageText(msg: any): string {
@@ -531,9 +531,37 @@ export async function generateFinalDocument(
     // Деанонимизация перед DOCX/персистом: облачная модель работала с плейсхолдерами,
     // готовый документ возвращаем пользователю с реальными данными (простая подстановка
     // по mapping). Стрим-дельты деанонимизируются обёрткой на уровне роута.
-    const validatedOut = anonymizeActive ? deepDeanonymize(validated, anonMapping) : validated;
+    let validatedOut = anonymizeActive ? deepDeanonymize(validated, anonMapping) : validated;
     if (anonymizeActive) {
       markdownContent = protocolToMarkdown(validatedOut);
+    }
+
+    // Само-ревью протокола локальной моделью: сверяет фактические ошибки
+    // (не применённая правка, падежи подстановок, оставшийся плейсхолдер,
+    // стенограмма, инфинитивы) и возвращает исправленный протокол. Работает
+    // ВСЕГДА с реальными данными (validatedOut уже деанонимизирован) и ВСЕГДА
+    // локальной моделью — в облако ничего не уходит. Включается флагом,
+    // по умолчанию выключен.
+    if (process.env.REVIEW_LOOP_ENABLED === 'true') {
+      try {
+        const { resolveChatLanguageModel } = await import('@/lib/resolve-chat-model');
+        const localModel = resolveChatLanguageModel({ chatProvider: 'ollama' });
+        const userRequest = extractLatestUserCorrections(uiMessages || []).join('\n');
+        const { reviewAndCorrectProtocol } = await import('./review-loop');
+        const before = JSON.stringify(validatedOut);
+        validatedOut = await reviewAndCorrectProtocol({
+          protocol: validatedOut,
+          userRequest,
+          model: localModel,
+          abortSignal,
+        });
+        console.log(
+          `[review-loop] ${JSON.stringify(validatedOut) === before ? 'без изменений' : 'внесены правки'}`,
+        );
+        markdownContent = protocolToMarkdown(validatedOut);
+      } catch (e) {
+        console.warn('[review-loop] пропущено:', (e as Error)?.message);
+      }
     }
 
     // База для будущих точечных правок: сохраняем валидный Protocol JSON с
@@ -757,7 +785,12 @@ async function tryPatchExistingProtocol(options: {
     // вручную), патч ляжет на СТАРЫЙ текст и вернёт его в панель — правка
     // «исчезнет», а рядом всплывут старые значения. Реальный случай: срок
     // 20.06.2025 из давнего прогона снова оказался в документе.
-    const visible = String(visibleDocument ?? '').trim();
+    // В анон-режиме visibleDocument приходит обезличенным (route.ts делает
+    // anonymizeWithMapping перед передачей агенту), а база хранится с реальными
+    // данными. Без деобезличивания панели плейсхолдеры короче реальных значений
+    // и проверка расходится всегда → патч никогда не применяется.
+    const rawVisible = String(visibleDocument ?? '');
+    const visible = (anonymizeActive ? deanonymize(rawVisible, anonMapping) : rawVisible).trim();
     if (visible) {
       const baseText = markUnresolvedInMarkdown(protocolToMarkdown(base));
       const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
