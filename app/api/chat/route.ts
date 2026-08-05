@@ -947,6 +947,15 @@ export async function POST(req: Request) {
         if (mergeResult.merged.length > 0) {
           mapping = mergeResult.mapping;
           inflectionAliases = mergeResult.aliases;
+          // Сохраняем СРАЗУ: ниже mapping сравнивается по длине с conv.mapping,
+          // а после склейки они равны — запись бы не сохранилась, и удалённый
+          // дубль вернулся бы из базы на следующем сообщении.
+          if (conversationId) {
+            await persistConversationMapping(conversationId, {
+              mapping,
+              counters: countersFromMapping(mapping),
+            });
+          }
           console.log(`🔗 склеены падежные дубли: ${mergeResult.merged.join('; ')}`);
         }
       }
@@ -1163,10 +1172,20 @@ export async function POST(req: Request) {
   // Режим анонимизации: документ правой панели содержит РЕАЛЬНЫЕ данные (после
   // обратной подстановки) — перед отправкой в облако зачищаем его по mapping,
   // иначе chat-agent вставит его в системный промпт сырым (утечка ПДн).
-  const safeDocumentContent =
-    anonymizationActive && typeof documentContent === 'string' && documentContent.trim()
-      ? anonymizeWithMapping(documentContent, anonymizeMapping)
-      : documentContent;
+  const safeDocumentContent = (() => {
+    if (!anonymizationActive || typeof documentContent !== 'string' || !documentContent.trim()) {
+      return documentContent;
+    }
+    // Склонённые формы в УЖЕ СОБРАННОМ документе тоже сводим к общему
+    // плейсхолдеру. Иначе в протоколе остаётся строка «Ирины Соколовой» рядом
+    // с «Ирина Соколова», модель видит двух людей и дубль не исчезает даже по
+    // прямой просьбе его убрать.
+    let doc = documentContent;
+    for (const alias of inflectionAliases) {
+      if (alias.value) doc = doc.split(alias.value).join(alias.placeholder);
+    }
+    return anonymizeWithMapping(doc, anonymizeMapping);
+  })();
 
   const agentContext: AgentContext = {
     messages: coreMessages,
