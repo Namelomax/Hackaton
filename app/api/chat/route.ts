@@ -933,6 +933,11 @@ export async function POST(req: Request) {
       // основам слов, а решение по спорным парам принимает модель.
       const inflectedCandidates = findInflectedCandidates(mapping);
       if (inflectedCandidates.length > 0) {
+        console.log(
+          `🔎 падежные кандидаты (${inflectedCandidates.length}): ${inflectedCandidates
+            .map((c) => `${c.drop} «${c.dropValue}» ↔ ${c.keep} «${c.keepValue}»`)
+            .join('; ')}`,
+        );
         const verdict = await verifyInflectedPairs({
           model: resolveChatLanguageModel({ chatProvider: 'ollama' }),
           candidates: inflectedCandidates,

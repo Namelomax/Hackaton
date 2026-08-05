@@ -128,6 +128,7 @@ ${list}`;
       prompt,
       temperature: 0,
       maxOutputTokens: 512,
+      providerOptions: { openrouter: { reasoning: { enabled: false, exclude: true } } },
       ...(abortSignal ? { abortSignal } : {}),
     });
     const verdict: Record<string, boolean> = {};
@@ -155,8 +156,22 @@ export function applyInflectionMerge(
   const merged: string[] = [];
 
   for (const c of candidates) {
-    // Нет вердикта модели — склеиваем только полные совпадения значений.
-    const same = verdict ? verdict[c.drop] === true : c.dropValue === c.keepValue;
+    let same: boolean;
+    if (verdict && c.drop in verdict) {
+      same = verdict[c.drop] === true;
+    } else {
+      // Модель не ответила (недоступна, отдала невалидный JSON) — решаем сами,
+      // но осторожно. Полное ФИО из двух и более слов с совпадающими основами
+      // склеиваем: «Ирина Соколова» и «Ирины Соколовой» — один человек, риска
+      // тут нет. Одиночные слова («Иванов»/«Иванова») без модели не трогаем.
+      const words = c.dropValue.trim().split(/\s+/).filter(Boolean).length;
+      same = c.dropValue === c.keepValue || words >= 2;
+      if (same) {
+        console.log(
+          `[anon-merge] вердикт модели не получен — склеиваю по совпадению основ: «${c.dropValue}» = «${c.keepValue}»`,
+        );
+      }
+    }
     if (!same) continue;
     delete next[c.drop];
     aliases.push({ value: c.dropValue, placeholder: c.keep });
