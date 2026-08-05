@@ -6,6 +6,11 @@ import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, ge
 import { resolveChatLanguageModel } from '@/lib/resolve-chat-model';
 import { normalizeCloudModel } from '@/lib/chat-models';
 import { buildDateContextBlock } from '@/lib/date-context';
+import {
+  findInflectedCandidates,
+  verifyInflectedPairs,
+  applyInflectionMerge,
+} from '@/lib/anonymization/merge-inflected';
 import { PROTOCOL_CHAT_TIMECODE_APPENDIX } from '@/lib/protocol-timecodes';
 import { analyzeTranscriptSlots, formatSlotScanForPrompt } from '@/lib/protocol-slot-scan';
 import { fetchRagSnippet } from '@/lib/rag-client';
@@ -889,6 +894,9 @@ export async function POST(req: Request) {
     | string
     | undefined;
   let anonymizeMapping: Mapping = {};
+  // Значения-синонимы («Ирины Соколовой» → [PERSON_1]): подставляются наравне с
+  // каноническими, иначе склонённая форма уедет в облако как есть.
+  let inflectionAliases: Array<{ value: string; placeholder: string }> = [];
   let anonymizationActive = false;
   let anonymizationNotice = '';
   let anonymizedDocsContext = hiddenDocsContext;
@@ -917,6 +925,27 @@ export async function POST(req: Request) {
         mapping = r2.mapping;
       }
 
+      // Склейка плейсхолдеров, разошедшихся из-за падежей. Анонимизатор
+      // обрабатывает каждое сообщение отдельно и не знает, что «Ирины
+      // Соколовой» из правки — это [PERSON_1] «Ирина Соколова» из расшифровки;
+      // заводится второй плейсхолдер, и облачная модель видит двух разных
+      // людей («Ирины Соколовой в расшифровке нет»). Кандидатов отбираем по
+      // основам слов, а решение по спорным парам принимает модель.
+      const inflectedCandidates = findInflectedCandidates(mapping);
+      if (inflectedCandidates.length > 0) {
+        const verdict = await verifyInflectedPairs({
+          model: resolveChatLanguageModel({ chatProvider: 'ollama' }),
+          candidates: inflectedCandidates,
+          abortSignal: req.signal,
+        });
+        const mergeResult = applyInflectionMerge(mapping, inflectedCandidates, verdict);
+        if (mergeResult.merged.length > 0) {
+          mapping = mergeResult.mapping;
+          inflectionAliases = mergeResult.aliases;
+          console.log(`🔗 склеены падежные дубли: ${mergeResult.merged.join('; ')}`);
+        }
+      }
+
       // Финальная зачистка всего, что уходит в облако:
       //   applyMappingForward (подстановка известных значений) → scrubStructured
       //   (защитный фильтр email/телефонов/длинных ID, что мог пропустить NER).
@@ -937,7 +966,13 @@ export async function POST(req: Request) {
       }
       finalMessages = finalMessages.map((m) => {
         if (typeof m?.content !== 'string') return m;
-        const local = anonymizeWithMapping(m.content, conv.mapping);
+        // Сначала склонённые формы известных людей/организаций → их же
+        // плейсхолдер, потом обычная подстановка по каноническим значениям.
+        let text = m.content;
+        for (const alias of inflectionAliases) {
+          if (alias.value) text = text.split(alias.value).join(alias.placeholder);
+        }
+        const local = anonymizeWithMapping(text, conv.mapping);
         const sc = scrubStructured(local, conv);
         conv = sc.conversation;
         const so = scrubSensitiveOrgs(sc.text, conv);
