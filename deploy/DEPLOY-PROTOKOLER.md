@@ -8,20 +8,33 @@
 `.env` анонимизатора с живыми ключами (OpenRouter, Google, SerpAPI, SurrealDB,
 токен анонимизатора) утёк. Отзови и пересоздай ВСЕ ключи до запуска.
 
-## 1. Порт — 3000 (НЕ 8011!)
+## 1. Порт — 8012 (НЕ 8011 и НЕ 3000!)
 
-8011 занят python-бэкендом анонимизатора (`curl -s https://protocol.cpcore.ru/`
-сейчас отдаёт его health-JSON, а не протоколер). У протоколера свободен 3000.
+Реальная картина портов на сервере (проверено `ss -ltnp`):
 
+| Порт | Что | Чей |
+|---|---|---|
+| 8000 | — | чужой процесс |
+| 3000 | — | **чужой процесс** (не занимать!) |
+| 8010 | `next-server` — веб-UI анонимизатора | yakov |
+| 8011 | `python` — бэкенд анонимизатора | yakov |
+| **8012** | **Протоколер (Next.js)** | ← ставим сюда |
+
+`protocol.cpcore.ru` сейчас проксирует на **8011**, т.е. отдаёт JSON питон-анонимизатора,
+а не протоколер. Проверить: `curl -s https://protocol.cpcore.ru/ | head -c 200`.
+
+Убедиться, что 8012 свободен:
 ```bash
-ss -ltnp | grep -E ':(3000|8000|8010|8011)'   # 3000 должен быть свободен
+for p in 8012 8020 3001 4000 9000; do ss -ltn "sport = :$p" | grep -q LISTEN && echo "$p BUSY" || echo "$p free"; done
 ```
+Если 8012 занят — возьми свободный из списка и поменяй в трёх местах: `PORT` в `.env`,
+`-p`/`Environment=PORT` в `protokoler.user.service`, `proxy_pass` в nginx.
 
-## 2. nginx protocol.cpcore.ru → 127.0.0.1:3000
+## 2. nginx protocol.cpcore.ru → 127.0.0.1:8012 (нужен sudo — просить владельца)
 
 ```nginx
 location / {
-    proxy_pass http://127.0.0.1:3000;          # было 8011 — ИСПРАВИТЬ
+    proxy_pass http://127.0.0.1:8012;          # было 8011 (анонимизатор) — ИСПРАВИТЬ
     proxy_http_version 1.1;
     proxy_set_header Host              $host;
     proxy_set_header X-Real-IP         $remote_addr;
@@ -75,7 +88,7 @@ systemctl --user status protokoler
 ## 6. Проверка
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3000/    # → 200
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8012/    # → 200
 curl -s https://protocol.cpcore.ru/ | head -c 120                  # уже НЕ health-JSON анонимизатора
 ```
 Открой `https://protocol.cpcore.ru`, прогони документ в режиме «Облако +
