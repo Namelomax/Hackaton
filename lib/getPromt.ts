@@ -819,15 +819,20 @@ export async function assertConversationOwnership(
   userId?: string | null,
 ): Promise<void> {
   if (!conversationId || conversationId.startsWith('local-')) return;
-  if (!userId) return; // без userId владение не проверить (аноним/pre-auth) — не блокируем
   await connectDB();
   const cleanConvId = conversationId.replace(/^conversations:/, '');
   const convRecord = new RecordId('conversations', cleanConvId);
   const convRaw = await db.select(convRecord).catch(() => undefined);
   const convData = Array.isArray(convRaw) ? convRaw[0] : convRaw;
-  if (!convData) return; // записи нет — новый диалог
+  if (!convData) return; // записи нет — новый диалог, красть нечего
   const ownerRef = (convData as any).user?.toString?.() ?? String((convData as any).user ?? '');
   if (!ownerRef) return; // безвладельный (legacy/system) — не трогаем
+
+  // У диалога ЕСТЬ владелец → аноним к нему не допускается. Раньше здесь стоял
+  // ранний выход при отсутствии userId, и защиту можно было обойти, просто не
+  // прислав его. Теперь клиент передаёт userId в теле запроса явно, поэтому
+  // требуем совпадения всегда.
+  if (!userId) throw new Error('Forbidden');
   const normalizedUser = userId.startsWith('users:') ? userId : `users:${userId}`;
   if (ownerRef !== normalizedUser) {
     throw new Error('Forbidden');
