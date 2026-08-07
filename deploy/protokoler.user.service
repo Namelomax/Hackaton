@@ -24,8 +24,13 @@ Environment=PORT=8012
 # входа). Без этого Next.js биндится на 0.0.0.0 и приложение доступно снаружи
 # напрямую по http://<IP>:8012 в обход HTTPS — лишний путь к данным с ПДн.
 ExecStart=%h/node-v22.20.0-linux-x64/bin/npm run start -- -p 8012 -H 127.0.0.1
-Restart=on-failure
+# always, а не on-failure: on-failure НЕ поднимает процесс, завершившийся с
+# кодом 0 (например, если next start сам решил выйти) — сайт тихо ложился бы.
+Restart=always
 RestartSec=5
+# Без этого systemd после 5 быстрых падений подряд помечает сервис failed и
+# больше не пытается (например, пока БД недоступна) — сайт остаётся лежать.
+StartLimitIntervalSec=0
 
 [Install]
 WantedBy=default.target
