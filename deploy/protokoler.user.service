@@ -1,4 +1,4 @@
-# systemd user-сервис для Протоколера (Next.js), порт 3000.
+# systemd user-сервис для Протоколера (Next.js), порт 8012.
 # Установка (сервер yakov, без sudo):
 #   mkdir -p ~/.config/systemd/user
 #   cp ~/protokoler/deploy/protokoler.user.service ~/.config/systemd/user/protokoler.service
@@ -6,8 +6,8 @@
 #   systemctl --user enable --now protokoler
 #   loginctl enable-linger yakov     # жить после логаута/ребута
 #
-# Порт 3000: 8010/8011 заняты анонимизатором, 8000 — чужой uvicorn, 5678 — n8n.
-# nginx protocol.cpcore.ru должен смотреть на 127.0.0.1:3000 (proxy_buffering off!).
+# Порт 8012: 8010/8011 заняты анонимизатором, 8000 и 3000 — ЧУЖИЕ процессы (проверено ss).
+# nginx protocol.cpcore.ru должен смотреть на 127.0.0.1:8012 (proxy_buffering off!).
 
 [Unit]
 Description=Protokoler (Next.js) — ассистент протоколов обследования
@@ -19,8 +19,8 @@ WorkingDirectory=%h/protokoler
 EnvironmentFile=%h/protokoler/.env
 Environment=PATH=%h/node-v22.20.0-linux-x64/bin:/usr/local/bin:/usr/bin:/bin
 Environment=NODE_ENV=production
-Environment=PORT=3000
-ExecStart=%h/node-v22.20.0-linux-x64/bin/npm run start -- -p 3000
+Environment=PORT=8012
+ExecStart=%h/node-v22.20.0-linux-x64/bin/npm run start -- -p 8012
 Restart=on-failure
 RestartSec=5
 
