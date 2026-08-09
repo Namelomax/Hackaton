@@ -24,8 +24,32 @@
  * утилиты), а вся логика здесь — строки и словари.
  */
 
-import { wordStem } from './canonicalize';
 import type { Mapping, PlaceholderAlias } from './types';
+
+/**
+ * Падежные окончания русского языка, длинные первыми — чтобы у «ами» снялось
+ * «ами», а не «и». Таблица продублирована из `canonicalize.ts` СОЗНАТЕЛЬНО:
+ * тот модуль не входит в сборку сервера, и импорт из него ронял `next build`
+ * («Can't resolve ./canonicalize»). Двадцать строк дубля дешевле, чем связь
+ * между модулями с разной судьбой.
+ */
+const DECL_SUFFIXES = [
+  'иями', 'иях', 'ами', 'ями', 'ах', 'ях', 'ом', 'ем', 'ём', 'ой', 'ей',
+  'им', 'ым', 'у', 'ю', 'е', 'и', 'ы', 'а', 'я',
+].sort((a, b) => b.length - a.length);
+
+/** Ниже трёх символов основы не режем: короткие основы начинают слипаться. */
+const MIN_STEM = 3;
+
+/** Основа слова: снимаем известное падежное окончание, если основа переживёт. */
+function wordStem(word: string): string {
+  for (const suf of DECL_SUFFIXES) {
+    if (word.endsWith(suf) && word.length - suf.length >= MIN_STEM) {
+      return word.slice(0, word.length - suf.length);
+    }
+  }
+  return word;
+}
 
 /** Метки, у которых падежи реальны и склейка осмысленна. */
 const MERGEABLE_LABELS = new Set(['PERSON', 'ORG']);
@@ -78,8 +102,8 @@ export function sameWordShape(a: string, b: string): boolean {
   if (!a || !b) return false;
   if (a === b) return true;
 
-  const sa = wordStem(a);
-  const sb = wordStem(b);
+  const sa = wordStem(normWord(a));
+  const sb = wordStem(normWord(b));
   if (sa === sb) return sa.length >= 3;
 
   const [short, long] = sa.length <= sb.length ? [sa, sb] : [sb, sa];
