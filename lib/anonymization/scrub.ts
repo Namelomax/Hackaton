@@ -62,7 +62,9 @@ export function scrubStructured(
     .replace(PHONE_RE, (m) => assign('PHONE', m))
     .replace(ID_RE, (m) => assign('ID', m));
 
-  return { text: out, conversation: { mapping, counters }, added };
+  // aliases пробрасываем как есть: защитный фильтр их не создаёт и не ломает,
+  // но потерять их здесь означало бы разъехавшиеся падежи ниже по цепочке.
+  return { text: out, conversation: { mapping, counters, aliases: conv.aliases }, added };
 }
 
 /** Быстрая проверка: остались ли в тексте очевидные структурные ПДн. */
@@ -150,7 +152,9 @@ export function scrubSensitiveOrgs(
   };
 
   const out = text.replace(buildOrgRegex(), (m) => assign(m));
-  return { text: out, conversation: { mapping, counters }, added };
+  // aliases пробрасываем как есть: защитный фильтр их не создаёт и не ломает,
+  // но потерять их здесь означало бы разъехавшиеся падежи ниже по цепочке.
+  return { text: out, conversation: { mapping, counters, aliases: conv.aliases }, added };
 }
 
 /** Есть ли в тексте гос/орг-термин из словаря. */

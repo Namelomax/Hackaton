@@ -5,10 +5,7 @@
  * ТОЛЬКО для нового текста. Уже известные значения подставляем локально и
  * детерминированно по каноническому mapping диалога (`applyMappingForward`).
  */
-import {
-  getConversationMapping,
-  saveConversationMapping,
-} from '@/lib/getPromt';
+import { getConversationMapping, saveConversationMapping } from '@/lib/getPromt';
 import {
   anonymizeRemote,
   AnonymizerUnavailableError,
@@ -23,27 +20,42 @@ import {
 } from './merge';
 import { scrubStructured, scrubSensitiveOrgs, restoreNonSensitivePlaceholders, dropNonSensitiveEntries, isGenericEntityValue } from './scrub';
 import { deanonymize, deepDeanonymize } from './deanonymize';
-import type { AnonymizeWarning, ConversationMapping, Mapping } from './types';
+import { mergeAliases } from './merge-inflected';
+import type { AnonymizeWarning, ConversationMapping, Mapping, PlaceholderAlias } from './types';
 
 export { AnonymizerUnavailableError };
 export { deanonymize, deepDeanonymize };
 export { applyMappingForward, applyMappingForwardDeep, countersFromMapping };
 export { scrubStructured, scrubSensitiveOrgs, restoreNonSensitivePlaceholders, dropNonSensitiveEntries, isGenericEntityValue };
-export type { Mapping, ConversationMapping };
+export type { Mapping, ConversationMapping, PlaceholderAlias };
 
 async function loadConversation(conversationId?: string | null): Promise<ConversationMapping> {
-  if (!conversationId) return { mapping: {}, counters: {} };
+  if (!conversationId) return { mapping: {}, counters: {}, aliases: [] };
   const stored = await getConversationMapping(conversationId);
   const counters =
     stored.counters && Object.keys(stored.counters).length > 0
       ? stored.counters
       : countersFromMapping(stored.mapping ?? {});
-  return { mapping: stored.mapping ?? {}, counters };
+  return {
+    mapping: stored.mapping ?? {},
+    counters,
+    // Алиасы, чей плейсхолдер уже исчез из mapping, отбрасываем при чтении.
+    aliases: mergeAliases(stored.aliases, [], stored.mapping ?? {}),
+  };
+}
+
+/** Загрузить mapping + алиасы диалога (для анонимизации и деанонимизации). */
+export async function loadConversationState(
+  conversationId?: string | null,
+): Promise<ConversationMapping> {
+  return loadConversation(conversationId);
 }
 
 export interface AnonymizeTextResult {
   anonymizedText: string;
   mapping: Mapping;
+  /** Подтверждённые склонённые формы известных значений (см. PlaceholderAlias). */
+  aliases: PlaceholderAlias[];
   added: number;
   summary: Record<string, number>;
   /**
@@ -64,7 +76,13 @@ export async function anonymizeNewText(
 ): Promise<AnonymizeTextResult> {
   const conv = await loadConversation(conversationId);
   if (!text || !text.trim()) {
-    return { anonymizedText: text, mapping: conv.mapping, added: 0, summary: {} };
+    return {
+      anonymizedText: text,
+      mapping: conv.mapping,
+      aliases: conv.aliases ?? [],
+      added: 0,
+      summary: {},
+    };
   }
 
   const remote = await anonymizeRemote(text);
@@ -85,12 +103,13 @@ export async function anonymizeNewText(
       : merged.conversation;
 
   if (conversationId && merged.added > 0) {
-    await saveConversationMapping(conversationId, conversationOut);
+    await persistConversationMapping(conversationId, conversationOut);
   }
 
   return {
     anonymizedText: cleaned.text,
     mapping: conversationOut.mapping,
+    aliases: conversationOut.aliases ?? [],
     added: merged.added,
     summary: remote.summary ?? {},
     ...(remote.warnings?.length ? { warnings: remote.warnings } : {}),
@@ -121,7 +140,13 @@ export async function startAnonymizeJob(
     const conv = await loadConversation(conversationId);
     return {
       kind: 'done',
-      result: { anonymizedText: text, mapping: conv.mapping, added: 0, summary: {} },
+      result: {
+        anonymizedText: text,
+        mapping: conv.mapping,
+        aliases: conv.aliases ?? [],
+        added: 0,
+        summary: {},
+      },
     };
   }
 
@@ -148,7 +173,7 @@ export async function completeAnonymizeJob(
   const merged = mergeRemoteResult(conv, state.result);
 
   if (conversationId && merged.added > 0) {
-    await saveConversationMapping(conversationId, merged.conversation);
+    await persistConversationMapping(conversationId, merged.conversation);
   }
 
   return {
@@ -156,6 +181,7 @@ export async function completeAnonymizeJob(
     result: {
       anonymizedText: merged.anonymizedText,
       mapping: merged.conversation.mapping,
+      aliases: merged.conversation.aliases ?? [],
       added: merged.added,
       summary: state.result.summary ?? {},
       ...(state.result.warnings?.length ? { warnings: state.result.warnings } : {}),
@@ -171,8 +197,12 @@ export async function completeAnonymizeJob(
  * отдельные компоненты ФИО, чтобы одиночное имя (напр. «Никита») не утекло в
  * облако, если серверный NER пометил только полное «Никита Грицанюк».
  */
-export function anonymizeWithMapping(text: string, mapping: Mapping): string {
-  return applyMappingForwardDeep(text, mapping);
+export function anonymizeWithMapping(
+  text: string,
+  mapping: Mapping,
+  aliases: PlaceholderAlias[] = [],
+): string {
+  return applyMappingForwardDeep(text, mapping, aliases);
 }
 
 /** Загрузить только mapping диалога (для деанонимизации ответа). */
@@ -183,7 +213,7 @@ export async function loadConversationMapping(
   return conv.mapping;
 }
 
-/** Сохранить канонический mapping диалога (mapping + counters). */
+/** Сохранить канонический mapping диалога (mapping + counters + алиасы). */
 export async function persistConversationMapping(
   conversationId: string | null | undefined,
   conv: ConversationMapping,
@@ -192,5 +222,6 @@ export async function persistConversationMapping(
   await saveConversationMapping(conversationId, {
     mapping: conv.mapping,
     counters: conv.counters,
+    aliases: mergeAliases(conv.aliases, [], conv.mapping),
   });
 }

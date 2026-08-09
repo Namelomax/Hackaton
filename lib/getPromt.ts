@@ -1094,7 +1094,26 @@ export async function updatePrompt(content: string): Promise<void> {
 export type StoredConversationMapping = {
   mapping: Record<string, string>;
   counters: Record<string, number>;
+  /**
+   * Склонённые/сокращённые формы известных значений: «Ирины Соколовой» →
+   * [PERSON_1]. Живут рядом с mapping, потому что после склейки падежей само
+   * значение из mapping исчезает, а подставлять его по-прежнему надо.
+   */
+  aliases?: Array<{ value: string; placeholder: string }>;
 };
+
+/** Нормализация массива алиасов из БД: мусорные записи молча выбрасываем. */
+function parseAliases(raw: unknown): Array<{ value: string; placeholder: string }> {
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ value: string; placeholder: string }> = [];
+  for (const item of raw) {
+    const value = typeof (item as any)?.value === 'string' ? (item as any).value.trim() : '';
+    const placeholder =
+      typeof (item as any)?.placeholder === 'string' ? (item as any).placeholder.trim() : '';
+    if (value && placeholder) out.push({ value, placeholder });
+  }
+  return out;
+}
 
 /** Прочитать сохранённый mapping диалога. Пустой, если ещё нет. */
 export async function getConversationMapping(
@@ -1109,12 +1128,13 @@ export async function getConversationMapping(
       return {
         mapping: (row.mapping && typeof row.mapping === 'object') ? row.mapping : {},
         counters: (row.counters && typeof row.counters === 'object') ? row.counters : {},
+        aliases: parseAliases(row.aliases),
       };
     }
   } catch (e) {
     console.warn('getConversationMapping failed:', (e as Error)?.message);
   }
-  return { mapping: {}, counters: {} };
+  return { mapping: {}, counters: {}, aliases: [] };
 }
 
 /**
@@ -1204,7 +1224,20 @@ export async function getConversationPreview(conversationId: string): Promise<st
   return '';
 }
 
-/** Сохранить (перезаписать) mapping диалога. */
+/**
+ * Сохранить (перезаписать) mapping диалога.
+ *
+ * ВАЖНО про способ записи. `db.upsert`/`db.update` ЗАМЕНЯЮТ запись целиком —
+ * а в этой же записи лежат `document_json` и `previewText`, и они бы стирались
+ * при каждом сохранении mapping (после склейки падежей это происходит прямо
+ * посреди диалога, и точечные правки протокола теряли базовый JSON).
+ * `db.merge` не подходит с другой стороны: MERGE сливает вложенные объекты, и
+ * УДАЛЁННЫЙ при склейке плейсхолдер вернулся бы из базы обратно.
+ *
+ * Поэтому пишем через `UPDATE ... SET`: перечисленные поля заменяются целиком
+ * (удалённые ключи mapping реально уходят), остальные поля записи не трогаются.
+ * UPDATE по несуществующему id создаёт запись — отдельный create не нужен.
+ */
 export async function saveConversationMapping(
   conversationId: string,
   data: StoredConversationMapping,
@@ -1212,18 +1245,22 @@ export async function saveConversationMapping(
   await connectDB();
   const clean = String(conversationId).replace(/^anonymization_mappings:/, '').replace(/^conversations:/, '');
   const rid = new RecordId('anonymization_mappings', clean);
+  const payload = {
+    mapping: data.mapping ?? {},
+    counters: data.counters ?? {},
+    aliases: parseAliases(data.aliases),
+  };
   try {
-    await db.upsert(rid, {
-      mapping: data.mapping ?? {},
-      counters: data.counters ?? {},
-    });
+    await db.query(
+      'UPDATE $rid SET mapping = $mapping, counters = $counters, aliases = $aliases;',
+      { rid, ...payload },
+    );
   } catch (e) {
-    // Фолбек на merge, если upsert недоступен в этой версии SDK.
+    // Фолбек на upsert, если запрос не прошёл. Здесь возможна потеря
+    // document_json/previewText, но потерять mapping хуже.
+    console.warn('saveConversationMapping via query failed:', (e as Error)?.message);
     try {
-      await db.merge(rid, {
-        mapping: data.mapping ?? {},
-        counters: data.counters ?? {},
-      } as any);
+      await db.upsert(rid, payload);
     } catch (ee) {
       console.error('saveConversationMapping failed:', (ee as Error)?.message);
     }

@@ -8,9 +8,10 @@ import { normalizeCloudModel } from '@/lib/chat-models';
 import { buildDateContextBlock } from '@/lib/date-context';
 import {
   findInflectedCandidates,
-  verifyInflectedPairs,
   applyInflectionMerge,
+  mergeAliases,
 } from '@/lib/anonymization/merge-inflected';
+import { verifyInflectedPairs } from '@/lib/anonymization/verify-inflected';
 import { PROTOCOL_CHAT_TIMECODE_APPENDIX } from '@/lib/protocol-timecodes';
 import { analyzeTranscriptSlots, formatSlotScanForPrompt } from '@/lib/protocol-slot-scan';
 import { fetchRagSnippet } from '@/lib/rag-client';
@@ -34,6 +35,7 @@ import {
   anonymizeNewText,
   anonymizeWithMapping,
   loadConversationMapping,
+  loadConversationState,
   countersFromMapping,
   scrubStructured,
   scrubSensitiveOrgs,
@@ -42,12 +44,19 @@ import {
   AnonymizerUnavailableError,
   type Mapping,
   type ConversationMapping,
+  type PlaceholderAlias,
 } from '@/lib/anonymization';
 import {
   wrapResponseWithDeanonymization,
   prependNoticeToResponse,
 } from '@/lib/anonymization/sse-deanonymize';
 import { ANONYMIZE_MODE_SYSTEM_APPENDIX } from '@/lib/anonymization/prompt';
+import {
+  urlToBuffer,
+  guessFileExt,
+  bestEffortBinaryText,
+  extractLegacyDoc,
+} from '@/lib/attachment-extract';
 
 // Должно быть ≥ таймаута прокси/Ollama для длинных ответов (300s совпадало с 5m и обрывом стрима).
 export const maxDuration = 300;
@@ -196,82 +205,6 @@ async function resolveSystemPrompt(userId?: string | null, selectedPromptId?: st
 const HIDDEN_RE = /<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi;
 const HIDDEN_CAPTURE_RE = /<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi;
 
-async function urlToBuffer(urlOrData?: string | null): Promise<Buffer | null> {
-  if (!urlOrData) return null;
-
-  // ── Base64 data URL ──────────────────────────────────────────────────────
-  if (urlOrData.startsWith('data:')) {
-    const match = String(urlOrData).match(/^data:[^;]+;base64,(.+)$/i);
-    if (!match) return null;
-    try {
-      return Buffer.from(match[1], 'base64');
-    } catch {
-      return null;
-    }
-  }
-
-  // ── HTTPS / HTTP URL (e.g. Vercel Blob) ─────────────────────────────────
-  if (urlOrData.startsWith('https://') || urlOrData.startsWith('http://')) {
-    try {
-      const resp = await fetch(urlOrData);
-      if (!resp.ok) {
-        console.warn('[urlToBuffer] Fetch failed:', resp.status, urlOrData);
-        return null;
-      }
-      return Buffer.from(await resp.arrayBuffer());
-    } catch (err) {
-      console.warn('[urlToBuffer] Fetch error:', err);
-      return null;
-    }
-  }
-
-  return null;
-}
-
-function guessFileExt(att: any): string {
-  const name = String(att?.name || att?.filename || '').trim();
-  const m = name.match(/\.([A-Za-z0-9]+)$/);
-  return (m?.[1] ?? '').toLowerCase();
-}
-
-function bestEffortBinaryText(buf: Buffer): string | null {
-  if (!buf || buf.length < 8) return null;
-
-  const candidates: string[] = [];
-  try {
-    candidates.push(buf.toString('utf8'));
-  } catch {}
-  try {
-    candidates.push(buf.toString('utf16le'));
-  } catch {}
-  try {
-    candidates.push(buf.toString('latin1'));
-  } catch {}
-
-  const clean = (raw: string) =>
-    String(raw ?? '')
-      .replace(/[\x00-\x09\x0B\x0C\x0E-\x1F]+/g, ' ')
-      .replace(/\u0000+/g, ' ')
-      .replace(/\s{2,}/g, ' ')
-      .trim();
-
-  // Keep long-ish runs of readable characters (Latin/Cyrillic/digits/punct)
-  const extractReadableRuns = (text: string) => {
-    const runs = text.match(/[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9\s.,:;!?()\[\]"'«»\-–—\/\\]{40,}/g);
-    if (!runs?.length) return '';
-    return runs.map((r) => clean(r)).filter(Boolean).join('\n');
-  };
-
-  let best = '';
-  for (const c of candidates) {
-    const runs = extractReadableRuns(c);
-    if (runs.length > best.length) best = runs;
-  }
-
-  const cleaned = clean(best);
-  return cleaned.length >= 40 ? cleaned : null;
-}
-
 async function extractPdfTextFromAttachment(att: any): Promise<string | null> {
   if (!att || att.mediaType !== 'application/pdf') return null;
   const buf = await urlToBuffer(att.url || att.data);
@@ -282,19 +215,6 @@ async function extractPdfTextFromAttachment(att: any): Promise<string | null> {
     return parsed?.text?.trim() || null;
   } catch (error) {
     console.error('Failed to parse PDF attachment:', error);
-    return null;
-  }
-}
-
-async function extractLegacyDoc(buf: Buffer): Promise<string | null> {
-  try {
-    const WordExtractor = (await import('word-extractor')).default;
-    const extractor = new WordExtractor();
-    const doc = await extractor.extract(buf);
-    const text = doc.getBody()?.trim();
-    return text || null;
-  } catch (error) {
-    console.error('word-extractor parse failed:', error);
     return null;
   }
 }
@@ -895,15 +815,19 @@ export async function POST(req: Request) {
     | undefined;
   let anonymizeMapping: Mapping = {};
   // Значения-синонимы («Ирины Соколовой» → [PERSON_1]): подставляются наравне с
-  // каноническими, иначе склонённая форма уедет в облако как есть.
-  let inflectionAliases: Array<{ value: string; placeholder: string }> = [];
+  // каноническими, иначе склонённая форма уедет в облако как есть. Живут в
+  // записи диалога, поэтому подтверждённая моделью форма работает и на
+  // следующих ходах — без повторного вызова модели.
+  let inflectionAliases: PlaceholderAlias[] = [];
   let anonymizationActive = false;
   let anonymizationNotice = '';
   let anonymizedDocsContext = hiddenDocsContext;
 
   if (anonymizeMode) {
     try {
-      let mapping = await loadConversationMapping(conversationId);
+      const state = await loadConversationState(conversationId);
+      let mapping = state.mapping;
+      inflectionAliases = state.aliases ?? [];
 
       // Документ: серверная анонимизация только если mapping пуст (preview не было).
       // Сохраняем полный серверный anonymized_text — в нём NER уже заменил и
@@ -913,6 +837,7 @@ export async function POST(req: Request) {
       if (hiddenDocsContext.trim() && Object.keys(mapping).length === 0) {
         const r = await anonymizeNewText(hiddenDocsContext, conversationId);
         mapping = r.mapping;
+        inflectionAliases = r.aliases;
         serverAnonymizedDoc = r.anonymizedText;
       }
 
@@ -923,6 +848,7 @@ export async function POST(req: Request) {
       if (lastUserText.trim()) {
         const r2 = await anonymizeNewText(lastUserText, conversationId);
         mapping = r2.mapping;
+        inflectionAliases = r2.aliases;
       }
 
       // Склейка плейсхолдеров, разошедшихся из-за падежей. Анонимизатор
@@ -946,7 +872,9 @@ export async function POST(req: Request) {
         const mergeResult = applyInflectionMerge(mapping, inflectedCandidates, verdict);
         if (mergeResult.merged.length > 0) {
           mapping = mergeResult.mapping;
-          inflectionAliases = mergeResult.aliases;
+          // Новые алиасы кладём к уже сохранённым и чистим те, чей плейсхолдер
+          // исчез. Сортировка «длинные первыми» живёт в mergeAliases.
+          inflectionAliases = mergeAliases(inflectionAliases, mergeResult.aliases, mapping);
           // Сохраняем СРАЗУ: ниже mapping сравнивается по длине с conv.mapping,
           // а после склейки они равны — запись бы не сохранилась, и удалённый
           // дубль вернулся бы из базы на следующем сообщении.
@@ -954,6 +882,7 @@ export async function POST(req: Request) {
             await persistConversationMapping(conversationId, {
               mapping,
               counters: countersFromMapping(mapping),
+              aliases: inflectionAliases,
             });
           }
           console.log(`🔗 склеены падежные дубли: ${mergeResult.merged.join('; ')}`);
@@ -963,12 +892,18 @@ export async function POST(req: Request) {
       // Финальная зачистка всего, что уходит в облако:
       //   applyMappingForward (подстановка известных значений) → scrubStructured
       //   (защитный фильтр email/телефонов/длинных ID, что мог пропустить NER).
-      let conv: ConversationMapping = { mapping, counters: countersFromMapping(mapping) };
+      let conv: ConversationMapping = {
+        mapping,
+        counters: countersFromMapping(mapping),
+        aliases: inflectionAliases,
+      };
       {
         // Предпочитаем полный серверный результат (в нём одиночные имена уже
         // заменены); при его отсутствии — детерминированная локальная
-        // «глубокая» подстановка (включая компоненты ФИО).
-        const docLocal = serverAnonymizedDoc ?? anonymizeWithMapping(hiddenDocsContext, conv.mapping);
+        // «глубокая» подстановка (включая компоненты ФИО и склонённые формы).
+        const docLocal =
+          serverAnonymizedDoc ??
+          anonymizeWithMapping(hiddenDocsContext, conv.mapping, inflectionAliases);
         const sc = scrubStructured(docLocal, conv);
         conv = sc.conversation;
         // Словарный фильтр гос/орг-наименований, что пропустил NER (Минфин и т.п.).
@@ -980,13 +915,11 @@ export async function POST(req: Request) {
       }
       finalMessages = finalMessages.map((m) => {
         if (typeof m?.content !== 'string') return m;
-        // Сначала склонённые формы известных людей/организаций → их же
-        // плейсхолдер, потом обычная подстановка по каноническим значениям.
-        let text = m.content;
-        for (const alias of inflectionAliases) {
-          if (alias.value) text = text.split(alias.value).join(alias.placeholder);
-        }
-        const local = anonymizeWithMapping(text, conv.mapping);
+        // Канонические значения и склонённые формы подставляются ОДНИМ
+        // проходом: длинное совпадение выигрывает у короткого, границы слов
+        // соблюдаются. Раньше алиасы шли отдельным split/join — он не знает
+        // границ слова и мог порезать середину другого слова.
+        const local = anonymizeWithMapping(m.content, conv.mapping, inflectionAliases);
         const sc = scrubStructured(local, conv);
         conv = sc.conversation;
         const so = scrubSensitiveOrgs(sc.text, conv);

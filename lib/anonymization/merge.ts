@@ -19,6 +19,7 @@ import type {
   ConversationMapping,
   LabelCounters,
   Mapping,
+  PlaceholderAlias,
   RemoteAnonymizeResult,
   AnonymizeMergeResult,
 } from './types';
@@ -123,15 +124,27 @@ function personNameFragments(label: string, original: string): string[] {
  * PERSON добавляем его слова-компоненты, указывающие на тот же плейсхолдер.
  * Полное ФИО длиннее компонентов и заменяется первым (границы слов сохраняются).
  */
-export function applyMappingForwardDeep(text: string, mapping: Mapping): string {
-  if (!text || !mapping || Object.keys(mapping).length === 0) return text;
+export function applyMappingForwardDeep(
+  text: string,
+  mapping: Mapping,
+  aliases: PlaceholderAlias[] = [],
+): string {
+  const hasMapping = mapping && Object.keys(mapping).length > 0;
+  if (!text || (!hasMapping && aliases.length === 0)) return text;
   const pairs: { original: string; ph: string }[] = [];
-  for (const [ph, original] of Object.entries(mapping)) {
+  for (const [ph, original] of Object.entries(mapping ?? {})) {
     if (!original) continue;
     pairs.push({ original, ph });
     for (const frag of personNameFragments(labelOf(ph), original)) {
       pairs.push({ original: frag, ph });
     }
+  }
+  // Склонённые формы («Ирины Соколовой» → [PERSON_1]) идут наравне с
+  // каноническими значениями: substituteOriginals сортирует по длине, поэтому
+  // длинная форма срабатывает раньше короткой, а границы слов соблюдаются
+  // (простое split/join резало бы «Ирин» внутри «Ирины»).
+  for (const a of aliases) {
+    if (a?.value && a?.placeholder) pairs.push({ original: a.value, ph: a.placeholder });
   }
   return substituteOriginals(text, pairs);
 }
@@ -156,6 +169,17 @@ export function mergeRemoteResult(
   const counters: LabelCounters = { ...conv.counters };
   const reverse = buildReverseIndex(mapping);
 
+  // Склонённые формы, уже подтверждённые раньше («Ирины Соколовой» →
+  // [PERSON_1]), переиспользуют свой плейсхолдер. Без этого сервер каждый раз
+  // отдавал бы «новое» значение, мы заводили бы новый номер, и склейку падежей
+  // приходилось бы гонять через модель на каждом ходе.
+  for (const a of conv.aliases ?? []) {
+    if (!a?.value || !a?.placeholder) continue;
+    if (!Object.prototype.hasOwnProperty.call(mapping, a.placeholder)) continue;
+    const key = normalizeKey(labelOf(a.placeholder), a.value);
+    if (!reverse.has(key)) reverse.set(key, a.placeholder);
+  }
+
   const translation = new Map<string, string>(); // serverPlaceholder → canonicalPlaceholder
   let added = 0;
 
@@ -175,7 +199,11 @@ export function mergeRemoteResult(
   }
 
   const anonymizedText = retokenize(remote.anonymized_text ?? '', translation);
-  return { anonymizedText, conversation: { mapping, counters }, added };
+  return {
+    anonymizedText,
+    conversation: { mapping, counters, aliases: conv.aliases ?? [] },
+    added,
+  };
 }
 
 /** Есть ли в тексте хоть один плейсхолдер. */

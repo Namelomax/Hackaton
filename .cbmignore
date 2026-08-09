@@ -1,0 +1,11 @@
+# Исключения для codebase-memory-mcp (синтаксис .gitignore).
+# Применяется поверх .gitignore и встроенных правил (.git, node_modules, .venv, .next).
+
+# Собранный бандл e2e-теста: esbuild-артефакт scripts/test-protocol-e2e.ts.
+# Тянет в граф вендоренный zod и дублирует промпты — индексировать нужно источник.
+e2e.run.mjs
+tmp/
+
+# Прочие сборочные артефакты
+*.bundle.mjs
+*.min.js

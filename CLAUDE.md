@@ -44,9 +44,7 @@ lib/
     regulation.ts        ← ЕДИНСТВЕННЫЙ ФАЙЛ правил регламента — менять здесь
   schemas/
     protocol-schema.ts   ← Zod-схема Protocol + coercion + validation
-  db/
-    schema.ts            ← DDL SurrealDB: таблицы prompt, users, conversations
-    connection.ts        ← синглтон-соединение с переподключением
+  getPromt.ts           ← connectDB + DDL SurrealDB (users, prompts, protocol_examples, protocol_instructions, conversations, anonymization_mappings)
   protocol-chat-extract.ts  ← извлечение подтверждённых блоков из чата
   protocol-markdown-format.ts ← форматирование для markdown и DOCX
   docx-generator.ts     ← генерация .docx файла
@@ -72,8 +70,8 @@ lib/
 - LLM часто возвращает кривой JSON → `coerceProtocolPartial()` нормализует перед валидацией
 
 ### База данных (SurrealDB)
-- Схема инициализируется при старте через `lib/db/schema.ts`
-- DDL содержит `DEFINE TABLE IF NOT EXISTS` — безопасно перезапускать
+- Схема и подключение живут в `lib/getPromt.ts` (`connectDB`)
+- Таблицы: users, prompts, protocol_examples, protocol_instructions, conversations, anonymization_mappings
 - Подключение — WebSocket-синглтон, переподключается при обрыве
 
 ### Контекстное окно

@@ -1,57 +1,9 @@
+import { bestEffortBinaryText, extractLegacyDoc } from '@/lib/attachment-extract';
+
 const GEMINI_API_KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY!;
 const GEMINI_UPLOAD_URL = `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${GEMINI_API_KEY}`;
 
 export const runtime = "nodejs";
-
-function bestEffortBinaryText(buf: Buffer): string | null {
-  if (!buf || buf.length < 8) return null;
-
-  const candidates: string[] = [];
-  try {
-    candidates.push(buf.toString('utf8'));
-  } catch {}
-  try {
-    candidates.push(buf.toString('utf16le'));
-  } catch {}
-  try {
-    candidates.push(buf.toString('latin1'));
-  } catch {}
-
-  const clean = (raw: string) =>
-    String(raw ?? '')
-      .replace(/[\x00-\x09\x0B\x0C\x0E-\x1F]+/g, ' ')
-      .replace(/\u0000+/g, ' ')
-      .replace(/\s{2,}/g, ' ')
-      .trim();
-
-  const extractReadableRuns = (text: string) => {
-    const runs = text.match(/[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9\s.,:;!?()\[\]"'«»\-–—\/\\]{40,}/g);
-    if (!runs?.length) return '';
-    return runs.map((r) => clean(r)).filter(Boolean).join('\n');
-  };
-
-  let best = '';
-  for (const c of candidates) {
-    const runs = extractReadableRuns(c);
-    if (runs.length > best.length) best = runs;
-  }
-
-  const cleaned = clean(best);
-  return cleaned.length >= 40 ? cleaned : null;
-}
-
-async function extractLegacyDoc(buf: Buffer): Promise<string | null> {
-  try {
-    const WordExtractor = (await import('word-extractor')).default;
-    const extractor = new WordExtractor();
-    const doc = await extractor.extract(buf);
-    const text = doc.getBody()?.trim();
-    return text || null;
-  } catch (error) {
-    console.error('word-extractor parse failed:', error);
-    return null;
-  }
-}
 
 export async function POST(req: Request) {
   const formData = await req.formData();
