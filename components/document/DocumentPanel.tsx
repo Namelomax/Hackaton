@@ -42,6 +42,8 @@ type DocumentPanelProps = {
   anonymization?: { anonymizedText: string; mapping: Record<string, string> };
   /** Для серверной анонимизации документа перед проверкой в облаке. */
   conversationId?: string | null;
+  /** Нужен серверу для проверки владения диалогом (/api/review-document). */
+  userId?: string | null;
 };
 
 function getFileExt(name: string) {
@@ -119,6 +121,7 @@ export const DocumentPanel = ({
   onToggleCollapsed,
   anonymization,
   conversationId,
+  userId,
 }: DocumentPanelProps) => {
   const [copied, setCopied] = useState(false);
   const [anonView, setAnonView] = useState<{ title: string; content: string } | null>(null);
@@ -279,6 +282,7 @@ export const DocumentPanel = ({
         body: JSON.stringify({
           content: localDoc.content,
           ...(conversationId ? { conversationId } : {}),
+          ...(userId ? { userId } : {}),
           ...(chatReviewBody ?? { chatProvider: 'ollama' as const }),
         }),
       });

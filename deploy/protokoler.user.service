@@ -1,0 +1,36 @@
+# systemd user-сервис для Протоколера (Next.js), порт 8012.
+# Установка (сервер yakov, без sudo):
+#   mkdir -p ~/.config/systemd/user
+#   cp ~/protokoler/deploy/protokoler.user.service ~/.config/systemd/user/protokoler.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now protokoler
+#   loginctl enable-linger yakov     # жить после логаута/ребута
+#
+# Порт 8012: 8010/8011 заняты анонимизатором, 8000 и 3000 — ЧУЖИЕ процессы (проверено ss).
+# nginx protocol.cpcore.ru должен смотреть на 127.0.0.1:8012 (proxy_buffering off!).
+
+[Unit]
+Description=Protokoler (Next.js) — ассистент протоколов обследования
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/protokoler
+EnvironmentFile=%h/protokoler/.env
+Environment=PATH=%h/node-v22.20.0-linux-x64/bin:/usr/local/bin:/usr/bin:/bin
+Environment=NODE_ENV=production
+Environment=PORT=8012
+# -H 127.0.0.1 — слушать ТОЛЬКО петлю: наружу ходит nginx (TLS + единая точка
+# входа). Без этого Next.js биндится на 0.0.0.0 и приложение доступно снаружи
+# напрямую по http://<IP>:8012 в обход HTTPS — лишний путь к данным с ПДн.
+ExecStart=%h/node-v22.20.0-linux-x64/bin/npm run start -- -p 8012 -H 127.0.0.1
+# always, а не on-failure: on-failure НЕ поднимает процесс, завершившийся с
+# кодом 0 (например, если next start сам решил выйти) — сайт тихо ложился бы.
+Restart=always
+RestartSec=5
+# Без этого systemd после 5 быстрых падений подряд помечает сервис failed и
+# больше не пытается (например, пока БД недоступна) — сайт остаётся лежать.
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=default.target

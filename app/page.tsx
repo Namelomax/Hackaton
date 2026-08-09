@@ -27,11 +27,14 @@ function buildPersistPutBody(
   conversationId: string,
   messages: unknown[],
   documentContent?: string | null,
+  userId?: string | null,
 ): Record<string, unknown> {
   const body: Record<string, unknown> = { conversationId, messages };
   if (typeof documentContent === 'string' && documentContent.trim().length > 0) {
     body.documentContent = documentContent;
   }
+  // userId нужен серверу для проверки владения диалогом (изоляция чатов).
+  if (userId) body.userId = userId;
   return body;
 }
 
@@ -130,6 +133,9 @@ export default function ChatPage() {
     selectedPromptId,
     documentContent: engineDocumentRef.current?.content || undefined,
     ...(conversationId ? { conversationId } : {}),
+    // userId явно — иначе сервер видит `user=anon` и пропускает проверку
+    // владения диалогом (см. тот же комментарий в PromptInputWrapper).
+    ...(authUser?.id ? { userId: authUser.id } : {}),
     ...chatBody,
   });
 
@@ -195,7 +201,9 @@ export default function ChatPage() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`/api/anonymize?conversationId=${encodeURIComponent(key)}`);
+        const res = await fetch(
+          `/api/anonymize?conversationId=${encodeURIComponent(key)}${authUser?.id ? `&userId=${encodeURIComponent(authUser.id)}` : ''}`,
+        );
         if (!res.ok) return;
         const json = await res.json();
         if (cancelled || !json?.ok) return;
@@ -710,7 +718,7 @@ export default function ChatPage() {
         const resp = await fetch('/api/conversations', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(buildPersistPutBody(conversationId, messages, document.content)),
+          body: JSON.stringify(buildPersistPutBody(conversationId, messages, document.content, authUser?.id)),
         });
         const j = await resp.json();
         if (j?.success) {
@@ -994,7 +1002,7 @@ export default function ChatPage() {
       const resp = await fetch('/api/conversations', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversationId: conv.id, title: newTitle }),
+        body: JSON.stringify({ conversationId: conv.id, title: newTitle, userId: authUser?.id }),
       });
       const j = await resp.json();
       if (!j?.success) {
@@ -1097,7 +1105,7 @@ export default function ChatPage() {
         const resp = await fetch('/api/conversations', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ conversationId: viewConversationId, messages: messagesForPut, documentContent: updated.content }),
+          body: JSON.stringify({ conversationId: viewConversationId, messages: messagesForPut, documentContent: updated.content, userId: authUser?.id }),
         });
         const result = await resp.json();
         console.log('[handleDocumentEdit] Backend save result:', result);
@@ -1140,7 +1148,7 @@ export default function ChatPage() {
       fetch('/api/conversations', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildPersistPutBody(conversationId, messages, document.content)),
+        body: JSON.stringify(buildPersistPutBody(conversationId, messages, document.content, authUser?.id)),
       }).catch((err) => console.warn('Failed to save conversation on switch', err));
     }
 
@@ -1340,6 +1348,7 @@ export default function ChatPage() {
           onQuote={(text) => setQuoteText(text)}
           chatReviewBody={chatBody}
           conversationId={viewConversationId ?? conversationId}
+          userId={authUser?.id}
           collapsed={!isDocumentPanelVisible}
           onToggleCollapsed={() => setIsDocumentPanelVisible((v) => !v)}
         />
