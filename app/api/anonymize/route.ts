@@ -20,7 +20,21 @@ import {
   saveConversationPreview,
   getConversationPreview,
   getConversationMapping,
+  assertConversationOwnership,
 } from '@/lib/getPromt';
+
+/** 403 если диалог принадлежит другому пользователю. Возвращает Response|null. */
+async function ownershipGuard(conversationId: string | null, userId: string | null): Promise<Response | null> {
+  try {
+    await assertConversationOwnership(conversationId, userId);
+    return null;
+  } catch (e) {
+    if (e instanceof Error && e.message === 'Forbidden') {
+      return Response.json({ ok: false, error: 'Доступ к диалогу запрещён' }, { status: 403 });
+    }
+    return null; // прочие ошибки не блокируют
+  }
+}
 
 export const runtime = 'nodejs';
 // Ни один запрос сюда больше не длится дольше нескольких секунд: POST ставит
@@ -44,6 +58,10 @@ export async function POST(req: Request) {
 
   const conversationId: string | null =
     typeof body.conversationId === 'string' ? body.conversationId : null;
+  const userId: string | null =
+    typeof body.userId === 'string' ? body.userId : new URL(req.url).searchParams.get('userId');
+  const forbidden = await ownershipGuard(conversationId, userId);
+  if (forbidden) return forbidden;
   const files: any[] = Array.isArray(body.files) ? body.files : [];
 
   const parts: string[] = [];
@@ -125,6 +143,11 @@ function errorResponse(e: unknown): Response {
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const conversationId = url.searchParams.get('conversationId');
+  const userId = url.searchParams.get('userId');
+  // ИЗОЛЯЦИЯ: и опрос job'а, и чтение preview/mapping относятся к диалогу —
+  // проверяем владение до любого доступа к его данным.
+  const forbidden = await ownershipGuard(conversationId, userId);
+  if (forbidden) return forbidden;
 
   // Опрос фоновой задачи. Один короткий запрос: спросили статус — ответили.
   // Пока не готово, отдаём 200 {done:false}, а не 202/204: браузер отличает

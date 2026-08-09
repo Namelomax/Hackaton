@@ -46,6 +46,8 @@ async function pollAnonymizeJob(
   convId: string | null,
   signal: AbortSignal | undefined,
   onTick: (elapsedSec: number) => void,
+  /** Нужен серверу для проверки владения диалогом: без него опрос получит 403. */
+  userId?: string | null,
 ): Promise<any | null> {
   const startedAt = Date.now();
   // Короткие тексты успевают за секунду; на длинных разряжаем опрос, чтобы не
@@ -63,6 +65,7 @@ async function pollAnonymizeJob(
     try {
       const qs = new URLSearchParams({ jobId });
       if (convId) qs.set('conversationId', convId);
+      if (userId) qs.set('userId', userId);
       res = await fetch(`/api/anonymize?${qs}`, { signal, cache: 'no-store' });
     } catch (err) {
       if ((err as any)?.name === 'AbortError' || signal?.aborted) throw err;
@@ -326,6 +329,7 @@ export const PromptInputWrapper = ({
               signal,
               body: JSON.stringify({
                 conversationId: convId,
+                ...(authUser?.id ? { userId: authUser.id } : {}),
                 files: payloadFiles,
                 ...(payloadText ? { text: payloadText } : {}),
               }),
@@ -399,7 +403,7 @@ export const PromptInputWrapper = ({
         // Само ожидание живёт здесь, в браузере, поэтому лимит серверной
         // функции больше не ограничивает длительность анонимизации.
         if (json.jobId && !json.done) {
-          const finished = await pollAnonymizeJob(json.jobId, convId, signal, setPreviewElapsed);
+          const finished = await pollAnonymizeJob(json.jobId, convId, signal, setPreviewElapsed, authUser?.id);
           if (!finished) {
             setPreviewOpen(false);
             return 'fallback';
@@ -582,6 +586,13 @@ export const PromptInputWrapper = ({
             selectedPromptId,
             documentContent: documentContent || undefined,
             ...(ensuredConversationId ? { conversationId: ensuredConversationId } : {}),
+            // userId явно, как и conversationId выше. В URL транспорта он тоже
+            // есть, но транспорт мемоизирован по [authUser?.id, conversationId]
+            // и на момент отправки может быть собран со старым состоянием — в
+            // логах это видно как `user=anon` у залогиненного пользователя.
+            // Без userId серверная проверка владения диалогом молча пропускает
+            // запрос, т.е. изоляция чатов между пользователями не работает.
+            ...(authUser?.id ? { userId: authUser.id } : {}),
             ...(chatBody ?? {}),
           },
         }

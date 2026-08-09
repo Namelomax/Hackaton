@@ -806,6 +806,39 @@ export async function deleteConversation(convId: string, userId?: string): Promi
   await db.delete(convRecord);
 }
 
+/**
+ * ЕДИНЫЙ гард изоляции диалогов. Бросает 'Forbidden', если диалог существует и
+ * принадлежит ДРУГОМУ пользователю (или запрос анонимный, а диалог — с владельцем).
+ * Применяется во ВСЕХ эндпоинтах с conversationId (/api/chat, /api/anonymize,
+ * /api/conversations), чтобы сообщения/mapping одного пользователя НИКОГДА не
+ * попадали в чужой диалог. Незаписанные (local-...) и несуществующие id
+ * пропускаются — красть в них нечего.
+ */
+export async function assertConversationOwnership(
+  conversationId?: string | null,
+  userId?: string | null,
+): Promise<void> {
+  if (!conversationId || conversationId.startsWith('local-')) return;
+  await connectDB();
+  const cleanConvId = conversationId.replace(/^conversations:/, '');
+  const convRecord = new RecordId('conversations', cleanConvId);
+  const convRaw = await db.select(convRecord).catch(() => undefined);
+  const convData = Array.isArray(convRaw) ? convRaw[0] : convRaw;
+  if (!convData) return; // записи нет — новый диалог, красть нечего
+  const ownerRef = (convData as any).user?.toString?.() ?? String((convData as any).user ?? '');
+  if (!ownerRef) return; // безвладельный (legacy/system) — не трогаем
+
+  // У диалога ЕСТЬ владелец → аноним к нему не допускается. Раньше здесь стоял
+  // ранний выход при отсутствии userId, и защиту можно было обойти, просто не
+  // прислав его. Теперь клиент передаёт userId в теле запроса явно, поэтому
+  // требуем совпадения всегда.
+  if (!userId) throw new Error('Forbidden');
+  const normalizedUser = userId.startsWith('users:') ? userId : `users:${userId}`;
+  if (ownerRef !== normalizedUser) {
+    throw new Error('Forbidden');
+  }
+}
+
 // Create a new empty conversation for a user (returns created conversation)
 export async function createConversation(userId: string, title?: string): Promise<Conversation> {
   await connectDB();

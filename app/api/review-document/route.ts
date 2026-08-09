@@ -4,6 +4,7 @@ import {
   deepDeanonymize,
   loadConversationMapping,
 } from '@/lib/anonymization';
+import { assertConversationOwnership } from '@/lib/getPromt';
 
 export const maxDuration = 90;
 export const runtime = 'nodejs';
@@ -11,12 +12,13 @@ export const dynamic = 'force-dynamic'; // Отключаем кэширован
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
-  const { content, chatProvider, chatModel, useThinking, conversationId } = body as {
+  const { content, chatProvider, chatModel, useThinking, conversationId, userId } = body as {
     content?: string;
     chatProvider?: string;
     chatModel?: string;
     useThinking?: boolean;
     conversationId?: string;
+    userId?: string;
   };
 
   if (!content || typeof content !== 'string') {
@@ -24,6 +26,17 @@ export async function POST(req: Request) {
       { error: 'Missing or invalid content' },
       { status: 400 }
     );
+  }
+
+  // ИЗОЛЯЦИЯ: ниже читается mapping диалога, а он содержит пары
+  // «плейсхолдер → настоящие ПДн». Без проверки владения любой мог бы получить
+  // расшифровку чужих персональных данных, подставив чужой conversationId.
+  try {
+    await assertConversationOwnership(conversationId, userId);
+  } catch (e) {
+    if (e instanceof Error && e.message === 'Forbidden') {
+      return Response.json({ error: 'Доступ к этому диалогу запрещён' }, { status: 403 });
+    }
   }
 
   try {

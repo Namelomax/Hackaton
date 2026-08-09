@@ -31,16 +31,20 @@ export const DEFAULT_LOCAL_CHAT_MODELS = ['gemma-4-31b'] as const;
 
 /** Короткие подписи для селектора моделей в UI */
 export const LOCAL_MODEL_LABELS: Record<string, string> = {
-  'gemma4:12b': 'Gemma 4 12B',
-  'qwen3:14b': 'Qwen3 14B',
-  'qwen3.5:9b': 'Qwen3.5 9B',
+  'gemma-4-31b': 'Gemma 4 31B',
 };
 
 /**
  * Облачная модель по умолчанию (режим «Облако + анонимизация»).
  * Сервер может переопределить через ANONYMIZER_CLOUD_MODEL / OPENROUTER_MODEL_DEFAULT.
+ *
+ * ДИАГНОСТИКА бесплатных тарифов (`:free`): при исчерпании лимита OpenRouter
+ * запрос отваливается за ~2 с с `finishReason=other`, `tokens=NaN`, `outChars=0`,
+ * и пользователь видит «Ответ не удалось сформировать». Это признак ТАРИФА, а не
+ * промпта или модели (ловили на nemotron-...:free при входе ~44k токенов
+ * 07.08.2026). Увидишь такую сигнатуру — переводи на платный слаг.
  */
-export const DEFAULT_CLOUD_CHAT_MODEL = 'nvidia/nemotron-3-ultra-550b-a55b:free';
+export const DEFAULT_CLOUD_CHAT_MODEL = 'poolside/laguna-s-2.1:free';
 
 /**
  * Отключённые/мёртвые слаги OpenRouter (404 «No endpoints found»). Могут
@@ -56,13 +60,17 @@ export function normalizeCloudModel(id?: string | null): string {
   return slug;
 }
 
-/** Available OpenRouter cloud models (optional admin UI / env). */
+/**
+ * Облачные модели OpenRouter (админ-UI / env). У `:free` — лимиты тарифа,
+ * см. сигнатуру отказа в комментарии к DEFAULT_CLOUD_CHAT_MODEL.
+ */
 export const OPENROUTER_MODELS: { id: string; label: string }[] = [
-  { id: 'nvidia/nemotron-3-ultra-550b-a55b:free', label: 'Nemotron Ultra 550B (free)' },
-  { id: 'nvidia/nemotron-3-super-120b-a12b:free', label: 'Nemotron 120B (free)' },
-  { id: 'google/gemini-2.5-pro-preview', label: 'Gemini 2.5 Pro' },
+  { id: 'poolside/laguna-s-2.1:free', label: 'Laguna S 2.1 (free)' },
   { id: 'anthropic/claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
+  { id: 'google/gemini-2.5-pro-preview', label: 'Gemini 2.5 Pro' },
   { id: 'openai/gpt-4.1', label: 'GPT-4.1' },
+  { id: 'nvidia/nemotron-3-ultra-550b-a55b:free', label: 'Nemotron Ultra 550B (free, лимиты)' },
+  { id: 'nvidia/nemotron-3-super-120b-a12b:free', label: 'Nemotron 120B (free, лимиты)' },
 ];
 
 export function parseModelsFromEnv(jsonEnv?: string): string[] {
