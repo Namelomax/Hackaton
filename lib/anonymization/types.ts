@@ -11,10 +11,25 @@ export type Mapping = Record<string, string>;
 /** Счётчики последнего использованного номера по каждой метке (PERSON, ORG, …). */
 export type LabelCounters = Record<string, number>;
 
-/** Канонический маппинг диалога: прямой словарь + счётчики номеров. */
+/**
+ * Алиас — склонённая (или сокращённая) форма уже известного значения:
+ * `{"value": "Ирины Соколовой", "placeholder": "[PERSON_1]"}`.
+ *
+ * Появляется, когда склейка падежей выбрасывает дубль-плейсхолдер: само
+ * значение из mapping уходит, но подставлять его нужно по-прежнему — иначе
+ * склонённая форма уедет в облако как есть. Хранится в диалоге, поэтому модель
+ * оценивает каждую форму ровно один раз.
+ */
+export interface PlaceholderAlias {
+  value: string;
+  placeholder: string;
+}
+
+/** Канонический маппинг диалога: прямой словарь + счётчики номеров + алиасы. */
 export interface ConversationMapping {
   mapping: Mapping;
   counters: LabelCounters;
+  aliases?: PlaceholderAlias[];
 }
 
 /**

@@ -13,7 +13,9 @@ describe("consumePartialObjectStream", () => {
 
     const deferredError = await consumePartialObjectStream(
       malformedPartialStream(),
-      (partial) => receivedPartials.push(partial),
+      (partial) => {
+        receivedPartials.push(partial);
+      },
     );
 
     expect(deferredError).toBe(partialStreamError);

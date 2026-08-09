@@ -45,3 +45,6 @@ deploy.sh
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Собранный бандл e2e-теста (см. scripts/test-protocol-e2e.ts)
+e2e.run.mjs
