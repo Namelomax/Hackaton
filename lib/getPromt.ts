@@ -1269,7 +1269,13 @@ export async function getConversationPreview(conversationId: string): Promise<st
  *
  * Поэтому пишем через `UPDATE ... SET`: перечисленные поля заменяются целиком
  * (удалённые ключи mapping реально уходят), остальные поля записи не трогаются.
- * UPDATE по несуществующему id создаёт запись — отдельный create не нужен.
+ *
+ * ВТОРАЯ ТОНКОСТЬ: в SurrealDB 2.x `UPDATE` по несуществующему id НИЧЕГО не
+ * создаёт и молча возвращает пустой результат (в 1.x создавал). Для нового
+ * диалога записи ещё нет — поэтому смотрим на число затронутых строк и, если
+ * их ноль, создаём запись через upsert. Без этой проверки маппинг нового
+ * диалога терялся целиком: анонимизация работала внутри запроса и обнулялась
+ * к следующему сообщению.
  */
 export async function saveConversationMapping(
   conversationId: string,
@@ -1283,17 +1289,26 @@ export async function saveConversationMapping(
     counters: data.counters ?? {},
     aliases: parseAliases(data.aliases),
   };
+
+  let updated = 0;
   try {
-    await db.query(
-      'UPDATE $rid SET mapping = $mapping, counters = $counters, aliases = $aliases;',
+    const res = await db.query(
+      'UPDATE $rid SET mapping = $mapping, counters = $counters, aliases = $aliases RETURN id;',
       { rid, ...payload },
     );
+    updated = surrealQueryRows(res).length;
   } catch (e) {
-    // Фолбек на upsert, если запрос не прошёл. Здесь возможна потеря
-    // document_json/previewText, но потерять mapping хуже.
     console.warn('saveConversationMapping via query failed:', (e as Error)?.message);
+  }
+  if (updated > 0) return;
+
+  // Записи ещё не было (или запрос не прошёл) — создаём. upsert заменяет
+  // содержимое целиком, но для новой записи терять нечего.
+  try {
+    await db.upsert(rid, payload);
+  } catch (e) {
     try {
-      await db.upsert(rid, payload);
+      await db.merge(rid, payload as any);
     } catch (ee) {
       console.error('saveConversationMapping failed:', (ee as Error)?.message);
     }
