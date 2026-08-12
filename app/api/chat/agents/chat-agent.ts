@@ -23,6 +23,10 @@ import {
   pickChatMaxOutputTokens,
 } from "@/lib/ollama-limits";
 import { deanonymize, deepDeanonymize } from "@/lib/anonymization";
+import {
+  filterToolCallLeakStream,
+  looksLikeTextualToolCall,
+} from "@/lib/tool-call-leak";
 
 const PROTOCOL_TOOL_SYSTEM_APPENDIX = `
 
@@ -404,7 +408,13 @@ export async function runChatAgent(
 
         // sendReasoning: false — внутренние размышления модели (reasoning-части)
         // не отправляются в чат: пользователь видит только итоговый ответ.
-        writer.merge(result.toUIMessageStream({ sendReasoning: false }));
+        // filterToolCallLeakStream: слабая локальная модель пишет вызов
+        // инструмента ТЕКСТОМ («<|tool_call>call:publishInvestigationProtocol…»).
+        // Ниже это ловит фолбэк и всё равно собирает документ, но сама разметка
+        // без фильтра уезжала пользователю в чат и сохранялась в историю.
+        writer.merge(
+          filterToolCallLeakStream(result.toUIMessageStream({ sendReasoning: false })),
+        );
         const [finishReason, text] = await Promise.all([result.finishReason, result.text]);
         const textStr = String(text ?? '').trim();
         lastAssistantText = textStr;
@@ -438,13 +448,14 @@ export async function runChatAgent(
       // обновляется. Детектируем это и генерируем документ детерминированно.
       if (!sink.markdown || sink.markdown.trim().length === 0) {
         const t = lastAssistantText.trim();
-        // Модель нередко «протекает» аргументами инструмента в текст: раньше
-        // ловили только строку, НАЧИНАЮЩУЮСЯ с `{`. Но на практике leak выглядит
-        // как `["reasonBrief": …]`, `("reasonBrief": …)` или встроен в середину
-        // ответа (см. скриншот с ЦОТ→ЦОД). `reasonBrief` — внутреннее имя параметра
-        // инструмента, в русском ответе пользователю оно не встречается никогда,
-        // поэтому его наличие ГДЕ УГОДНО в тексте — надёжный признак утечки tool-call.
-        const textualToolJson = /"?reasonBrief"?\s*:/i.test(t);
+        // Модель нередко «протекает» вызовом инструмента в текст. Признаки
+        // (см. lib/tool-call-leak.ts): имя параметра `reasonBrief`, имя самого
+        // инструмента и любые tool_call-границы. Ни одно из этого в нормальном
+        // русском ответе пользователю не встречается — промпт прямо запрещает
+        // упоминать инструмент, — поэтому находка ГДЕ УГОДНО в тексте надёжна.
+        // Раньше признак был один (`reasonBrief:`), и псевдовызов без имени
+        // параметра проходил мимо: документ не пересобирался молча.
+        const textualToolJson = looksLikeTextualToolCall(t);
         // Намерение обновить документ определяет МОДЕЛЬ, а не список подстрок.
         // Список ожидаемо промахивался: ответ «Формирую протокол» мимо него
         // прошёл (в списке было причастие «сформирован»), инструмент не

@@ -1,6 +1,10 @@
 import { Surreal, RecordId, u } from "surrealdb";
 import crypto from 'crypto';
-import { DEFAULT_PROMPT } from '@/lib/db/repositories/default-promt';
+// Раньше шло через lib/db/repositories/default-promt — трёхстрочный
+// ре-экспорт, единственная живая ниточка к мёртвому слою lib/db/ (там лежала
+// вторая, недостижимая схема БД, и именно её описывал CLAUDE.md). Слой удалён,
+// импорт ведёт прямо к источнику.
+import { DEFAULT_PROMPT } from '@/lib/config/prompt-config';
 import { SGR_MAIN_AGENT_PROMPT } from '@/lib/prompts/sgr-prompts';
 import { messagesArrayLooksCorrupt, resolveMessagesFromRecord } from '@/lib/conversationMessages';
 import {
@@ -799,7 +803,7 @@ export async function deleteConversation(convId: string, userId?: string): Promi
     const ownerRef = convData.user?.toString?.() ?? String(convData.user ?? '');
     const normalizedUser = userId.startsWith('users:') ? userId : `users:${userId}`;
     if (ownerRef && normalizedUser && ownerRef !== normalizedUser) {
-      throw new Error('Forbidden');
+      throw new ForbiddenError();
     }
   }
 
@@ -807,12 +811,34 @@ export async function deleteConversation(convId: string, userId?: string): Promi
 }
 
 /**
- * ЕДИНЫЙ гард изоляции диалогов. Бросает 'Forbidden', если диалог существует и
- * принадлежит ДРУГОМУ пользователю (или запрос анонимный, а диалог — с владельцем).
- * Применяется во ВСЕХ эндпоинтах с conversationId (/api/chat, /api/anonymize,
- * /api/conversations), чтобы сообщения/mapping одного пользователя НИКОГДА не
- * попадали в чужой диалог. Незаписанные (local-...) и несуществующие id
- * пропускаются — красть в них нечего.
+ * Диалог принадлежит другому пользователю. Отдельный класс, а не строка в
+ * `message`: раньше вызывающие сравнивали `e.message === 'Forbidden'`, и любая
+ * ДРУГАЯ ошибка внутри гарда (обрыв WebSocket к SurrealDB, таймаут, правка
+ * текста исключения) просто логировалась, а запрос шёл дальше уже без проверки.
+ * Гард открывался ровно тогда, когда база нестабильна.
+ */
+export class ForbiddenError extends Error {
+  constructor(message = 'Forbidden') {
+    super(message);
+    this.name = 'ForbiddenError';
+  }
+}
+
+/** Проверить владельца не удалось. Это НЕ «доступ разрешён» — это 503. */
+export class OwnershipCheckUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super(`Проверка владельца диалога недоступна: ${(cause as Error)?.message ?? cause}`);
+    this.name = 'OwnershipCheckUnavailableError';
+  }
+}
+
+/**
+ * ЕДИНЫЙ гард изоляции диалогов. Бросает ForbiddenError, если диалог существует
+ * и принадлежит ДРУГОМУ пользователю (или запрос анонимный, а диалог — с
+ * владельцем). Применяется во ВСЕХ эндпоинтах с conversationId (/api/chat,
+ * /api/anonymize, /api/conversations), чтобы сообщения/mapping одного
+ * пользователя НИКОГДА не попадали в чужой диалог. Незаписанные (local-...) и
+ * несуществующие id пропускаются — красть в них нечего.
  */
 export async function assertConversationOwnership(
   conversationId?: string | null,
@@ -822,7 +848,14 @@ export async function assertConversationOwnership(
   await connectDB();
   const cleanConvId = conversationId.replace(/^conversations:/, '');
   const convRecord = new RecordId('conversations', cleanConvId);
-  const convRaw = await db.select(convRecord).catch(() => undefined);
+  // Ошибку чтения НЕЛЬЗЯ трактовать как «записи нет»: раньше здесь стоял
+  // `.catch(() => undefined)`, и при недоступной БД гард пропускал кого угодно.
+  let convRaw: unknown;
+  try {
+    convRaw = await db.select(convRecord);
+  } catch (e) {
+    throw new OwnershipCheckUnavailableError(e);
+  }
   const convData = Array.isArray(convRaw) ? convRaw[0] : convRaw;
   if (!convData) return; // записи нет — новый диалог, красть нечего
   const ownerRef = (convData as any).user?.toString?.() ?? String((convData as any).user ?? '');
@@ -832,10 +865,10 @@ export async function assertConversationOwnership(
   // ранний выход при отсутствии userId, и защиту можно было обойти, просто не
   // прислав его. Теперь клиент передаёт userId в теле запроса явно, поэтому
   // требуем совпадения всегда.
-  if (!userId) throw new Error('Forbidden');
+  if (!userId) throw new ForbiddenError();
   const normalizedUser = userId.startsWith('users:') ? userId : `users:${userId}`;
   if (ownerRef !== normalizedUser) {
-    throw new Error('Forbidden');
+    throw new ForbiddenError();
   }
 }
 
@@ -1035,20 +1068,12 @@ export async function saveProtocolExample(content: string): Promise<ProtocolExam
   };
 }
 
-export async function getRecentProtocolExamples(limit: number = 3): Promise<ProtocolExample[]> {
-  await connectDB();
-  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(10, Math.floor(limit))) : 3;
-  const result = (await db.query(
-    `SELECT * FROM protocol_examples ORDER BY created DESC LIMIT $limit;`,
-    { limit: safeLimit }
-  )) as [any[]];
-  const records = result?.[0] ?? [];
-  return records.map((r: any) => ({
-    id: r.id.toString(),
-    content: String(r.content ?? ''),
-    created: String(r.created ?? ''),
-  }));
-}
+// ВНИМАНИЕ: таблица protocol_examples сейчас ТОЛЬКО пишется.
+// Читателя (getRecentProtocolExamples) удалили — он не вызывался ниоткуда.
+// Запись идёт из DocumentPanel через POST /api/protocol-examples, причём без
+// авторизации и без ограничения объёма: таблица растёт, данные никто не
+// использует. Либо появляется потребитель, либо роут стоит убрать вместе с
+// saveProtocolExample.
 
 export async function upsertProtocolInstruction(
   conversationId: string,

@@ -21,18 +21,31 @@ import {
   getConversationPreview,
   getConversationMapping,
   assertConversationOwnership,
+  ForbiddenError,
 } from '@/lib/getPromt';
 
-/** 403 если диалог принадлежит другому пользователю. Возвращает Response|null. */
+/**
+ * 403 если диалог принадлежит другому пользователю, 503 если проверить не
+ * удалось. Возвращает Response|null (null — доступ разрешён).
+ *
+ * Здесь читается mapping «плейсхолдер → настоящие ПДн», поэтому пропускать
+ * запрос при неизвестном результате проверки нельзя. Раньше на любой ошибке,
+ * кроме Forbidden, гард возвращал null — то есть при недоступной базе открывал
+ * доступ ко всему.
+ */
 async function ownershipGuard(conversationId: string | null, userId: string | null): Promise<Response | null> {
   try {
     await assertConversationOwnership(conversationId, userId);
     return null;
   } catch (e) {
-    if (e instanceof Error && e.message === 'Forbidden') {
+    if (e instanceof ForbiddenError) {
       return Response.json({ ok: false, error: 'Доступ к диалогу запрещён' }, { status: 403 });
     }
-    return null; // прочие ошибки не блокируют
+    console.error('ownership check failed:', e);
+    return Response.json(
+      { ok: false, error: 'Сервис временно недоступен: не удалось проверить доступ к диалогу.' },
+      { status: 503 },
+    );
   }
 }
 
