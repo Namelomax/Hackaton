@@ -51,14 +51,34 @@ async function insecureFetch(
         ? await urlInput.text()
         : undefined;
 
-  // Отмена и таймаут. node:http ничего не знает про AbortSignal, поэтому
-  // абортить соединение нужно вручную. Без этого закрытая вкладка или кнопка
-  // «стоп» не останавливали генерацию: AI SDK отписывался, а запрос к Ollama
-  // продолжал жить до maxDuration = 300, занимая VRAM на общей карте.
+  // Отмена. node:http ничего не знает про AbortSignal, поэтому абортить
+  // соединение нужно вручную. Без этого закрытая вкладка или кнопка «стоп» не
+  // останавливали генерацию: AI SDK отписывался, а запрос к Ollama продолжал
+  // жить до maxDuration = 300, занимая VRAM на общей карте.
   const signal = init?.signal ?? (urlInput instanceof Request ? urlInput.signal : undefined);
-  const timeoutMs = Number(process.env.LLM_REQUEST_TIMEOUT_MS) || 600_000;
+
+  /**
+   * Общий потолок на запрос. По умолчанию ВЫКЛЮЧЕН.
+   *
+   * Тут были грабли: сначала стояло `req.setTimeout(600_000, …)`. Это НЕ общий
+   * таймаут запроса, а таймаут ПРОСТОЯ сокета, и на живом стенде он срубал
+   * генерацию через ~15 секунд с сообщением про 600000 мс. Теперь считаем сами
+   * обычным таймером от момента отправки — он не может сработать раньше срока —
+   * и включаем только явной установкой LLM_REQUEST_TIMEOUT_MS, чтобы дефолт не
+   * ломал длинные генерации на медленной GPU.
+   */
+  const timeoutRaw = Number(process.env.LLM_REQUEST_TIMEOUT_MS);
+  const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 0;
 
   return new Promise((resolve, reject) => {
+    let requestTimer: NodeJS.Timeout | undefined;
+    const clearRequestTimer = () => {
+      if (requestTimer) {
+        clearTimeout(requestTimer);
+        requestTimer = undefined;
+      }
+    };
+
     const req = nodeRequest(
       {
         hostname: url.hostname,
@@ -69,6 +89,7 @@ async function insecureFetch(
         insecureHTTPParser: true,
       },
       (res) => {
+        clearRequestTimer();
         const responseHeaders = new Headers();
         for (const [key, value] of Object.entries(res.headers)) {
           if (!value) continue;
@@ -94,19 +115,27 @@ async function insecureFetch(
       },
     );
 
-    req.on('error', reject);
-
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`LLM request timeout after ${timeoutMs}ms`));
+    req.on('error', (err) => {
+      clearRequestTimer();
+      reject(err);
     });
+    req.on('close', clearRequestTimer);
+
+    if (timeoutMs > 0) {
+      requestTimer = setTimeout(() => {
+        req.destroy(new Error(`LLM request timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+    }
 
     if (signal) {
       if (signal.aborted) {
+        clearRequestTimer();
         req.destroy(new Error('aborted'));
         reject(new DOMException('The operation was aborted.', 'AbortError'));
         return;
       }
       const onAbort = () => {
+        clearRequestTimer();
         req.destroy(new Error('aborted'));
         reject(new DOMException('The operation was aborted.', 'AbortError'));
       };
@@ -120,6 +149,7 @@ async function insecureFetch(
       else {
         // ReadableStream/FormData/URLSearchParams раньше молча уходили пустыми:
         // сервер получал запрос без тела и отвечал невнятной ошибкой. Падаем явно.
+        clearRequestTimer();
         req.destroy();
         reject(new Error(`insecureFetch: неподдерживаемый тип тела запроса (${typeof bodyData})`));
         return;
