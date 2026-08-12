@@ -51,12 +51,11 @@ import {
   prependNoticeToResponse,
 } from '@/lib/anonymization/sse-deanonymize';
 import { ANONYMIZE_MODE_SYSTEM_APPENDIX } from '@/lib/anonymization/prompt';
-import {
-  urlToBuffer,
-  guessFileExt,
-  bestEffortBinaryText,
-  extractLegacyDoc,
-} from '@/lib/attachment-extract';
+// ЕДИНЫЙ модуль извлечения текста из вложений — общий с /api/anonymize.
+// Свою копию диспетчера этот роут больше не держит: копии разошлись по
+// поддерживаемым типам и по работе с кодировками, и расхождение стоило утечки
+// ПДн (см. комментарий у decodeTextBuffer).
+import { guessFileExt, extractAttachmentText } from '@/lib/attachment-extract';
 
 // Должно быть ≥ таймаута прокси/Ollama для длинных ответов (300s совпадало с 5m и обрывом стрима).
 export const maxDuration = 300;
@@ -212,176 +211,6 @@ async function resolveSystemPrompt(userId?: string | null, selectedPromptId?: st
  * с ним безопасны, а .test() — нет; здесь .test() не используется.
  */
 const HIDDEN_RE = /<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi;
-
-async function extractPdfTextFromAttachment(att: any): Promise<string | null> {
-  if (!att || att.mediaType !== 'application/pdf') return null;
-  const buf = await urlToBuffer(att.url || att.data);
-  if (!buf) return null;
-  try {
-    const { default: pdfParse } = await import('pdf-parse');
-    const parsed = await pdfParse(buf);
-    return parsed?.text?.trim() || null;
-  } catch (error) {
-    console.error('Failed to parse PDF attachment:', error);
-    return null;
-  }
-}
-
-async function extractDocText(att: any): Promise<string | null> {
-  const mt = att?.mediaType || att?.mimeType || '';
-  const isDocx = mt === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-  const buf = await urlToBuffer(att?.url || att?.data);
-  if (!buf) return null;
-
-  if (isDocx) {
-    try {
-      const mammoth = await import('mammoth');
-      const result = await mammoth.extractRawText({ buffer: buf });
-      const cleaned = result.value.trim();
-      if (cleaned) return cleaned;
-    } catch (error) {
-      console.error('Failed to parse DOCX via mammoth:', error);
-    }
-  }
-
-  // Legacy DOC: use word-extractor, then best-effort binary text
-  const extracted = await extractLegacyDoc(buf);
-  if (extracted?.trim()) return extracted.trim();
-  return bestEffortBinaryText(buf);
-}
-
-async function extractXlsxTextFromAttachment(att: any): Promise<string | null> {
-  // Поддерживаем XLSX и старые XLS (application/vnd.ms-excel)
-  if (!att) return null;
-  const buf = await urlToBuffer(att.url || att.data);
-  if (!buf) return null;
-  try {
-    const XLSX = await import('xlsx');
-    // xlsx library supports both .xlsx and legacy .xls formats
-    const workbook = XLSX.read(buf, { type: 'buffer' });
-    let text = '';
-    workbook.SheetNames.forEach(sheetName => {
-      const sheet = workbook.Sheets[sheetName];
-      text += `Sheet: ${sheetName}\n`;
-      text += XLSX.utils.sheet_to_txt(sheet);
-      text += '\n\n';
-    });
-    const cleaned = text.trim();
-    if (cleaned) return cleaned;
-  } catch (error) {
-    console.error('Failed to parse Excel attachment:', error);
-  }
-  return bestEffortBinaryText(buf);
-}
-
-/**
- * Оценка «читаемости» декодированной строки. Кириллица весит больше, управляющие
- * символы и � штрафуются. Нужна, чтобы отличить корректный windows-1251 от того же
- * буфера, ошибочно прочитанного как latin1 (даёт мойибаке без единого �).
- */
-function textReadabilityScore(s: string): number {
-  if (!s) return -1;
-  let good = 0;
-  let bad = 0;
-  for (const ch of s) {
-    const c = ch.codePointAt(0)!;
-    if (c === 0xfffd) { bad += 5; continue; }                 // replacement char
-    if (c === 9 || c === 10 || c === 13) { good += 1; continue; } // tab/CR/LF
-    if (c >= 32 && c < 127) { good += 1; continue; }          // ASCII печатаемые
-    if (c >= 0x0400 && c <= 0x04ff) { good += 2; continue; }  // кириллица
-    if (c >= 0x2010 && c <= 0x2069) { good += 1; continue; }  // — « » … типографика
-    if (c < 32) { bad += 2; continue; }                       // прочие control
-    bad += 1;                                                  // латиница-мойибаке и т.п.
-  }
-  const total = good + bad;
-  return total === 0 ? -1 : (good - bad) / total;
-}
-
-/**
- * Декодирует текстовый буфер, определяя кодировку. Важно для русских .txt в
- * windows-1251 (кодировка по умолчанию в Windows): раньше latin1-фолбэк молча
- * возвращал мойибаке (latin1 не даёт �), и в облако/модель уходил нечитаемый текст.
- */
-function decodeTextBuffer(buf: Buffer): string | null {
-  if (!buf || buf.length === 0) return null;
-  // BOM: однозначная кодировка.
-  if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf)
-    return buf.toString('utf8', 3);
-  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe)
-    return new TextDecoder('utf-16le').decode(buf.subarray(2));
-  if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff)
-    return new TextDecoder('utf-16be').decode(buf.subarray(2));
-  // Строгий UTF-8: если буфер валиден как UTF-8 — это почти наверняка он.
-  try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(buf);
-  } catch {}
-  // Иначе выбираем кодировку по «читаемости» (кириллические .txt обычно cp1251).
-  let best: { text: string; score: number } | null = null;
-  for (const enc of ['windows-1251', 'koi8-r', 'utf-16le', 'latin1']) {
-    try {
-      const text = new TextDecoder(enc).decode(buf);
-      const score = textReadabilityScore(text);
-      if (!best || score > best.score) best = { text, score };
-    } catch {}
-  }
-  return best?.text ?? null;
-}
-
-async function extractPlainTextFromAttachment(att: any): Promise<string | null> {
-  const buf = await urlToBuffer(att?.url || att?.data);
-  if (!buf) return null;
-  const decoded = decodeTextBuffer(buf)?.trim();
-  return decoded || bestEffortBinaryText(buf);
-}
-
-async function extractRtfTextFromAttachment(att: any): Promise<string | null> {
-  const buf = await urlToBuffer(att?.url || att?.data);
-  if (!buf) return null;
-  return bestEffortBinaryText(buf);
-}
-
-async function extractPptxTextFromAttachment(att: any): Promise<string | null> {
-  // Поддерживаем PPTX и best-effort для PPT (application/vnd.ms-powerpoint)
-  if (!att) return null;
-  const mt = att.mediaType || att.mimeType;
-  const isPptx = mt === 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
-  const isPpt = mt === 'application/vnd.ms-powerpoint';
-  const buf = await urlToBuffer(att.url || att.data);
-  if (!buf) return null;
-
-  if (isPptx) {
-    try {
-      const JSZip = (await import('jszip')).default;
-      const zip = await JSZip.loadAsync(buf);
-      const slideFiles = Object.keys(zip.files).filter(name => name.match(/^ppt\/slides\/slide\d+\.xml$/));
-      slideFiles.sort((a, b) => {
-        const numA = parseInt(a.match(/slide(\d+)\.xml$/)?.[1] || '0');
-        const numB = parseInt(b.match(/slide(\d+)\.xml$/)?.[1] || '0');
-        return numA - numB;
-      });
-
-      let text = '';
-      for (const fileName of slideFiles) {
-        const content = await zip.file(fileName)?.async('string');
-        if (content) {
-          const slideText = content.match(/<a:t>(.*?)<\/a:t>/g)
-            ?.map(t => t.replace(/<\/?a:t>/g, ''))
-            .join(' ') || '';
-          if (slideText.trim()) {
-            text += `Slide ${fileName.match(/slide(\d+)\.xml$/)?.[1]}:\n${slideText}\n\n`;
-          }
-        }
-      }
-      const cleaned = text.trim();
-      if (cleaned) return cleaned;
-    } catch (error) {
-      console.error('Failed to parse PPTX attachment:', error);
-    }
-  }
-
-  // Legacy PPT: best-effort binary text extraction
-  return bestEffortBinaryText(buf);
-}
 
 /** Дефолт 128k (как у qwen3.5:9b на ollama.com). */
 const DEFAULT_OLLAMA_CONTEXT_TOKENS = 131072;
@@ -627,26 +456,13 @@ export async function POST(req: Request) {
         const ext = guessFileExt(att);
         let extracted: string | null = null;
 
+        // ЕДИНЫЙ диспетчер на все роуты (см. lib/attachment-extract.ts).
+        // Раньше здесь лежала своя копия разбора по типам, и копии разошлись:
+        // у этой было определение кодировки, у канонической — нет. Один и тот
+        // же cp1251-файл чат читал верно, а анонимайзер получал мойибаке, в
+        // котором NER не находит ни ФИО, ни телефонов, — и ПДн уходили в облако.
         try {
-          if (mt === 'application/pdf') {
-            extracted = await extractPdfTextFromAttachment(att);
-          } else if (mt === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || mt === 'application/msword') {
-            extracted = await extractDocText(att);
-          } else if (mt === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || mt === 'application/vnd.ms-excel') {
-            extracted = await extractXlsxTextFromAttachment(att);
-          } else if (mt === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' || mt === 'application/vnd.ms-powerpoint') {
-            extracted = await extractPptxTextFromAttachment(att);
-          } else if (ext === 'doc' || ext === 'docx') {
-            extracted = await extractDocText(att);
-          } else if (ext === 'xls' || ext === 'xlsx') {
-            extracted = await extractXlsxTextFromAttachment(att);
-          } else if (ext === 'ppt' || ext === 'pptx') {
-            extracted = await extractPptxTextFromAttachment(att);
-          } else if (mt === 'application/rtf' || mt === 'text/rtf' || ext === 'rtf') {
-            extracted = await extractRtfTextFromAttachment(att);
-          } else if ((typeof mt === 'string' && mt.startsWith('text/')) || ext === 'txt' || ext === 'md' || ext === 'markdown' || ext === 'csv') {
-            extracted = await extractPlainTextFromAttachment(att);
-          }
+          extracted = await extractAttachmentText(att);
         } catch (err) {
           console.error('Failed to parse attachment', name, mt, err);
         }

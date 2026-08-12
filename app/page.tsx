@@ -94,10 +94,19 @@ export default function ChatPage() {
   const [authPassword, setAuthPassword] = useState('');
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [authOpen, setAuthOpen] = useState(false);
+  /**
+   * Идёт запрос входа/регистрации. Вход упирается в сеть и в БД и может занять
+   * несколько секунд: без этого признака кнопка выглядела так, будто клик не
+   * засчитался, и пользователь жал её повторно.
+   */
+  const [authPending, setAuthPending] = useState(false);
   const [authHintFromPrompt, setAuthHintFromPrompt] = useState(false);
   const [guestGuideOpen, setGuestGuideOpen] = useState(false);
   const [whatsNewOpen, setWhatsNewOpen] = useState(false);
   const handleAuthOpenChange = (open: boolean) => {
+    // Пока идёт вход, окно не закрываем: иначе пользователь остаётся без
+    // единственной индикации того, что запрос ещё выполняется.
+    if (!open && authPending) return;
     setAuthOpen(open);
     if (!open) setAuthHintFromPrompt(false);
   };
@@ -833,6 +842,10 @@ export default function ChatPage() {
 
   const handleAuth = async () => {
     if (!authUsername || !authPassword) return;
+    // Защита от повторной отправки: пока запрос в полёте, второй клик (или
+    // Enter в поле) не должен заводить ещё один вход.
+    if (authPending) return;
+    setAuthPending(true);
     try {
       const res = await fetch('/api/auth', {
         method: 'POST',
@@ -898,6 +911,8 @@ export default function ChatPage() {
     } catch (err) {
       console.error(err);
       toast.error('Ошибка сети', { description: 'Не удалось выполнить запрос. Проверьте соединение.' });
+    } finally {
+      setAuthPending(false);
     }
   };
 
@@ -1257,6 +1272,7 @@ export default function ChatPage() {
         authOpen={authOpen}
         setAuthOpen={handleAuthOpenChange}
         onAuth={handleAuth}
+        authPending={authPending}
         onLogout={handleLogout}
         setAuthUsername={setAuthUsername}
         setAuthPassword={setAuthPassword}

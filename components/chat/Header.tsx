@@ -13,6 +13,8 @@ type HeaderProps = {
   authOpen: boolean;
   setAuthOpen: (open: boolean) => void;
   onAuth: () => void;
+  /** Запрос входа/регистрации в полёте — блокируем форму и показываем прогресс. */
+  authPending?: boolean;
   onLogout: () => void;
   setAuthUsername: Dispatch<SetStateAction<string>>;
   setAuthPassword: Dispatch<SetStateAction<string>>;
@@ -35,6 +37,7 @@ export const Header = ({
   authOpen,
   setAuthOpen,
   onAuth,
+  authPending = false,
   onLogout,
   setAuthUsername,
   setAuthPassword,
@@ -60,8 +63,13 @@ export const Header = ({
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (authPending) return;
     onAuth();
   };
+
+  const canSubmit = !authPending && authUsername.trim().length > 0 && authPassword.length > 0;
+  const submitLabel = authMode === 'login' ? 'Войти' : 'Создать';
+  const pendingLabel = authMode === 'login' ? 'Входим…' : 'Создаём…';
 
   return (
     <div className="p-3 border-b bg-muted/5">
@@ -167,39 +175,70 @@ export const Header = ({
               {authMode === 'login' ? 'Вход в аккаунт' : 'Регистрация'}
             </DialogTitle>
           </DialogHeader>
-          <form onSubmit={handleSubmit} className="space-y-3">
-            <div className="space-y-1">
-              <label className="text-xs text-neutral-600">Логин</label>
-              <input
-                className="w-full border border-neutral-300 bg-white text-black px-3 py-2 rounded text-sm"
-                placeholder="Введите логин"
-                value={authUsername}
-                onChange={(e) => setAuthUsername(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs text-neutral-600">Пароль</label>
-              <input
-                className="w-full border border-neutral-300 bg-white text-black px-3 py-2 rounded text-sm"
-                type="password"
-                placeholder="Введите пароль"
-                value={authPassword}
-                onChange={(e) => setAuthPassword(e.target.value)}
-              />
-            </div>
+          {/* aria-busy: скринридер объявит форму занятой, пока идёт запрос. */}
+          <form onSubmit={handleSubmit} className="space-y-3" aria-busy={authPending}>
+            <fieldset disabled={authPending} className="space-y-3 disabled:opacity-60">
+              <div className="space-y-1">
+                <label className="text-xs text-neutral-600">Логин</label>
+                <input
+                  className="w-full border border-neutral-300 bg-white text-black px-3 py-2 rounded text-sm disabled:cursor-not-allowed"
+                  placeholder="Введите логин"
+                  autoComplete="username"
+                  value={authUsername}
+                  onChange={(e) => setAuthUsername(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-neutral-600">Пароль</label>
+                <input
+                  className="w-full border border-neutral-300 bg-white text-black px-3 py-2 rounded text-sm disabled:cursor-not-allowed"
+                  type="password"
+                  placeholder="Введите пароль"
+                  autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                />
+              </div>
+            </fieldset>
             <div className="flex items-center justify-between pt-2">
               <button
                 type="button"
                 onClick={toggleAuthMode}
-                className="text-xs text-neutral-600 hover:text-black"
+                disabled={authPending}
+                className="text-xs text-neutral-600 hover:text-black disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-neutral-600"
               >
                 {authMode === 'login' ? 'Нет аккаунта? Зарегистрироваться' : 'Уже есть аккаунт? Войти'}
               </button>
               <button
                 type="submit"
-                className="text-sm px-4 py-2 bg-primary text-black rounded"
+                disabled={!canSubmit}
+                className="inline-flex items-center gap-2 text-sm px-4 py-2 bg-primary text-black rounded transition-opacity disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                {authMode === 'login' ? 'Войти' : 'Создать'}
+                {authPending && (
+                  // aria-hidden: текст кнопки уже меняется на «Входим…»,
+                  // дублировать колесо в озвучке не нужно.
+                  <svg
+                    className="h-4 w-4 animate-spin"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-90"
+                      fill="currentColor"
+                      d="M12 2a10 10 0 0 1 10 10h-3a7 7 0 0 0-7-7V2z"
+                    />
+                  </svg>
+                )}
+                {authPending ? pendingLabel : submitLabel}
               </button>
             </div>
           </form>
