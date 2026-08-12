@@ -4,6 +4,14 @@ import {
   TransformStream as NodeTransformStream,
   WritableStream as NodeWritableStream,
 } from 'node:stream/web';
+import { TextDecoder as NodeTextDecoder, TextEncoder as NodeTextEncoder } from 'node:util';
+
+// jsdom подкладывает урезанный TextDecoder, который знает только utf-8: на
+// `new TextDecoder('windows-1251')` он бросает. Из-за этого определение
+// кодировки в тестах молча возвращало null, хотя в проде (Node с full-ICU)
+// работает. Ставим реализацию Node безусловно — она умеет все кодировки.
+(globalThis as Record<string, unknown>).TextDecoder = NodeTextDecoder;
+(globalThis as Record<string, unknown>).TextEncoder = NodeTextEncoder;
 
 // jsdom не реализует Web Streams API, а серверный код (стриминг ответа LLM,
 // фильтр утечки tool-call) на нём построен — без полифилла такие модули падают

@@ -14,6 +14,7 @@
  * если формат не поддержан, молча возвращаем null и вложение уходит по-старому,
  * как раньше (серверное извлечение в lib/attachment-extract.ts никуда не делось).
  */
+import { decodeTextBytes } from '@/lib/text-encoding';
 
 /** Максимальный размер тела запроса, который принимает платформа. */
 export const MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
@@ -64,11 +65,11 @@ export async function extractAttachmentTextInBrowser(att: {
   if (isPlain) {
     const bytes = dataUrlToBytes(src);
     if (!bytes) return null;
-    try {
-      return new TextDecoder('utf-8').decode(bytes);
-    } catch {
-      return null;
-    }
+    // Через общий детектор кодировки, а не TextDecoder('utf-8') напрямую:
+    // русский .txt из Windows приезжает в cp1251, и «просто utf-8» молча
+    // возвращал мойибаке. Дальше по конвейеру это уже неотличимо от текста, но
+    // ни NER, ни регулярки не находят в нём ПДн.
+    return decodeTextBytes(bytes);
   }
 
   // .docx — mammoth уже есть в зависимостях, у пакета объявлен browser-билд,

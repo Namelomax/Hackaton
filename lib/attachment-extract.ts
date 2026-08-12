@@ -1,8 +1,11 @@
 /**
  * Извлечение текста из вложений (PDF/DOCX/XLSX/PPTX/текст).
- * Единственный источник низкоуровневых примитивов извлечения,
- * переиспользуемый роутами (/api/chat, /api/upload, /api/anonymize).
+ *
+ * ЕДИНСТВЕННЫЙ серверный диспетчер: и /api/chat, и /api/anonymize ходят сюда.
+ * Раньше у чата была своя копия разбора по типам; копии разошлись — у одной
+ * было определение кодировки, у другой нет, — и это стоило утечки ПДн.
  */
+import { decodeTextBytes } from '@/lib/text-encoding';
 
 export async function urlToBuffer(urlOrData?: string | null): Promise<Buffer | null> {
   if (!urlOrData) return null;
@@ -158,6 +161,19 @@ async function extractPptx(att: any): Promise<string | null> {
   return bestEffortBinaryText(buf);
 }
 
+/**
+ * Декодирование текстового буфера. Реализация — в `lib/text-encoding.ts`,
+ * общем модуле с браузером: раньше эта логика жила только в /api/chat, а
+ * канонический `extractAttachmentText` (его использует /api/anonymize) делал
+ * `buf.toString('utf8')` и получал из cp1251 мойибаке.
+ */
+export function decodeTextBuffer(buf: Buffer): string | null {
+  return decodeTextBytes(buf);
+}
+
+/** Текстовые расширения, которые читаем как текст, а не как бинарь. */
+const TEXT_EXTS = new Set(['txt', 'md', 'markdown', 'json', 'csv', 'tsv', 'log', 'xml', 'yml', 'yaml']);
+
 /** Извлечь текст из одного вложения. Возвращает null, если не удалось. */
 export async function extractAttachmentText(att: any): Promise<string | null> {
   const mt = att?.mediaType || att?.mimeType || '';
@@ -178,9 +194,17 @@ export async function extractAttachmentText(att: any): Promise<string | null> {
       mt === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
       mt === 'application/vnd.ms-powerpoint' || ext === 'ppt' || ext === 'pptx'
     ) return await extractPptx(att);
-    if (mt.startsWith('text/') || ext === 'txt' || ext === 'md' || ext === 'json') {
+    // RTF — не текст: разметка забивает содержимое, читаем best-effort.
+    if (mt === 'application/rtf' || mt === 'text/rtf' || ext === 'rtf') {
       const buf = await urlToBuffer(att?.url || att?.data);
-      return buf ? buf.toString('utf8') : null;
+      return buf ? bestEffortBinaryText(buf) : null;
+    }
+    if (mt.startsWith('text/') || TEXT_EXTS.has(ext)) {
+      const buf = await urlToBuffer(att?.url || att?.data);
+      if (!buf) return null;
+      // Именно здесь была утечка ПДн: раньше стояло buf.toString('utf8').
+      const decoded = decodeTextBuffer(buf)?.trim();
+      return decoded || bestEffortBinaryText(buf);
     }
   } catch {}
   // Фолбек
