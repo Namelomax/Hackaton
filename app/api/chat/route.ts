@@ -2,7 +2,7 @@ import {
   convertToModelMessages,
 } from 'ai';
 import crypto from 'crypto';
-import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation, assertConversationOwnership } from '@/lib/getPromt';
+import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation, assertConversationOwnership, ForbiddenError } from '@/lib/getPromt';
 import { resolveChatLanguageModel } from '@/lib/resolve-chat-model';
 import { normalizeCloudModel } from '@/lib/chat-models';
 import { buildDateContextBlock } from '@/lib/date-context';
@@ -202,8 +202,16 @@ async function resolveSystemPrompt(userId?: string | null, selectedPromptId?: st
 }
 
 // === FILE PARSING UTILS ===
+/**
+ * Скрытый от пользователя блок (текст вложения, RAG-контекст): и вырезаем, и
+ * достаём одним и тем же выражением. Раньше рядом лежала побайтово одинаковая
+ * копия под именем HIDDEN_CAPTURE_RE — два имени для одного регэкспа означали
+ * риск поправить только одно из них.
+ *
+ * Флаг /g делает регэксп stateful (lastIndex), поэтому .match() и .replace()
+ * с ним безопасны, а .test() — нет; здесь .test() не используется.
+ */
 const HIDDEN_RE = /<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi;
-const HIDDEN_CAPTURE_RE = /<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi;
 
 async function extractPdfTextFromAttachment(att: any): Promise<string | null> {
   if (!att || att.mediaType !== 'application/pdf') return null;
@@ -425,14 +433,21 @@ export async function POST(req: Request) {
   try {
     await assertConversationOwnership(conversationId, userId);
   } catch (e) {
-    if (e instanceof Error && e.message === 'Forbidden') {
+    if (e instanceof ForbiddenError) {
       console.warn(`🚫 chat: conv ${conversationId} не принадлежит user ${userId || 'anon'} — отказ`);
       return new Response(
         JSON.stringify({ error: 'Доступ к этому диалогу запрещён (не ваш диалог).' }),
         { status: 403, headers: { 'Content-Type': 'application/json' } },
       );
     }
+    // Проверить владельца не удалось — отказываем. Раньше здесь стоял только
+    // console.error, и запрос шёл дальше БЕЗ проверки: гард открывался ровно в
+    // тот момент, когда база нестабильна.
     console.error('ownership check failed:', e);
+    return new Response(
+      JSON.stringify({ error: 'Сервис временно недоступен: не удалось проверить доступ к диалогу.' }),
+      { status: 503, headers: { 'Content-Type': 'application/json' } },
+    );
   }
 
   console.log(`📨 chat req: msgs=${messages.length} user=${userId || 'anon'} conv=${conversationId || 'none'} doc=${!!documentContent}`);
@@ -444,9 +459,16 @@ export async function POST(req: Request) {
         const title = (newSystemPrompt || '').slice(0, 60) || 'User Prompt';
         await createPromptForUser(userId, title, newSystemPrompt);
       } else {
+        // Дефолтный промпт изменился — сбрасываем кеш, чтобы следующий запрос
+        // перечитал его из БД.
         await updatePrompt(newSystemPrompt);
+        cachedPrompt = null;
       }
-      cachedPrompt = newSystemPrompt;
+      // ЗДЕСЬ НЕЛЬЗЯ писать cachedPrompt = newSystemPrompt: переменная хранит
+      // ДЕФОЛТНЫЙ промпт на весь процесс, а newSystemPrompt — личный промпт
+      // конкретного пользователя. Раньше сохранение личного промпта затирало
+      // кеш, и все последующие анонимные запросы на этом инстансе получали
+      // чужой системный промпт — до перезапуска процесса.
       return new Response(JSON.stringify({ success: true }), { status: 200 });
     } catch (err) {
       console.error('Error saving prompt for user:', err);
@@ -524,7 +546,7 @@ export async function POST(req: Request) {
 
   const normalizedMessages: any[] = baseMessages.map((m: any) => {
     const rawText = toPlainText(m);
-    const hiddenMatches = rawText.match(HIDDEN_CAPTURE_RE) || [];
+    const hiddenMatches = rawText.match(HIDDEN_RE) || [];
     const hiddenTexts = hiddenMatches
       .map((segment) => segment.replace(/<AI-HIDDEN>/gi, '').replace(/<\/AI-HIDDEN>/gi, '').trim())
       .filter(Boolean);

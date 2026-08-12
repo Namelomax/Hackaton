@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { createConversation, deleteConversation, getConversations, renameConversation, saveConversation, updateConversation, getConversationMapping, assertConversationOwnership } from '@/lib/getPromt';
+import { createConversation, deleteConversation, getConversations, renameConversation, saveConversation, updateConversation, getConversationMapping, assertConversationOwnership, ForbiddenError } from '@/lib/getPromt';
 import { deanonymize } from '@/lib/anonymization';
 
 const PLACEHOLDER_RX = /\[(?:PERSON|ORG|DATE|SENSITIVE|FILE|EMAIL|PHONE)_\d+\]/;
@@ -82,9 +82,16 @@ export async function PUT(req: Request) {
     try {
       await assertConversationOwnership(conversationId, userId);
     } catch (e) {
-      if (e instanceof Error && e.message === 'Forbidden') {
+      if (e instanceof ForbiddenError) {
         return new Response(JSON.stringify({ success: false, message: 'Forbidden' }), { status: 403 });
       }
+      // Проверить не удалось — не пишем. Иначе при сбое БД можно было записать
+      // сообщения в чужой диалог.
+      console.error('ownership check failed:', e);
+      return new Response(
+        JSON.stringify({ success: false, message: 'Проверка доступа временно недоступна' }),
+        { status: 503 },
+      );
     }
     const hasMessages = Array.isArray(messages);
     const hasTitle = typeof title === 'string' && title.trim().length > 0;
@@ -135,7 +142,12 @@ export async function DELETE(req: Request) {
       await deleteConversation(conversationId, userId);
     } catch (err: any) {
       const message = err?.message || 'error';
-      const status = message === 'Forbidden' ? 403 : message === 'Conversation not found' ? 404 : 500;
+      const status =
+        err instanceof ForbiddenError || message === 'Forbidden'
+          ? 403
+          : message === 'Conversation not found'
+            ? 404
+            : 500;
       return new Response(JSON.stringify({ success: false, message }), { status });
     }
 

@@ -499,30 +499,29 @@ export const PromptInput = ({
   };
 
   /**
-   * Uploads a local blob: URL directly to Vercel Blob storage and returns the
-   * resulting public HTTPS URL.  This keeps the file data out of the chat API
-   * request body, avoiding the 4.5 MB Vercel function payload limit.
+   * Читает локальный blob: URL и отдаёт base64 data URL.
    *
-   * Falls back to a base64 data URL if Vercel Blob is not configured (e.g.
-   * during local development without BLOB_READ_WRITE_TOKEN).
+   * ЧЕСТНОЕ ОПИСАНИЕ ТЕКУЩЕГО ПОВЕДЕНИЯ. Раньше здесь стояла докстрока про
+   * «загружает в Vercel Blob и держит байты вне тела запроса» плюс комментарии
+   * про порог в 3 МБ — но сама ветка с `upload()` из @vercel/blob была вырезана,
+   * и data URL возвращался безусловно, для файла любого размера. Комментарии
+   * описывали несуществующий код, а параметр `filename` не использовался.
+   *
+   * Следствия, о которых надо помнить: файл на 5 МБ превращается в ~6,7 МБ
+   * base64, а на Vercel лимит тела функции 4,5 МБ — крупную расшифровку
+   * загрузить нельзя. Если это станет проблемой, возвращать нужно именно ветку
+   * `upload()` из `@vercel/blob/client` (пакет в зависимостях остался), а не
+   * комментарии о ней.
    */
-  const uploadBlobUrl = async (url: string, filename: string): Promise<string> => {
+  const uploadBlobUrl = async (url: string): Promise<string> => {
     const response = await fetch(url);
     const fileBlob = await response.blob();
-    
-    // Проверяем размер файла
-    const fileSizeMB = fileBlob.size / (1024 * 1024);
-    
-    // Для файлов < 3 MB используем data URL (работает везде, включая локальную разработку)
-    // Для файлов >= 3 MB пробуем Vercel Blob (требует BLOB_READ_WRITE_TOKEN в .env)
-      console.log(`[PromptInput] Small file (${fileSizeMB.toFixed(2)} MB), using data URL`);
-      return new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result as string);
-        reader.onerror = reject;
-        reader.readAsDataURL(fileBlob);
-      });
-    
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(fileBlob);
+    });
   };
 
   const handleSubmit: FormEventHandler<HTMLFormElement> = (event) => {
@@ -538,7 +537,7 @@ export const PromptInput = ({
         if (item.url && item.url.startsWith("blob:")) {
           return {
             ...item,
-            url: await uploadBlobUrl(item.url, item.filename ?? 'attachment'),
+            url: await uploadBlobUrl(item.url),
           };
         }
         return item;

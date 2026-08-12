@@ -51,6 +51,13 @@ async function insecureFetch(
         ? await urlInput.text()
         : undefined;
 
+  // Отмена и таймаут. node:http ничего не знает про AbortSignal, поэтому
+  // абортить соединение нужно вручную. Без этого закрытая вкладка или кнопка
+  // «стоп» не останавливали генерацию: AI SDK отписывался, а запрос к Ollama
+  // продолжал жить до maxDuration = 300, занимая VRAM на общей карте.
+  const signal = init?.signal ?? (urlInput instanceof Request ? urlInput.signal : undefined);
+  const timeoutMs = Number(process.env.LLM_REQUEST_TIMEOUT_MS) || 600_000;
+
   return new Promise((resolve, reject) => {
     const req = nodeRequest(
       {
@@ -89,10 +96,34 @@ async function insecureFetch(
 
     req.on('error', reject);
 
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`LLM request timeout after ${timeoutMs}ms`));
+    });
+
+    if (signal) {
+      if (signal.aborted) {
+        req.destroy(new Error('aborted'));
+        reject(new DOMException('The operation was aborted.', 'AbortError'));
+        return;
+      }
+      const onAbort = () => {
+        req.destroy(new Error('aborted'));
+        reject(new DOMException('The operation was aborted.', 'AbortError'));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      req.on('close', () => signal.removeEventListener('abort', onAbort));
+    }
+
     if (bodyData != null) {
       if (typeof bodyData === 'string') req.write(bodyData);
-      else if (bodyData instanceof Uint8Array || Buffer.isBuffer(bodyData))
-        req.write(bodyData);
+      else if (bodyData instanceof Uint8Array || Buffer.isBuffer(bodyData)) req.write(bodyData);
+      else {
+        // ReadableStream/FormData/URLSearchParams раньше молча уходили пустыми:
+        // сервер получал запрос без тела и отвечал невнятной ошибкой. Падаем явно.
+        req.destroy();
+        reject(new Error(`insecureFetch: неподдерживаемый тип тела запроса (${typeof bodyData})`));
+        return;
+      }
     }
     req.end();
   });
@@ -173,9 +204,25 @@ export function resolveChatLanguageModel(options: ResolveChatModelOptions = {}) 
         }
         patchedHeaders['authorization'] = `Bearer ${ollamaApiKey}`;
 
+        // Тело разбираем в УЗКОМ try: ошибка парсинга — это «нечего патчить,
+        // отправляем как есть». Раньше в try было всё тело обработчика, включая
+        // сам запрос к Ollama, и любой сетевой сбой уводил выполнение в
+        // `catch { /* fallthrough */ }` → запрос уходил ВТОРОЙ раз с исходным
+        // телом: без потолка max_tokens, без stream:false, без снятия
+        // stream_options и без keep_alive. То есть при сбое поведение молча
+        // менялось на противоположное тому, ради чего написан весь блок,
+        // а модель генерировала дважды.
+        let parsed: Record<string, unknown> | null = null;
         if (init?.body && typeof init.body === 'string') {
           try {
-            const parsed = JSON.parse(init.body) as Record<string, unknown>;
+            parsed = JSON.parse(init.body) as Record<string, unknown>;
+          } catch {
+            parsed = null;
+          }
+        }
+
+        if (parsed) {
+          {
             const useThinking = Boolean(options.useThinking);
             applyOllamaOpenAiCompatOptions(parsed, useThinking, baseURL);
             // Жёсткий потолок (предохранитель), а не дефолт ответа: per-call
@@ -297,10 +344,12 @@ export function resolveChatLanguageModel(options: ResolveChatModelOptions = {}) 
               status: jsonResp.status,
               headers: { 'content-type': 'text/event-stream; charset=utf-8' },
             });
-          } catch {
-            /* fallthrough */
           }
         }
+
+        // Тело не JSON (или его нет) — отправляем запрос как есть.
+        // Сюда БОЛЬШЕ не попадают сбои сети: они пробрасываются наверх, где
+        // AI SDK их и обработает, вместо тихой повторной генерации.
         return insecureFetch(url, { ...init, headers: patchedHeaders });
       },
     });

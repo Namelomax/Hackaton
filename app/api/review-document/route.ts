@@ -4,7 +4,7 @@ import {
   deepDeanonymize,
   loadConversationMapping,
 } from '@/lib/anonymization';
-import { assertConversationOwnership } from '@/lib/getPromt';
+import { assertConversationOwnership, ForbiddenError } from '@/lib/getPromt';
 
 export const maxDuration = 90;
 export const runtime = 'nodejs';
@@ -34,9 +34,15 @@ export async function POST(req: Request) {
   try {
     await assertConversationOwnership(conversationId, userId);
   } catch (e) {
-    if (e instanceof Error && e.message === 'Forbidden') {
+    if (e instanceof ForbiddenError) {
       return Response.json({ error: 'Доступ к этому диалогу запрещён' }, { status: 403 });
     }
+    // Не удалось проверить — отказываем: ниже читается mapping с реальными ПДн.
+    console.error('ownership check failed:', e);
+    return Response.json(
+      { error: 'Сервис временно недоступен: не удалось проверить доступ к диалогу.' },
+      { status: 503 },
+    );
   }
 
   try {
