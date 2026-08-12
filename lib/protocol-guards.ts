@@ -214,6 +214,122 @@ export function carryOverParticipantRoles(p: Protocol, sourceText: string): Prot
 }
 
 /**
+ * ===== Правка должности участника — детерминированно =====
+ *
+ * Живой замер: пользователь пишет «в разделе 3 поменяй должность Соколовой
+ * Ирины Павловны на „директор по внедрению“», агент отвечает «Документ
+ * обновлён», а в разделе 3 по-прежнему старая должность. Причина не в
+ * плейсхолдерах и не в гардах: слабая модель пересобирает все 10 разделов
+ * заново и теряет одну строку. Вынесение правки в начало промпта отдельным
+ * блоком помогло недостаточно — проверено на стенде.
+ *
+ * Поэтому здесь то же, что и с договором/датами: код делает это сам.
+ * Ограничение намеренно узкое — срабатываем ТОЛЬКО на явную формулировку со
+ * словом «должность», чтобы не переписывать документ по случайной фразе.
+ */
+
+/** Убирает падежное окончание — нужно, чтобы «Соколовой» нашло «Соколова». */
+const NAME_DECL_SUFFIXES = [
+  'иями', 'иях', 'ами', 'ями', 'ах', 'ях', 'ом', 'ем', 'ём', 'ой', 'ей',
+  'им', 'ым', 'у', 'ю', 'е', 'и', 'ы', 'а', 'я',
+].sort((a, b) => b.length - a.length);
+
+function personWordStem(word: string): string {
+  const w = word.toLowerCase().replace(/ё/g, 'е').replace(/[^а-яa-z]/gu, '');
+  for (const suf of NAME_DECL_SUFFIXES) {
+    if (w.endsWith(suf) && w.length - suf.length >= 3) return w.slice(0, w.length - suf.length);
+  }
+  return w;
+}
+
+/** Набор основ слов ФИО: «Соколовой Ирины Павловны» → {соколов, ирин, павловн}. */
+function personNameStems(fullName: string): Set<string> {
+  return new Set(
+    String(fullName ?? '')
+      .split(/\s+/)
+      .map(personWordStem)
+      .filter((s) => s.length >= 3),
+  );
+}
+
+/** Тот же человек? Достаточно, чтобы все основы упомянутого имени нашлись в ФИО. */
+function isSamePerson(mentioned: string, fullName: string): boolean {
+  const a = personNameStems(mentioned);
+  const b = personNameStems(fullName);
+  if (a.size === 0 || b.size === 0) return false;
+  for (const s of a) if (!b.has(s)) return false;
+  return true;
+}
+
+export type PositionOverride = { name: string; position: string };
+
+/**
+ * Достаёт из текста правки требования вида «должность <ФИО> на «<новая>»» или
+ * «должность <ФИО> — <новая>». Возвращает пустой массив, если ничего не нашлось.
+ */
+export function parsePositionOverrides(text: string): PositionOverride[] {
+  const out: PositionOverride[] = [];
+  const src = String(text ?? '');
+  // Все вхождения слова «должность/должности» и хвост после него.
+  const re = /должност[а-яё]*\s+([^.!?\n]+)/gi;
+  for (const m of src.matchAll(re)) {
+    const tail = m[1];
+    // Разделитель между именем и новой должностью: « на » либо тире.
+    const split = tail.match(/^(.+?)\s+(?:на|→)\s+(.+)$/i) ?? tail.match(/^(.+?)\s*[—–-]\s*(.+)$/);
+    if (!split) continue;
+    const name = split[1].trim();
+    let position = split[2].trim();
+    // Предпочитаем содержимое кавычек: «директор по внедрению».
+    const quoted = position.match(/[«"„]([^»"“]+)[»"“]/);
+    if (quoted) position = quoted[1];
+    position = position.replace(/[.,;:]+$/, '').trim();
+    if (!name || !position || position.length > 120) continue;
+    if (personNameStems(name).size === 0) continue;
+    out.push({ name, position });
+  }
+  return out;
+}
+
+/**
+ * Применяет к протоколу явные правки должностей из сообщений пользователя.
+ * Более поздние правки перекрывают более ранние. Возвращает применённые —
+ * чтобы вызывающий мог их залогировать.
+ */
+export function applyPositionOverrides(
+  p: Protocol,
+  userCorrections: string[],
+): { protocol: Protocol; applied: PositionOverride[] } {
+  const overrides: PositionOverride[] = [];
+  for (const text of userCorrections ?? []) overrides.push(...parsePositionOverrides(text));
+  if (overrides.length === 0) return { protocol: p, applied: [] };
+
+  const applied: PositionOverride[] = [];
+  const fixPeople = (people: Protocol['participants']['customer']['people']) =>
+    people.map((person) => {
+      // Идём с конца: последняя правка про этого человека — действующая.
+      for (let i = overrides.length - 1; i >= 0; i--) {
+        const o = overrides[i];
+        if (!isSamePerson(o.name, person.fullName)) continue;
+        if (person.position === o.position) return person;
+        applied.push({ name: person.fullName, position: o.position });
+        return { ...person, position: o.position };
+      }
+      return person;
+    });
+
+  return {
+    protocol: {
+      ...p,
+      participants: {
+        customer: { ...p.participants.customer, people: fixPeople(p.participants.customer.people) },
+        executor: { ...p.participants.executor, people: fixPeople(p.participants.executor.people) },
+      },
+    },
+    applied,
+  };
+}
+
+/**
  * Финальная сверка: что из подтверждённого в чате / поздних правок НЕ попало в документ,
  * и какие сроки остались неконкретными. Возвращает список предупреждений (пустой = ок).
  */

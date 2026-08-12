@@ -36,6 +36,7 @@ import { applyGlossaryToProtocol, formatGlossaryForPrompt } from '@/lib/prompts/
 import {
   stripProtocolTimecodes,
   carryOverParticipantRoles,
+  applyPositionOverrides,
   enforceDateProvenance,
   reconcileWithApproved,
   fillContractFromDialogue,
@@ -457,6 +458,20 @@ export async function generateFinalDocument(
     // Код-гарды: то, в чём слабая модель регулярно ошибается (промптом не лечится).
     validated = stripProtocolTimecodes(validated); // тайм-кодов в финале быть не должно
     validated = carryOverParticipantRoles(validated, conversationContext); // не терять должность
+    // Явная правка должности («поменяй должность X на Y») — детерминированно.
+    // Промптом не лечится: модель пересобирает все разделы и теряет одну строку,
+    // при этом честно рапортуя «документ обновлён» (проверено на стенде).
+    {
+      const po = applyPositionOverrides(validated, userCorrections);
+      validated = po.protocol;
+      if (po.applied.length > 0) {
+        console.log(
+          `[generateFinalDocument] должности по правкам: ${po.applied
+            .map((a) => `${a.name} → ${a.position}`)
+            .join('; ')}`,
+        );
+      }
+    }
     // Договор/шапку достаём только из ответов пользователя (не из всей расшифровки) —
     // иначе гард ловит случайные упоминания «договор №…» в тексте встречи.
     validated = fillContractFromDialogue(validated, userAnswersText); // не терять договор
