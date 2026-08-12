@@ -51,8 +51,42 @@ function wordStem(word: string): string {
   return word;
 }
 
-/** Метки, у которых падежи реальны и склейка осмысленна. */
-const MERGEABLE_LABELS = new Set(['PERSON', 'ORG']);
+/**
+ * Метки, у которых падежи реальны и склейка осмысленна.
+ *
+ * LOCATION добавлен по итогам стенда: NER регулярно принимает голое имя за
+ * место — «Никита» приехал как [LOCATION_1] при том, что «Грицанюк Никита
+ * Сергеевич» уже был [PERSON_2]. Пока метки сравнивались строго, такая пара
+ * даже не попадала в кандидаты, и облачная модель видела лишнюю сущность.
+ */
+const MERGEABLE_LABELS = new Set(['PERSON', 'ORG', 'LOCATION']);
+
+/**
+ * Приоритет метки при выборе «главного» плейсхолдера группы. Человек всегда
+ * важнее организации и места: если одна и та же строка приехала и как PERSON,
+ * и как LOCATION, каноничной должна остаться персона. Номера плейсхолдеров
+ * считаются ОТДЕЛЬНО по каждой метке, поэтому сравнивать [LOCATION_1] и
+ * [PERSON_2] по числу бессмысленно.
+ */
+const LABEL_RANK: Record<string, number> = { PERSON: 0, ORG: 1, LOCATION: 2 };
+
+/**
+ * Можно ли вообще сравнивать значения с такими метками.
+ *
+ * Разные метки допускаем только там, где детектор реально путается:
+ *   • PERSON ↔ LOCATION/ORG — когда не-персона состоит из ОДНОГО слова
+ *     (голое имя, принятое за место или контору);
+ *   • ORG ↔ LOCATION — классическая пара («Телеграм» то организация, то место).
+ * Пару «PERSON из трёх слов» и «ORG из трёх слов» не сводим никогда.
+ */
+function labelsCompatible(a: Entry, b: Entry): boolean {
+  if (a.label === b.label) return true;
+  const [person, other] = a.label === 'PERSON' ? [a, b] : b.label === 'PERSON' ? [b, a] : [null, null];
+  if (person && other) return other.parts.length === 1;
+  return (
+    (a.label === 'ORG' && b.label === 'LOCATION') || (a.label === 'LOCATION' && b.label === 'ORG')
+  );
+}
 
 /** Длина «корзины» для дешёвого отбора кандидатов. */
 const BUCKET_LEN = 3;
@@ -164,6 +198,8 @@ export type InflectionCandidate = {
   identical: boolean;
   /** Одно значение — часть другого («Ирину» ↔ «Ирина Соколова»). */
   partial: boolean;
+  /** Метки разошлись («Никита» как LOCATION против PERSON) — решает модель. */
+  crossLabel: boolean;
   /** Число слов в более коротком из двух значений. */
   wordCount: number;
   label: string;
@@ -187,12 +223,18 @@ export function findInflectedCandidates(mapping: Mapping): InflectionCandidate[]
     if (parts.length === 0) continue;
     entries.push({ ph, label, value, parts, num: numOf(ph) });
   }
-  entries.sort((a, b) => a.num - b.num);
+  // Сначала персоны, потом организации, потом места; внутри метки — по номеру.
+  // Так «главным» в группе всегда оказывается самое содержательное значение.
+  entries.sort(
+    (a, b) => (LABEL_RANK[a.label] ?? 9) - (LABEL_RANK[b.label] ?? 9) || a.num - b.num,
+  );
 
   // Дешёвый отбор: у одинаковых словоформ совпадает начало хотя бы одного слова.
+  // Метку в ключ НЕ кладём — иначе «Никита» как LOCATION никогда не встретится
+  // с «Грицанюк Никита Сергеевич» как PERSON. Совместимость меток проверяется
+  // отдельно, в labelsCompatible.
   const buckets = new Map<string, Entry[]>();
-  const bucketKeys = (e: Entry) =>
-    [...new Set(e.parts.map((w) => `${e.label}:${w.slice(0, BUCKET_LEN)}`))];
+  const bucketKeys = (e: Entry) => [...new Set(e.parts.map((w) => w.slice(0, BUCKET_LEN)))];
 
   const out: InflectionCandidate[] = [];
 
@@ -204,6 +246,7 @@ export function findInflectedCandidates(mapping: Mapping): InflectionCandidate[]
       for (const rep of buckets.get(key) ?? []) {
         if (seen.has(rep.ph)) continue;
         seen.add(rep.ph);
+        if (!labelsCompatible(e, rep)) continue;
         const m = matchValues(e.parts, rep.parts);
         if (m) {
           matched = { rep, partial: m.partial };
@@ -221,6 +264,7 @@ export function findInflectedCandidates(mapping: Mapping): InflectionCandidate[]
         dropValue: e.value,
         identical: e.parts.join(' ') === matched.rep.parts.join(' '),
         partial: matched.partial,
+        crossLabel: e.label !== matched.rep.label,
         wordCount: Math.min(e.parts.length, matched.rep.parts.length),
         label: e.label,
       });
@@ -249,11 +293,13 @@ export function findInflectedCandidates(mapping: Mapping): InflectionCandidate[]
  *   • организация из одного слова («Форус» / «Форуса»): двух разных ORG,
  *     различающихся одним окончанием, на практике не бывает.
  *
- * НЕ склеиваем без модели: одиночные PERSON («Иванов» / «Иванова» — разный пол)
- * и частичные упоминания («Ирину» ↔ «Ирина Соколова» — вдруг вторая Ирина).
+ * НЕ склеиваем без модели: одиночные PERSON («Иванов» / «Иванова» — разный пол),
+ * частичные упоминания («Ирину» ↔ «Ирина Соколова» — вдруг вторая Ирина) и всё,
+ * где разошлись метки («Никита» как LOCATION против PERSON).
  */
 function heuristicSame(c: InflectionCandidate): boolean {
-  if (c.identical) return true;
+  if (c.identical && !c.crossLabel) return true;
+  if (c.crossLabel) return false;
   if (c.partial) return false;
   if (c.wordCount >= 2) return true;
   return c.label === 'ORG';
