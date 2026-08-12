@@ -81,6 +81,30 @@ describe('findInflectedCandidates', () => {
     ).toHaveLength(0);
   });
 
+  it('ловит голое имя, помеченное как LOCATION (реальный случай со стенда)', () => {
+    const c = findInflectedCandidates({
+      '[LOCATION_1]': 'Никита',
+      '[PERSON_2]': 'Грицанюк Никита Сергеевич',
+    });
+    expect(c).toHaveLength(1);
+    // Каноничной остаётся ПЕРСОНА, даже если у локации номер меньше.
+    expect(c[0]).toMatchObject({
+      keep: '[PERSON_2]',
+      drop: '[LOCATION_1]',
+      crossLabel: true,
+      partial: true,
+    });
+  });
+
+  it('не сводит многословную ORG с многословной PERSON', () => {
+    expect(
+      findInflectedCandidates({
+        '[PERSON_1]': 'Иванов Пётр Сергеевич',
+        '[ORG_1]': 'Иванов Пётр Сергеевич',
+      }),
+    ).toHaveLength(0);
+  });
+
   it('не трогает метки без падежей (DATE, EMAIL)', () => {
     expect(
       findInflectedCandidates({ '[DATE_1]': '12 мая', '[DATE_2]': '12 мая' }),
@@ -128,6 +152,23 @@ describe('applyInflectionMerge — решение без модели остор
     const r = applyInflectionMerge(mapping, candidates, { '[PERSON_5]': true });
     expect(Object.keys(r.mapping)).toEqual(['[PERSON_1]']);
     expect(r.aliases).toEqual([{ value: 'Ирину', placeholder: '[PERSON_1]' }]);
+  });
+
+  it('НЕ склеивает разные метки без модели', () => {
+    const r = mergeWithoutModel({
+      '[LOCATION_1]': 'Никита',
+      '[PERSON_2]': 'Грицанюк Никита Сергеевич',
+    });
+    expect(Object.keys(r.mapping)).toHaveLength(2);
+  });
+
+  it('склеивает разные метки, если модель подтвердила', () => {
+    const mapping = { '[LOCATION_1]': 'Никита', '[PERSON_2]': 'Грицанюк Никита Сергеевич' };
+    const r = applyInflectionMerge(mapping, findInflectedCandidates(mapping), {
+      '[LOCATION_1]': true,
+    });
+    expect(Object.keys(r.mapping)).toEqual(['[PERSON_2]']);
+    expect(r.aliases).toEqual([{ value: 'Никита', placeholder: '[PERSON_2]' }]);
   });
 
   it('вердикт модели «разные» перевешивает эвристику', () => {
