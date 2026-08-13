@@ -305,11 +305,48 @@ function heuristicSame(c: InflectionCandidate): boolean {
   return c.label === 'ORG';
 }
 
+/** Окончания, характерные для ИМЕНИТЕЛЬНОГО падежа ФИО. */
+const NOMINATIVE_PATTERNS = [
+  /(ов|ев|ёв|ин|ын|ский|цкий|ская|цкая|ова|ева|ёва|ина|ына)$/i, // фамилия
+  /(ович|евич|ьич|овна|евна|ична|инична)$/i,                    // отчество
+];
+
+/** Окончания, характерные для косвенных падежей. */
+const OBLIQUE_PATTERNS = [
+  /(овича|евича|овичу|евичу|овичем|евичем|овиче|евиче)$/i,
+  /(овны|евны|овну|евну|овной|евной|овне|евне)$/i,
+  /(ова|ева)го$/i,
+];
+
+/**
+ * Насколько значение похоже на именительный падеж. Больше — лучше.
+ *
+ * Нужно, чтобы в документе фамилии стояли в именительном. Плейсхолдеру
+ * достаётся та форма, которую детектор увидел ПЕРВОЙ, и если человека сначала
+ * упомянули вскользь («добавь Петрова Алексея Ивановича»), то именно родительный
+ * падеж и уезжал в таблицу участников. Идентификатор плейсхолдера при этом
+ * менять нельзя — меняем только хранимое значение.
+ */
+export function nominativeScore(value: string): number {
+  let score = 0;
+  for (const word of String(value ?? '').split(/\s+/)) {
+    const w = word.toLowerCase().replace(/ё/g, 'е').replace(/[^а-яa-z]/gu, '');
+    if (w.length < 3) continue;
+    if (OBLIQUE_PATTERNS.some((rx) => rx.test(w))) score -= 1;
+    else if (NOMINATIVE_PATTERNS.some((rx) => rx.test(w))) score += 1;
+  }
+  return score;
+}
+
 /**
  * Применяет решение: дубли выбрасываются из mapping, а их значения
  * возвращаются как алиасы к оставшемуся плейсхолдеру.
  * Алиасы нужны для прямой подстановки: встретили «Ирины Соколовой» — пишем
  * тот же [PERSON_1].
+ *
+ * Заодно «повышаем» хранимое значение до именительного падежа, если склеиваемая
+ * форма выглядит каноничнее — номер плейсхолдера остаётся прежним, а прежнее
+ * значение уходит в алиасы.
  */
 export function applyInflectionMerge(
   mapping: Mapping,
@@ -340,8 +377,21 @@ export function applyInflectionMerge(
     if (keep === c.drop) continue;
     delete next[c.drop];
     redirect.set(c.drop, keep);
-    if (c.dropValue.trim()) aliases.push({ value: c.dropValue.trim(), placeholder: keep });
-    merged.push(`${c.drop} («${c.dropValue}») → ${keep} («${next[keep] ?? c.keepValue}»)`);
+
+    const keepValue = String(next[keep] ?? c.keepValue).trim();
+    const dropValue = c.dropValue.trim();
+    // Приезжающая форма каноничнее — она и становится значением плейсхолдера,
+    // а прежняя уходит в алиасы. Подставляться будут обе, но в документ пойдёт
+    // именительный падеж.
+    if (dropValue && keepValue && nominativeScore(dropValue) > nominativeScore(keepValue)) {
+      next[keep] = dropValue;
+      aliases.push({ value: keepValue, placeholder: keep });
+      merged.push(`${c.drop} («${dropValue}») → ${keep}, значение уточнено с «${keepValue}»`);
+      continue;
+    }
+
+    if (dropValue) aliases.push({ value: dropValue, placeholder: keep });
+    merged.push(`${c.drop} («${dropValue}») → ${keep} («${next[keep] ?? c.keepValue}»)`);
   }
 
   return { mapping: next, aliases, merged };
