@@ -28,3 +28,14 @@ for (const [name, impl] of Object.entries(streamGlobals)) {
     (globalThis as Record<string, unknown>)[name] = impl;
   }
 }
+
+// jsdom не даёт Request/Response/Headers, а серверные роуты принимают именно
+// Request (чтение cookie, заголовков). Берём реализацию undici — ту же, что у
+// Node и Next в проде.
+
+const undici = require('undici') as Record<string, unknown>;
+for (const name of ['Request', 'Response', 'Headers', 'FormData']) {
+  if (!(name in globalThis) && undici[name]) {
+    (globalThis as Record<string, unknown>)[name] = undici[name];
+  }
+}

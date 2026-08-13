@@ -917,6 +917,13 @@ export default function ChatPage() {
   };
 
   const handleLogout = () => {
+    // Сессия живёт в httpOnly-cookie — из JS её не стереть, просит сервер.
+    // Ответа не ждём: локальный выход должен произойти в любом случае.
+    void fetch('/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'logout' }),
+    }).catch(() => {});
     setAuthUser(null);
     localStorage.removeItem('authUser');
     localStorage.removeItem('activeConversationId');

@@ -56,6 +56,7 @@ import { ANONYMIZE_MODE_SYSTEM_APPENDIX } from '@/lib/anonymization/prompt';
 // поддерживаемым типам и по работе с кодировками, и расхождение стоило утечки
 // ПДн (см. комментарий у decodeTextBuffer).
 import { guessFileExt, extractAttachmentTextCached } from '@/lib/attachment-extract';
+import { resolveRequestUserId } from '@/lib/auth-session';
 
 // Должно быть ≥ таймаута прокси/Ollama для длинных ответов (300s совпадало с 5m и обрывом стрима).
 export const maxDuration = 300;
@@ -245,6 +246,11 @@ export async function POST(req: Request) {
     const qp = url.searchParams.get('userId');
     if (!userId && qp) userId = qp;
   } catch {}
+
+  // Личность запроса берём из подписанной сессии, а не из того, что прислал
+  // клиент. Значение из тела/query остаётся запасным путём на время перехода
+  // (см. resolveRequestUserId) — иначе деплой разлогинил бы всех разом.
+  userId = resolveRequestUserId(req, userId) ?? undefined;
 
   if (!Array.isArray(messages)) {
     console.log('⚠️ Messages is not an array, defaulting to empty:', typeof messages);

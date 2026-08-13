@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { createConversation, deleteConversation, getConversations, renameConversation, saveConversation, updateConversation, getConversationMapping, assertConversationOwnership, ForbiddenError } from '@/lib/getPromt';
 import { deanonymize } from '@/lib/anonymization';
+import { resolveRequestUserId } from '@/lib/auth-session';
 
 const PLACEHOLDER_RX = /\[(?:PERSON|ORG|DATE|SENSITIVE|FILE|EMAIL|PHONE)_\d+\]/;
 
@@ -33,7 +34,8 @@ async function restoreRealData(conversationId: string, text: string): Promise<st
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-    const userId = url.searchParams.get('userId');
+    // Личность — из подписанной сессии; query лишь запасной путь на время перехода.
+    const userId = resolveRequestUserId(req, url.searchParams.get('userId'));
     if (!userId) return new Response(JSON.stringify({ success: false, message: 'userId required' }), { status: 400 });
     const convs = await getConversations(userId);
     // Чиним уже испорченные записи на чтении: документ мог сохраниться с
@@ -55,7 +57,8 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const { userId, title, messages } = body as any;
+    const { userId: claimedUserId, title, messages } = body as any;
+    const userId = resolveRequestUserId(req, claimedUserId);
     if (!userId) return new Response(JSON.stringify({ success: false, message: 'userId required' }), { status: 400 });
 
     // If client provided messages, create the conversation with those messages attached.
@@ -75,7 +78,8 @@ export async function POST(req: Request) {
 export async function PUT(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const { conversationId, messages, title, documentContent, userId } = body as any;
+    const { conversationId, messages, title, documentContent, userId: claimedUserId } = body as any;
+    const userId = resolveRequestUserId(req, claimedUserId);
     if (!conversationId) return new Response(JSON.stringify({ success: false, message: 'conversationId required' }), { status: 400 });
 
     // ИЗОЛЯЦИЯ: нельзя писать в чужой диалог.
@@ -130,7 +134,8 @@ export async function PUT(req: Request) {
 export async function DELETE(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const { conversationId, userId } = body as any;
+    const { conversationId, userId: claimedUserId } = body as any;
+    const userId = resolveRequestUserId(req, claimedUserId);
     if (!conversationId) {
       return new Response(
         JSON.stringify({ success: false, message: 'conversationId required' }),
@@ -139,7 +144,7 @@ export async function DELETE(req: Request) {
     }
 
     try {
-      await deleteConversation(conversationId, userId);
+      await deleteConversation(conversationId, userId ?? undefined);
     } catch (err: any) {
       const message = err?.message || 'error';
       const status =

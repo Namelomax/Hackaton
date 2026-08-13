@@ -11,6 +11,7 @@
  * анонимизированный preview-текст (для восстановления при перезагрузке).
  */
 import { extractAttachmentTextCached } from '@/lib/attachment-extract';
+import { resolveRequestUserId } from '@/lib/auth-session';
 import {
   AnonymizerUnavailableError,
   completeAnonymizeJob,
@@ -71,8 +72,10 @@ export async function POST(req: Request) {
 
   const conversationId: string | null =
     typeof body.conversationId === 'string' ? body.conversationId : null;
-  const userId: string | null =
+  const claimedUserId: string | null =
     typeof body.userId === 'string' ? body.userId : new URL(req.url).searchParams.get('userId');
+  // Личность — из подписанной сессии; присланное клиентом лишь запасной путь.
+  const userId = resolveRequestUserId(req, claimedUserId);
   const forbidden = await ownershipGuard(conversationId, userId);
   if (forbidden) return forbidden;
   const files: any[] = Array.isArray(body.files) ? body.files : [];
@@ -156,7 +159,7 @@ function errorResponse(e: unknown): Response {
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const conversationId = url.searchParams.get('conversationId');
-  const userId = url.searchParams.get('userId');
+  const userId = resolveRequestUserId(req, url.searchParams.get('userId'));
   // ИЗОЛЯЦИЯ: и опрос job'а, и чтение preview/mapping относятся к диалогу —
   // проверяем владение до любого доступа к его данным.
   const forbidden = await ownershipGuard(conversationId, userId);
