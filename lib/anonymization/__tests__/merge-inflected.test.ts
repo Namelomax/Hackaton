@@ -3,6 +3,7 @@ import {
   findInflectedCandidates,
   applyInflectionMerge,
   mergeAliases,
+  nominativeScore,
 } from '../merge-inflected';
 import { applyMappingForwardDeep, mergeRemoteResult } from '../merge';
 import type { Mapping } from '../types';
@@ -187,6 +188,49 @@ describe('applyInflectionMerge — решение без модели остор
     });
     expect(Object.keys(r.mapping)).toEqual(['[PERSON_1]']);
     expect(r.aliases.every((a) => a.placeholder === '[PERSON_1]')).toBe(true);
+  });
+});
+
+describe('именительный падеж как каноничное значение', () => {
+  it('оценивает именительный выше косвенного', () => {
+    expect(nominativeScore('Петров Алексей Иванович')).toBeGreaterThan(
+      nominativeScore('Петрова Алексея Ивановича'),
+    );
+    expect(nominativeScore('Соколова Ирина Павловна')).toBeGreaterThan(
+      nominativeScore('Соколовой Ирины Павловны'),
+    );
+  });
+
+  it('женское ФИО в именительном не считается косвенным', () => {
+    expect(nominativeScore('Соколова Ирина Павловна')).toBeGreaterThan(0);
+  });
+
+  it('человека, впервые названного в родительном, поправляет на именительный', () => {
+    // Реальный случай со стенда: «добавь Петрова Алексея Ивановича» — и в
+    // таблице участников фамилия так и осталась в родительном.
+    const mapping = {
+      '[PERSON_4]': 'Петрова Алексея Ивановича',
+      '[PERSON_7]': 'Петров Алексей Иванович',
+    };
+    const r = applyInflectionMerge(mapping, findInflectedCandidates(mapping), {
+      '[PERSON_7]': true,
+    });
+    // Номер плейсхолдера прежний, значение — каноничное.
+    expect(r.mapping['[PERSON_4]']).toBe('Петров Алексей Иванович');
+    expect(r.mapping['[PERSON_7]']).toBeUndefined();
+    // Старая форма продолжает подставляться — через алиас.
+    expect(r.aliases).toEqual([
+      { value: 'Петрова Алексея Ивановича', placeholder: '[PERSON_4]' },
+    ]);
+  });
+
+  it('не портит уже каноничное значение', () => {
+    const mapping = {
+      '[PERSON_1]': 'Соколова Ирина Павловна',
+      '[PERSON_5]': 'Соколовой Ирины Павловны',
+    };
+    const r = applyInflectionMerge(mapping, findInflectedCandidates(mapping), null);
+    expect(r.mapping['[PERSON_1]']).toBe('Соколова Ирина Павловна');
   });
 });
 
