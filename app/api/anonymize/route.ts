@@ -10,7 +10,7 @@
  * GET /api/anonymize?conversationId=... — вернуть сохранённые mapping и
  * анонимизированный preview-текст (для восстановления при перезагрузке).
  */
-import { extractAttachmentText } from '@/lib/attachment-extract';
+import { extractAttachmentTextCached } from '@/lib/attachment-extract';
 import {
   AnonymizerUnavailableError,
   completeAnonymizeJob,
@@ -82,7 +82,7 @@ export async function POST(req: Request) {
 
   for (const f of files) {
     try {
-      const extracted = await extractAttachmentText(f);
+      const extracted = await extractAttachmentTextCached(f);
       const name = f?.name || f?.filename || 'документ';
       if (extracted && extracted.trim()) {
         parts.push(`Документ "${name}":\n${extracted.trim()}`);
