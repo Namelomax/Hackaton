@@ -126,24 +126,33 @@ export function clearSessionCookieHeader(req: Request): string {
 }
 
 /**
- * Кто делает запрос.
+ * Кто делает запрос. ТОЛЬКО из подписанной сессии.
  *
- * ПЕРЕХОДНЫЙ ПЕРИОД: пока у части клиентов ещё нет cookie (старая вкладка,
- * сохранённый localStorage), значение из тела запроса принимается — иначе
- * деплой разлогинил бы всех разом. Cookie при этом ВСЕГДА в приоритете, а
- * использование запасного пути логируется. Убрать запасной путь — отдельный
- * шаг, после которого подстановка чужого userId перестанет работать.
+ * `claimedUserId` — то, что прислал клиент в теле или query. Оно НЕ используется
+ * как личность и нужно лишь для диагностики: раньше сервер ему верил, и
+ * подстановка чужого id открывала чужие диалоги, промпты и таблицу
+ * `anonymization_mappings` с настоящими ФИО.
+ *
+ * Переходный период (когда значение из тела ещё принималось при отсутствии
+ * cookie) закончился: на стенде подтверждено, что вход выдаёт httpOnly-cookie,
+ * а подставленный чужой userId игнорируется.
  */
-export function resolveRequestUserId(req: Request, bodyUserId?: string | null): string | null {
+export function resolveRequestUserId(req: Request, claimedUserId?: string | null): string | null {
   const fromCookie = userIdFromRequest(req);
-  if (fromCookie) return fromCookie;
-  const fallback = typeof bodyUserId === 'string' && bodyUserId.trim() ? bodyUserId.trim() : null;
-  if (fallback) {
-    console.warn(
-      `[auth] запрос без сессии — userId взят из тела (${fallback}). Клиенту нужно перелогиниться.`,
-    );
+  const claimed = typeof claimedUserId === 'string' && claimedUserId.trim() ? claimedUserId.trim() : null;
+
+  if (!fromCookie) {
+    if (claimed) {
+      console.warn(`[auth] запрос без сессии, клиент заявил ${claimed} — отклоняю. Нужен вход.`);
+    }
+    return null;
   }
-  return fallback;
+  if (claimed && claimed !== fromCookie) {
+    // Не обязательно атака: у клиента мог остаться старый id в localStorage.
+    // Но записать стоит — по этой строке видно и настоящие попытки подмены.
+    console.warn(`[auth] клиент заявил ${claimed}, сессия принадлежит ${fromCookie} — беру сессию.`);
+  }
+  return fromCookie;
 }
 
 export const SESSION_COOKIE_NAME = COOKIE_NAME;

@@ -777,6 +777,23 @@ export default function ChatPage() {
     (async () => {
       try {
         const resp = await fetch(`/api/conversations?userId=${encodeURIComponent(authUser.id)}`);
+        // 401 = серверной сессии нет (истекла, перезапуск без SESSION_SECRET,
+        // остался старый localStorage). Молча показывать пустой список нельзя:
+        // в шапке при этом написано «Вы вошли как …», и человек решит, что
+        // потерялись диалоги. Сбрасываем локальный вход и просим войти заново.
+        if (resp.status === 401) {
+          console.warn('[auth] серверная сессия отсутствует — требуется повторный вход');
+          setAuthUser(null);
+          localStorage.removeItem('authUser');
+          setConversationsList([]);
+          setConversationsLoaded(true);
+          setAuthMode('login');
+          setAuthOpen(true);
+          toast.info('Нужно войти заново', {
+            description: 'Сессия истекла — введите логин и пароль.',
+          });
+          return;
+        }
         const j = await resp.json();
         if (j?.success) {
             const convs = (j.conversations || []).map((c: any) =>

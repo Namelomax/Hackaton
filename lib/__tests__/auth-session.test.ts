@@ -69,13 +69,19 @@ describe('resolveRequestUserId', () => {
     expect(resolveRequestUserId(r, 'users:attacker')).toBe('users:real');
   });
 
-  it('без cookie принимает значение из тела — переходный период', () => {
-    expect(resolveRequestUserId(req(), 'users:legacy')).toBe('users:legacy');
+  it('без cookie значение из тела НЕ принимается — это и была дыра', () => {
+    expect(resolveRequestUserId(req(), 'users:legacy')).toBeNull();
   });
 
   it('без cookie и без тела — null', () => {
     expect(resolveRequestUserId(req(), null)).toBeNull();
     expect(resolveRequestUserId(req(), '   ')).toBeNull();
+  });
+
+  it('свой id в теле не мешает — берётся тот же из сессии', () => {
+    const token = createSessionToken('users:me');
+    const r = req({ cookie: `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}` });
+    expect(resolveRequestUserId(r, 'users:me')).toBe('users:me');
   });
 
   it('битая cookie не выдаёт себя за сессию', () => {

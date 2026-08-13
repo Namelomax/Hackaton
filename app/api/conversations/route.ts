@@ -34,9 +34,16 @@ async function restoreRealData(conversationId: string, text: string): Promise<st
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-    // Личность — из подписанной сессии; query лишь запасной путь на время перехода.
+    // Личность — только из подписанной сессии.
     const userId = resolveRequestUserId(req, url.searchParams.get('userId'));
-    if (!userId) return new Response(JSON.stringify({ success: false, message: 'userId required' }), { status: 400 });
+    // 401, а не 400: у клиента нет сессии, и он должен это понять — показать
+    // форму входа, а не пустой список диалогов при виде «вы вошли как …».
+    if (!userId) {
+      return new Response(
+        JSON.stringify({ success: false, unauthorized: true, message: 'Требуется вход' }),
+        { status: 401 },
+      );
+    }
     const convs = await getConversations(userId);
     // Чиним уже испорченные записи на чтении: документ мог сохраниться с
     // плейсхолдерами до фикса деанонимизации SSE.
@@ -59,7 +66,12 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     const { userId: claimedUserId, title, messages } = body as any;
     const userId = resolveRequestUserId(req, claimedUserId);
-    if (!userId) return new Response(JSON.stringify({ success: false, message: 'userId required' }), { status: 400 });
+    if (!userId) {
+      return new Response(
+        JSON.stringify({ success: false, unauthorized: true, message: 'Требуется вход' }),
+        { status: 401 },
+      );
+    }
 
     // If client provided messages, create the conversation with those messages attached.
     if (Array.isArray(messages) && messages.length > 0) {
