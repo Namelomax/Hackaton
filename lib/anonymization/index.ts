@@ -29,6 +29,32 @@ export { applyMappingForward, applyMappingForwardDeep, countersFromMapping };
 export { scrubStructured, scrubSensitiveOrgs, restoreNonSensitivePlaceholders, dropNonSensitiveEntries, isGenericEntityValue };
 export type { Mapping, ConversationMapping, PlaceholderAlias };
 
+/**
+ * Повторяет fn до maxAttempts раз при AnonymizerUnavailableError.
+ * Другие ошибки пробрасываются сразу. Задержка растёт линейно (baseDelayMs * attempt).
+ */
+async function withAnonymizerRetry<T>(
+  fn: () => Promise<T>,
+  maxAttempts = 3,
+  baseDelayMs = 3000,
+): Promise<T> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (!(e instanceof AnonymizerUnavailableError) || attempt === maxAttempts) throw e;
+      const delay = baseDelayMs * attempt;
+      console.warn(
+        `[anonymize] попытка ${attempt}/${maxAttempts} не удалась, повтор через ${delay / 1000}с: ` +
+          (e instanceof Error ? e.message.slice(0, 120) : String(e)),
+      );
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  // unreachable
+  throw new AnonymizerUnavailableError('все попытки исчерпаны');
+}
+
 async function loadConversation(conversationId?: string | null): Promise<ConversationMapping> {
   if (!conversationId) return { mapping: {}, counters: {}, aliases: [] };
   const stored = await getConversationMapping(conversationId);
@@ -85,7 +111,7 @@ export async function anonymizeNewText(
     };
   }
 
-  const remote = await anonymizeRemote(text);
+  const remote = await withAnonymizerRetry(() => anonymizeRemote(text));
   const merged = mergeRemoteResult(conv, remote);
 
   // Сервис анонимизации общий, его настройки нам не подчиняются: он маскирует
