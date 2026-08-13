@@ -6,6 +6,11 @@
  * было определение кодировки, у другой нет, — и это стоило утечки ПДн.
  */
 import { decodeTextBytes } from '@/lib/text-encoding';
+import {
+  attachmentCacheKey,
+  getCachedAttachmentText,
+  setCachedAttachmentText,
+} from '@/lib/attachment-cache';
 
 export async function urlToBuffer(urlOrData?: string | null): Promise<Buffer | null> {
   if (!urlOrData) return null;
@@ -210,4 +215,22 @@ export async function extractAttachmentText(att: any): Promise<string | null> {
   // Фолбек
   const buf = await urlToBuffer(att?.url || att?.data);
   return buf ? bestEffortBinaryText(buf) : null;
+}
+
+/**
+ * То же, но с кэшем по содержимому файла (см. lib/attachment-cache.ts).
+ *
+ * Именно эту функцию должны звать роуты. Разбор PDF/XLSX/DOCX — самая дорогая
+ * операция запроса, а вложение неизменяемо: одни и те же байты дают один и тот
+ * же текст. Без кэша один файл разбирался и в превью анонимизации, и в чате, и
+ * заново на каждом ходу диалога.
+ */
+export async function extractAttachmentTextCached(att: any): Promise<string | null> {
+  const key = attachmentCacheKey(att);
+  const cached = getCachedAttachmentText(key);
+  if (cached !== undefined) return cached;
+
+  const text = await extractAttachmentText(att);
+  if (text && text.trim()) setCachedAttachmentText(key, text);
+  return text;
 }

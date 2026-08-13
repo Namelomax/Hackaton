@@ -55,7 +55,7 @@ import { ANONYMIZE_MODE_SYSTEM_APPENDIX } from '@/lib/anonymization/prompt';
 // Свою копию диспетчера этот роут больше не держит: копии разошлись по
 // поддерживаемым типам и по работе с кодировками, и расхождение стоило утечки
 // ПДн (см. комментарий у decodeTextBuffer).
-import { guessFileExt, extractAttachmentText } from '@/lib/attachment-extract';
+import { guessFileExt, extractAttachmentTextCached } from '@/lib/attachment-extract';
 
 // Должно быть ≥ таймаута прокси/Ollama для длинных ответов (300s совпадало с 5m и обрывом стрима).
 export const maxDuration = 300;
@@ -462,7 +462,7 @@ export async function POST(req: Request) {
         // же cp1251-файл чат читал верно, а анонимайзер получал мойибаке, в
         // котором NER не находит ни ФИО, ни телефонов, — и ПДн уходили в облако.
         try {
-          extracted = await extractAttachmentText(att);
+          extracted = await extractAttachmentTextCached(att);
         } catch (err) {
           console.error('Failed to parse attachment', name, mt, err);
         }

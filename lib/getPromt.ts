@@ -441,6 +441,45 @@ export async function getUserByUsername(username: string): Promise<User | null> 
   return userFromRecord(rec);
 }
 
+/**
+ * Пользователь вместе с хешем пароля — для проверки В КОДЕ.
+ *
+ * `authenticateUser` ниже сравнивает хеш прямо в SQL (`WHERE passwordHash =
+ * $passwordHash`), а это возможно только для детерминированного хеша без соли.
+ * У scrypt соль индивидуальная, поэтому сравнивать нужно после выборки.
+ */
+export async function findUserForLogin(
+  username: string,
+): Promise<{ user: User; passwordHash: string } | null> {
+  await connectDB();
+  const usernameLower = usernameLookupKey(username);
+  if (!usernameLower) return null;
+
+  const result = await db.query(
+    `SELECT * FROM users
+     WHERE usernameLower = $usernameLower OR string::lowercase(username) = $usernameLower
+     LIMIT 1;`,
+    { usernameLower },
+  );
+  const rec = surrealQueryFirst(result);
+  if (!rec) return null;
+  const passwordHash = String((rec as Record<string, unknown>).passwordHash ?? '');
+  if (!passwordHash) return null;
+  return { user: userFromRecord(rec), passwordHash };
+}
+
+/** Перезаписать хеш пароля — используется при миграции со старого формата. */
+export async function updateUserPasswordHash(userId: string, passwordHash: string): Promise<void> {
+  await connectDB();
+  const clean = String(userId).replace(/^users:/, '');
+  try {
+    await db.merge(new RecordId('users', clean), { passwordHash } as any);
+  } catch (e) {
+    console.warn('updateUserPasswordHash failed:', (e as Error)?.message);
+  }
+}
+
+/** @deprecated Сравнение хеша в запросе. Работает только со старым sha256. */
 export async function authenticateUser(username: string, passwordHash: string): Promise<User | null> {
   await connectDB();
   const usernameLower = usernameLookupKey(username);
