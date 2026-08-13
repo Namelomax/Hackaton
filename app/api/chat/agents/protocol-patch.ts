@@ -223,11 +223,21 @@ export function expandTableRowEdits(edits: ProtocolEdit[]): ProtocolEdit[] {
       continue;
     }
 
-    const changed: ProtocolEdit[] = [];
-    for (let i = 0; i < f.length; i++) {
-      if (!f[i] || !r[i] || f[i] === r[i]) continue;
-      changed.push({ find: f[i], replace: r[i] });
+    // Меняться должна ОДНА ячейка. Если модель переписала строку целиком —
+    // и ФИО, и должность, — значит она метит не в ту строку либо переставляет
+    // людей. Разбирать такое нельзя: раньше подобная замена просто не
+    // находилась и патч честно уходил в полную генерацию, где модель видела
+    // весь документ. Сохраняем этот предохранитель.
+    const diffIndexes = f.map((_, i) => i).filter((i) => f[i] && r[i] && f[i] !== r[i]);
+    if (diffIndexes.length !== 1) {
+      console.log(
+        `[protocol-patch] строка таблицы не разобрана: изменившихся ячеек ${diffIndexes.length}, ожидалась одна`,
+      );
+      out.push(edit);
+      continue;
     }
+
+    const changed: ProtocolEdit[] = diffIndexes.map((i) => ({ find: f[i], replace: r[i] }));
 
     if (changed.length === 0) {
       out.push(edit);

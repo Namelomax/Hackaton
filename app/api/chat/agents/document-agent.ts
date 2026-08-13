@@ -889,6 +889,25 @@ async function tryPatchExistingProtocol(options: {
     patchGuardNotes.push(...flags.flags);
     p = normalizeProtocolNumbers(p);
     p = unifyUnresolvedMarkers(p);
+
+    // Явная правка должности — детерминированно, ПОВЕРХ плана замен.
+    // На стенде планировщик вернул одну замену, и она легла не в ту строку
+    // таблицы: просили сменить должность одному участнику, а сменилась она у
+    // другого, затерев его собственную. Здесь мы разбираем просьбу сами и
+    // находим человека по основам слов — падеж значения не имеет.
+    // Гард живёт и в полной сборке, но путь патча выходит раньше и минует её.
+    {
+      const po = applyPositionOverrides(p, [userRequest]);
+      p = po.protocol;
+      if (po.applied.length > 0) {
+        console.log(
+          `[protocol-patch] должности выправлены по тексту просьбы: ${po.applied
+            .map((a) => `${a.name} → ${a.position}`)
+            .join('; ')}`,
+        );
+      }
+    }
+
     applied.protocol = p;
   }
 
