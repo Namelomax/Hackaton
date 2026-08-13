@@ -850,8 +850,13 @@ async function tryPatchExistingProtocol(options: {
   });
 
   if (!plan.canPatch || plan.edits.length === 0) {
+    // Текст правки в логе обязателен: без него «нет замен» неразличимо —
+    // то ли правка и правда структурная (правило 6), то ли модель
+    // перестраховалась. На стенде три отказа из четырёх были именно такими,
+    // и разобрать их по логам было нечем.
     console.log(
-      `[protocol-patch] точечная правка не подходит (${plan.reason || 'нет замен'}) → полная генерация`,
+      `[protocol-patch] точечная правка не подходит (${plan.reason || 'модель не указала причину'}) → полная генерация; ` +
+        `canPatch=${plan.canPatch}, замен=${plan.edits.length}, просьба="${String(userRequest).slice(0, 160)}"`,
     );
     return null;
   }
