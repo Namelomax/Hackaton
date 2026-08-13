@@ -60,7 +60,7 @@ import {
   resolveApprovalForDocument,
 } from '@/lib/protocol-markdown-format';
 import { applyMappingForward, deanonymize, deepDeanonymize, type Mapping } from '@/lib/anonymization';
-import { ANONYMIZE_MODE_SYSTEM_APPENDIX } from '@/lib/anonymization/prompt';
+import { ANONYMIZE_MODE_SYSTEM_APPENDIX, buildGenderHintsBlock } from '@/lib/anonymization/prompt';
 
 function extractMessageText(msg: any): string {
   if (!msg) return '';
@@ -292,7 +292,7 @@ export async function generateFinalDocument(
     : agreedChatContext;
 
   // Use SGR-enhanced document generation prompt
-  const protocolPrompt = (anonymizeActive ? ANONYMIZE_MODE_SYSTEM_APPENDIX + '\n\n' : '') + SGR_DOCUMENT_AGENT_PROMPT
+  const protocolPrompt = (anonymizeActive ? ANONYMIZE_MODE_SYSTEM_APPENDIX + buildGenderHintsBlock(anonMapping) + '\n\n' : '') + SGR_DOCUMENT_AGENT_PROMPT
     .replace('{{REGULATION}}', PROTOCOL_REGULATION + formatGlossaryForPrompt())
     .replace('{{CONVERSATION_CONTEXT}}', promptConversationContext)
     .replace('{{EXISTING_DOCUMENT_CONTEXT}}', promptExistingDocumentContext)
