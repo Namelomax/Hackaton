@@ -1,3 +1,5 @@
+import type { Mapping } from './types';
+
 /**
  * Системная инструкция для режима «Облако + анонимизация».
  *
@@ -44,3 +46,30 @@ export const ANONYMIZE_MODE_SYSTEM_APPENDIX = `
    так и переноси в протокол, сохраняя плейсхолдеры.
 ===== КОНЕЦ РЕЖИМА АНОНИМИЗАЦИИ =====
 `;
+
+function detectGenderFromName(name: string): 'женщина' | 'мужчина' | null {
+  const parts = name.trim().split(/\s+/);
+  const patronymic = parts.length >= 3 ? parts[2] : null;
+  if (patronymic) {
+    const p = patronymic.toLowerCase();
+    if (/(?:овна|евна|ёвна|ична|инична|ьевна)$/.test(p)) return 'женщина';
+    if (/(?:ович|евич|ёвич|ьевич)$/.test(p)) return 'мужчина';
+  }
+  return null;
+}
+
+/**
+ * Блок подсказок о поле для облачной модели.
+ * Пол определяется детерминированно по окончанию отчества (-овна/-евна → женщина,
+ * -ович/-евич → мужчина). ПДн не раскрываются — только плейсхолдеры.
+ */
+export function buildGenderHintsBlock(mapping: Mapping): string {
+  const lines: string[] = [];
+  for (const [placeholder, original] of Object.entries(mapping)) {
+    if (!placeholder.startsWith('[PERSON_')) continue;
+    const gender = detectGenderFromName(original);
+    if (gender) lines.push(`${placeholder} — ${gender}`);
+  }
+  if (lines.length === 0) return '';
+  return `\nПОДСКАЗКИ О ПОЛЕ (для согласования глаголов и местоимений):\n${lines.join('\n')}\n`;
+}

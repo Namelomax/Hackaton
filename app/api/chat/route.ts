@@ -50,7 +50,7 @@ import {
   wrapResponseWithDeanonymization,
   prependNoticeToResponse,
 } from '@/lib/anonymization/sse-deanonymize';
-import { ANONYMIZE_MODE_SYSTEM_APPENDIX } from '@/lib/anonymization/prompt';
+import { ANONYMIZE_MODE_SYSTEM_APPENDIX, buildGenderHintsBlock } from '@/lib/anonymization/prompt';
 // ЕДИНЫЙ модуль извлечения текста из вложений — общий с /api/anonymize.
 // Свою копию диспетчера этот роут больше не держит: копии разошлись по
 // поддерживаемым типам и по работе с кодировками, и расхождение стоило утечки
@@ -935,7 +935,7 @@ export async function POST(req: Request) {
   // Режим анонимизации: жёстко запрещаем модели выдумывать имена и подставлять
   // примеры из системного промпта вместо плейсхолдеров.
   if (anonymizationActive) {
-    systemPrompt += ANONYMIZE_MODE_SYSTEM_APPENDIX;
+    systemPrompt += ANONYMIZE_MODE_SYSTEM_APPENDIX + buildGenderHintsBlock(anonymizeMapping);
   }
 
   // messages-prepared verbose log removed
