@@ -5,6 +5,7 @@ import {
   loadConversationMapping,
 } from '@/lib/anonymization';
 import { assertConversationOwnership, ForbiddenError } from '@/lib/getPromt';
+import { resolveRequestUserId } from '@/lib/auth-session';
 
 export const maxDuration = 90;
 export const runtime = 'nodejs';
@@ -32,7 +33,8 @@ export async function POST(req: Request) {
   // «плейсхолдер → настоящие ПДн». Без проверки владения любой мог бы получить
   // расшифровку чужих персональных данных, подставив чужой conversationId.
   try {
-    await assertConversationOwnership(conversationId, userId);
+    // Личность — из подписанной сессии; тело запроса лишь запасной путь.
+    await assertConversationOwnership(conversationId, resolveRequestUserId(req, userId));
   } catch (e) {
     if (e instanceof ForbiddenError) {
       return Response.json({ error: 'Доступ к этому диалогу запрещён' }, { status: 403 });
