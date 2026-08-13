@@ -9,7 +9,12 @@ export const ParticipantSchema = z.object({
 export const MeetingTopicSchema = z.object({
   title: z.string().describe('Название/номер вопроса повестки'),
   listened: z.string().describe('Слушали: ФИО участников, принимавших участие в обсуждении'),
-  discussed: z.string().describe('Обсудили: что обсуждалось, с указанием конкретных ФИО'),
+  discussed: z
+    .string()
+    .describe(
+      'Обсудили: ОДИН связный абзац с сутью обсуждения и конкретными ФИО. ' +
+        'Без списков, без разбиения по сторонам, без переводов строк.',
+    ),
   decided: z.string().describe('Решили: принятые решения, срок, ответственные (ФИО, Заказчик/Исполнитель)'),
 });
 
