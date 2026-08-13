@@ -267,6 +267,9 @@ export async function generateFinalDocument(
   const patchedMarkdown = await tryPatchExistingProtocol({
     conversationId,
     userRequest: lastUserMessageText(uiMessages),
+    // Накопленные правки, а не только последнее сообщение: на «Да, формируй»
+    // после переспроса агента в последнем ходе нет ни имени, ни должности.
+    userCorrections,
     // Документ, который СЕЙЧАС открыт у пользователя: нужен, чтобы убедиться,
     // что сохранённая база патча — та же версия. Иначе правим одно, а человек
     // смотрит на другое.
@@ -458,20 +461,9 @@ export async function generateFinalDocument(
     // Код-гарды: то, в чём слабая модель регулярно ошибается (промптом не лечится).
     validated = stripProtocolTimecodes(validated); // тайм-кодов в финале быть не должно
     validated = carryOverParticipantRoles(validated, conversationContext); // не терять должность
-    // Явная правка должности («поменяй должность X на Y») — детерминированно.
-    // Промптом не лечится: модель пересобирает все разделы и теряет одну строку,
-    // при этом честно рапортуя «документ обновлён» (проверено на стенде).
-    {
-      const po = applyPositionOverrides(validated, userCorrections);
-      validated = po.protocol;
-      if (po.applied.length > 0) {
-        console.log(
-          `[generateFinalDocument] должности по правкам: ${po.applied
-            .map((a) => `${a.name} → ${a.position}`)
-            .join('; ')}`,
-        );
-      }
-    }
+    // ВНИМАНИЕ: гард должностей живёт НИЖЕ, после деанонимизации — см. комментарий
+    // у applyPositionOverrides возле validatedOut. Здесь ему нечего искать:
+    // в анон-режиме в participants лежат [PERSON_N], а в тексте правки — имена.
     // Договор/шапку достаём только из ответов пользователя (не из всей расшифровки) —
     // иначе гард ловит случайные упоминания «договор №…» в тексте встречи.
     validated = fillContractFromDialogue(validated, userAnswersText); // не терять договор
@@ -547,6 +539,30 @@ export async function generateFinalDocument(
     // готовый документ возвращаем пользователю с реальными данными (простая подстановка
     // по mapping). Стрим-дельты деанонимизируются обёрткой на уровне роута.
     let validatedOut = anonymizeActive ? deepDeanonymize(validated, anonMapping) : validated;
+
+    /**
+     * Явная правка должности («поменяй должность X на Y») — детерминированно.
+     * Промптом не лечится: модель пересобирает все разделы и теряет одну строку,
+     * при этом честно рапортуя «документ обновлён».
+     *
+     * СТРОГО ПОСЛЕ ДЕАНОНИМИЗАЦИИ. Сначала гард стоял выше, среди прочих
+     * код-проверок, и в анон-режиме не работал вовсе: в `participants` лежали
+     * `[PERSON_1]`, а в тексте правки — «Журавлёвой Елены Борисовны», и поиск
+     * человека по основам слов не находил никого. Молча, без единой строки в
+     * логе. Работал он только на локальной модели, где данные настоящие.
+     */
+    {
+      const po = applyPositionOverrides(validatedOut, userCorrections);
+      validatedOut = po.protocol;
+      if (po.applied.length > 0) {
+        console.log(
+          `[generateFinalDocument] должности по правкам: ${po.applied
+            .map((a) => `${a.name} → ${a.position}`)
+            .join('; ')}`,
+        );
+      }
+    }
+
     if (anonymizeActive) {
       markdownContent = protocolToMarkdown(validatedOut);
     }
@@ -749,6 +765,8 @@ function lastUserMessageText(uiMessages: any[]): string {
 async function tryPatchExistingProtocol(options: {
   conversationId?: string | null;
   userRequest: string;
+  /** Накопленные правки пользователя — для детерминированных гардов. */
+  userCorrections?: string[];
   visibleDocument?: string;
   model: any;
   writeData: (payload: { type: string; data: any; id?: string; transient?: boolean }) => void;
@@ -760,6 +778,7 @@ async function tryPatchExistingProtocol(options: {
   const {
     conversationId,
     userRequest,
+    userCorrections = [],
     visibleDocument,
     model,
     writeData,
@@ -890,24 +909,6 @@ async function tryPatchExistingProtocol(options: {
     p = normalizeProtocolNumbers(p);
     p = unifyUnresolvedMarkers(p);
 
-    // Явная правка должности — детерминированно, ПОВЕРХ плана замен.
-    // На стенде планировщик вернул одну замену, и она легла не в ту строку
-    // таблицы: просили сменить должность одному участнику, а сменилась она у
-    // другого, затерев его собственную. Здесь мы разбираем просьбу сами и
-    // находим человека по основам слов — падеж значения не имеет.
-    // Гард живёт и в полной сборке, но путь патча выходит раньше и минует её.
-    {
-      const po = applyPositionOverrides(p, [userRequest]);
-      p = po.protocol;
-      if (po.applied.length > 0) {
-        console.log(
-          `[protocol-patch] должности выправлены по тексту просьбы: ${po.applied
-            .map((a) => `${a.name} → ${a.position}`)
-            .join('; ')}`,
-        );
-      }
-    }
-
     applied.protocol = p;
   }
 
@@ -919,6 +920,34 @@ async function tryPatchExistingProtocol(options: {
   } catch (e) {
     console.warn('[protocol-patch] результат не прошёл схему → полная генерация:', (e as Error)?.message);
     return null;
+  }
+
+  /**
+   * Явная правка должности — ПОВЕРХ плана замен и строго после деанонимизации.
+   *
+   * Планировщик умеет промахиваться строкой: на стенде просили сменить должность
+   * одному участнику, а замена легла другому и затёрла его собственную
+   * («руководитель аудита» → «директор по производству» вместо «технический
+   * директор» → …). Здесь мы разбираем просьбу сами и находим человека по
+   * основам слов, падеж значения не имеет.
+   *
+   * Почему после деанонимизации: до неё в participants лежат [PERSON_N], а в
+   * тексте просьбы — настоящие фамилии, и совпасть им не на чем.
+   *
+   * userCorrections, а не последнее сообщение: на «Да, формируй» после
+   * переспроса агента в последнем сообщении нет ни имени, ни должности —
+   * содержательная правка осталась ходом раньше.
+   */
+  {
+    const po = applyPositionOverrides(patchedOut, userCorrections);
+    patchedOut = po.protocol;
+    if (po.applied.length > 0) {
+      console.log(
+        `[protocol-patch] должности выправлены по тексту просьбы: ${po.applied
+          .map((a) => `${a.name} → ${a.position}`)
+          .join('; ')}`,
+      );
+    }
   }
 
   console.log(`[protocol-patch] применено замен: ${applied.applied.length} (без пересборки документа)`);
