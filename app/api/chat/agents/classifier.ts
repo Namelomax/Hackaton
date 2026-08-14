@@ -65,6 +65,36 @@ function getLastUserTextForIntent(context: AgentContext): string {
   return text;
 }
 
+/**
+ * Что известно о вложениях. Текст расшифровки в промпт классификатора НЕ
+ * подставляется — он занял бы весь контекст и стоил бы времени. Но сам факт
+ * приложенного документа модели нужен: `stripAttachmentNoise` вырезает из
+ * текста и блоки <AI-HIDDEN>, и пометки о файлах, поэтому без этой строки
+ * прикреплённая расшифровка для классификатора выглядит как пустое сообщение.
+ */
+function attachmentsNote(context: AgentContext): string {
+  const uiMessages: any[] = Array.isArray((context as any).uiMessages)
+    ? ((context as any).uiMessages as any[])
+    : [];
+  const lastUser = [...uiMessages].reverse().find((m) => m?.role === 'user');
+  const names: string[] = [];
+  for (const p of Array.isArray(lastUser?.parts) ? lastUser.parts : []) {
+    if (p?.type === 'file' && (p.filename || p.name)) names.push(String(p.filename || p.name));
+  }
+  for (const a of Array.isArray(lastUser?.metadata?.attachments) ? lastUser.metadata.attachments : []) {
+    if (a?.name || a?.filename) names.push(String(a.name || a.filename));
+  }
+  const unique = [...new Set(names.filter(Boolean))];
+
+  if (unique.length > 0) {
+    return `К последнему сообщению приложен(ы) файл(ы): ${unique.join(', ')}. Текст файла в это сообщение не подставлен.`;
+  }
+  if ((context as any).hasInlineTranscript) {
+    return 'К последнему сообщению приложен документ (текст передан отдельно, в это сообщение не подставлен).';
+  }
+  return 'Вложений нет — учитывай только текст сообщения.';
+}
+
 export async function classifyIntent(context: AgentContext): Promise<IntentType> {
   const { messages, userPrompt, model } = context;
 
@@ -81,7 +111,8 @@ export async function classifyIntent(context: AgentContext): Promise<IntentType>
           const content = contentToText((msg as any).content);
           return `[${i + 1}] ${msg.role}: ${content.substring(0, 200)}${content.length > 200 ? '...' : ''}`;
         }).join('\n\n'))
-        .replace('{{LAST_USER_TEXT}}', lastUserText),
+        .replace('{{LAST_USER_TEXT}}', lastUserText)
+        .replace('{{ATTACHMENTS_NOTE}}', attachmentsNote(context)),
     });
 
     const rawText = String(rawOutput ?? '').trim();
