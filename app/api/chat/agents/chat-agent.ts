@@ -351,6 +351,30 @@ export async function runChatAgent(
           : {}),
       };
 
+      /**
+       * Локальный шлюз — vLLM, и он ОТКЛОНЯЕТ любой запрос, где есть `tools`:
+       *   «"auto" tool choice requires --enable-auto-tool-choice
+       *    and --tool-call-parser to be set»
+       * Ошибка приходит не на вызов инструмента, а на сам запрос, поэтому в
+       * локальном режиме падало даже «Привет» (14.08.2026).
+       *
+       * Функционально мы тут ничего не теряем: модели за этим шлюзом и так не
+       * умеют структурные tool-calls — они выдают вызов ТЕКСТОМ, ради чего и
+       * написан lib/tool-call-leak.ts. То есть инструменты локально никогда не
+       * исполнялись, только протекали в чат. Публикация протокола идёт другим
+       * путём — через классификатор → document-agent.
+       *
+       * Единственная реальная потеря — RAG-выборка по требованию модели.
+       *
+       * Если шлюз поднимут с `--enable-auto-tool-choice --tool-call-parser hermes`,
+       * инструменты возвращаются переменной LOCAL_TOOLS_ENABLED=true, без правок кода.
+       */
+      const nativeToolsSupported =
+        cloudMode || process.env.LOCAL_TOOLS_ENABLED === 'true';
+      if (!nativeToolsSupported) {
+        console.log('🔧 tools отключены: провайдер не поддерживает tool-calls (LOCAL_TOOLS_ENABLED=true чтобы включить)');
+      }
+
       let continueMessages: ModelMessage[] = messagesWithUserPrompt;
       let lastAssistantText = "";
       const MAX_CONTINUATIONS = 0;
@@ -366,13 +390,17 @@ export async function runChatAgent(
           maxOutputTokens,
           messages: continueMessages,
           system: adaptedSystemPrompt,
-          tools,
+          ...(nativeToolsSupported ? { tools } : {}),
           // Единый набор опций отключения размышлений (lib/reasoning-options):
           // тот же, что у генерации документа, правок и проверки. Раньше здесь
           // не хватало exclude:true, и модель всё равно думала — замер показал
           // 12 810 токенов ради ответа в 145 символов.
           providerOptions: documentReasoningOptions(),
-          stopWhen: stepCountIs(ragRetrievalEnabled ? 4 : 3),
+          // Без инструментов шага всегда ровно один: лишние шаги — это только
+          // круги на вызовы tools, которых мы не отправили.
+          stopWhen: stepCountIs(
+            nativeToolsSupported ? (ragRetrievalEnabled ? 4 : 3) : 1,
+          ),
           ...(abortSignal ? { abortSignal } : {}),
           onChunk: ({ chunk }) => {
             if (chunk.type === "text-delta" && "text" in chunk && chunk.text) {
