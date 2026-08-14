@@ -7,31 +7,34 @@
  * другую модель, и на общей карте окажутся загружены две сразу → OOM. Именно
  * это уже случалось, когда тут стоял qwen, а в env — gemma.
  *
- * Сейчас qwen3.5:9b: gemma4:12b в Q4 занимает 6.86 ГБ и на 10-гигабайтной карте
- * (RTX 3080, ~7 ГБ свободных под модель) грузилась лишь частично —
- * `offloaded 34/49 layers`, 2.7 ГБ весов оставались на CPU. Отсюда 18 ток/с
- * генерации и провалы prompt eval до 27 ток/с при промахе кэша. 9B помещается
- * в карту целиком.
+ * Сейчас qwen3.5-35b (Qwen3.5-35B-A3B-FP8 на vLLM за шлюзом). До 14.08.2026
+ * здесь стояла gemma-4-31b — шлюз её снял, и КАЖДЫЙ запрос падал с
+ * `HTTP 404: The model gemma-4-31b does not exist`: и локальный режим, и
+ * LLM-слой анонимизатора (он ходит по тому же OLLAMA_BASE_URL), то есть облачный
+ * режим тоже, потому что он не доживал до OpenRouter.
  *
- * После смены модели проверьте в логе Ollama строку `load_tensors: offloaded
- * N/M layers to GPU` — N должно равняться M. Если нет, уменьшайте
- * OLLAMA_CONTEXT_LENGTH (KV-кэш ест VRAM линейно по контексту) или снимайте
- * GLiNER с видеокарты: `server.py --device cpu`.
+ * Проверять имя нужно так — оно должно совпадать символ в символ:
+ *   curl -s "$OLLAMA_BASE_URL/models" -H "Authorization: Bearer $OLLAMA_API_KEY"
+ *
+ * Оттуда же берётся max_model_len: у qwen3.5-35b это 32768, а не 128k. Бюджет
+ * контекста задаётся в OLLAMA_CONTEXT_LENGTH и в effectiveOllamaContextTokens()
+ * (app/api/chat/route.ts) — если оставить больше, чем держит модель, шлюз молча
+ * отрежет НАЧАЛО промпта, то есть системные правила регламента.
  */
-export const FIXED_CHAT_MODEL = 'gemma-4-31b';
+export const FIXED_CHAT_MODEL = 'qwen3.5-35b';
 
 /**
  * Разрешённые модели «локального» провайдера. Кавычки не случайны: с переездом
  * на внешний шлюз (OLLAMA_BASE_URL указывает на него) провайдер остался
  * OpenAI-совместимым, а вот идентификаторы моделей теперь в стиле шлюза
- * (`gemma-4-31b`), а не тегов Ollama (`gemma4:31b`). Имя должно совпадать с
+ * (`qwen3.5-35b`), а не тегов Ollama (`qwen3.5:35b`). Имя должно совпадать с
  * тем, что отдаёт GET {BASE_URL}/models, символ в символ.
  */
-export const DEFAULT_LOCAL_CHAT_MODELS = ['gemma-4-31b'] as const;
+export const DEFAULT_LOCAL_CHAT_MODELS = ['qwen3.5-35b'] as const;
 
 /** Короткие подписи для селектора моделей в UI */
 export const LOCAL_MODEL_LABELS: Record<string, string> = {
-  'gemma-4-31b': 'Gemma 4 31B',
+  'qwen3.5-35b': 'Qwen3.5 35B',
 };
 
 /**
@@ -85,7 +88,7 @@ export function parseModelsFromEnv(jsonEnv?: string): string[] {
   }
 }
 
-/** Модель по умолчанию для чата: gemma4:12b, иначе первая из списка env. */
+/** Модель по умолчанию для чата: FIXED_CHAT_MODEL (селектора в UI нет). */
 export function pickDefaultLocalChatModel(_jsonEnv?: string): string {
   return FIXED_CHAT_MODEL;
 }

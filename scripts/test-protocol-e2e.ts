@@ -1,5 +1,5 @@
 /**
- * Сквозной тест генерации протокола против ЖИВОЙ модели (gemma4:31b и т.п.).
+ * Сквозной тест генерации протокола против ЖИВОЙ модели (qwen3.5-35b и т.п.).
  * Запуск из корня репозитория (нужны переменные окружения из .env / .env.local):
  *
  *   npx esbuild scripts/test-protocol-e2e.ts --bundle --platform=node --format=esm \
@@ -31,7 +31,7 @@ function loadEnv(file: string) {
 
 const BASE = process.env.OLLAMA_BASE_URL;
 const KEY = process.env.OLLAMA_API_KEY || 'ollama';
-const MODEL = (process.env.ALLOWED_OLLAMA_MODELS || 'gemma4:31b').split(',')[0].trim();
+const MODEL = (process.env.ALLOWED_OLLAMA_MODELS || 'qwen3.5-35b').split(',')[0].trim();
 if (!BASE) { console.error('OLLAMA_BASE_URL не задан'); process.exit(2); }
 
 function post(url: string, body: unknown): Promise<{ status: number; body: string }> {
