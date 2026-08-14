@@ -216,7 +216,25 @@ const HIDDEN_RE = /<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi;
 /** Дефолт 128k (как у qwen3.5:9b на ollama.com). */
 const DEFAULT_OLLAMA_CONTEXT_TOKENS = 131072;
 
-/** qwen3:14b в GGUF часто n_ctx_train≈40960 — Ollama не поднимет 128k. */
+/**
+ * Потолок контекста по модели.
+ *
+ * Значение из OLLAMA_CONTEXT_LENGTH — это ЖЕЛАЕМЫЙ бюджет, а не гарантия.
+ * Реальный предел отдаёт сам шлюз в поле `max_model_len`:
+ *   curl -s "$OLLAMA_BASE_URL/models" -H "Authorization: Bearer $OLLAMA_API_KEY"
+ *
+ * Если запросить больше — промпт НЕ вернётся ошибкой, у него молча отрежется
+ * НАЧАЛО, то есть системные правила регламента. Симптом на выходе: протокол
+ * формально составлен, но не по форме — и причина по логам не видна.
+ * Поэтому каждая известная модель тут ограничивается явно.
+ */
+const MODEL_CONTEXT_CAPS: { match: (id: string) => boolean; cap: number }[] = [
+  // Qwen3.5-35B-A3B-FP8 за шлюзом: max_model_len = 32768 (проверено 14.08.2026).
+  { match: (id) => id.includes('qwen3.5-35b') || id.includes('qwen3.5:35b'), cap: 32768 },
+  // qwen3:14b в GGUF часто n_ctx_train ≈ 40960 — 128k не поднимется.
+  { match: (id) => id.includes('qwen') && id.includes('14b'), cap: 40960 },
+];
+
 function effectiveOllamaContextTokens(modelId: string): number {
   const configured = Number(
     process.env.OLLAMA_CONTEXT_LENGTH ?? DEFAULT_OLLAMA_CONTEXT_TOKENS,
@@ -224,10 +242,8 @@ function effectiveOllamaContextTokens(modelId: string): number {
   if (!modelId) return configured;
   const id = modelId.toLowerCase();
   if (id.includes('qwen3.5:9b') || id.includes('qwen3.5-9b')) return configured;
-  if (id.includes('14b') && id.includes('qwen')) {
-    return Math.min(configured, 40960);
-  }
-  return configured;
+  const capped = MODEL_CONTEXT_CAPS.find((r) => r.match(id));
+  return capped ? Math.min(configured, capped.cap) : configured;
 }
 
 // === MAIN HANDLER ===
