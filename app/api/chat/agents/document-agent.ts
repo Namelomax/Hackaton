@@ -130,7 +130,15 @@ export async function runDocumentAgent(context: AgentContext) {
         );
         const doneId = `done-${Date.now()}`;
         writer.write({ type: 'text-start', id: doneId });
-        writer.write({ type: 'text-delta', id: doneId, delta: 'Протокол обследования сформирован.' });
+        writer.write({
+          type: 'text-delta',
+          id: doneId,
+          delta:
+            'Протокол сформирован из расшифровки.\n\n' +
+            'Вычитайте текст и заполните поля, отмеченные ⚠️ (сроки, ответственные, номер протокола и ФИО, ' +
+            'которые не удалось извлечь автоматически).\n\n' +
+            'Если что-то неверно — напишите в чат, я внесу правку.',
+        });
         writer.write({ type: 'text-end', id: doneId });
       } catch (error) {
         console.error('Document generation error:', error);
@@ -573,7 +581,7 @@ export async function generateFinalDocument(
     // ВСЕГДА с реальными данными (validatedOut уже деанонимизирован) и ВСЕГДА
     // локальной моделью — в облако ничего не уходит. Включается флагом,
     // по умолчанию выключен.
-    if (process.env.REVIEW_LOOP_ENABLED === 'true') {
+    if (process.env.REVIEW_LOOP_ENABLED === 'true' || anonymizeActive) {
       try {
         const { resolveChatLanguageModel } = await import('@/lib/resolve-chat-model');
         const localModel = resolveChatLanguageModel({ chatProvider: 'ollama' });
