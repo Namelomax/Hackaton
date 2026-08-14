@@ -5,6 +5,7 @@ import {
 } from "./orchestrator";
 import { runChatAgent } from "./chat-agent";
 import { runDocumentAgent } from "./document-agent";
+import { classifyIntent } from "./classifier";
 
 export async function runMainAgent(
   context: AgentContext,
@@ -18,18 +19,27 @@ export async function runMainAgent(
     return runDocumentAgent(context);
   }
 
-  // Автоматическая генерация при первой загрузке расшифровки:
-  // если ещё нет ни одного ответа ассистента — пропускаем диалог и сразу
-  // строим протокол. Последующие сообщения (правки) идут через чат-агент.
-  if (context.hasInlineTranscript) {
-    const uiMsgs: any[] = Array.isArray((context as any).uiMessages)
-      ? (context as any).uiMessages
-      : [];
-    const hasAssistantReply = uiMsgs.some((m: any) => m?.role === 'assistant');
-    if (!hasAssistantReply) {
-      console.log("🧭 Main agent: расшифровка загружена впервые → document pipeline (авто)");
+  // Всё остальное решает модель, а не список условий.
+  //
+  // Раньше здесь стояла жёсткая ветка «есть inline-расшифровка и нет ответа
+  // ассистента → документ». Она не работала для расшифровки, ВСТАВЛЕННОЙ
+  // ТЕКСТОМ: hasInlineTranscript считается только от вложений и блоков
+  // <AI-HIDDEN>, а вставленный текст туда не попадает. Плюс любое такое
+  // условие приходится дописывать под каждый новый случай.
+  //
+  // Классификатор видит текст последнего сообщения и факт вложения, а что с
+  // этим делать — описано в SGR_CLASSIFIER_PROMPT. Способ передачи
+  // расшифровки перестал иметь значение.
+  try {
+    const intent = await classifyIntent(context);
+    if (intent === 'document') {
+      console.log('🧭 Main agent: классификатор → document pipeline');
       return runDocumentAgent(context);
     }
+  } catch (e) {
+    // Классификатор недоступен — не повод ронять запрос: продолжаем диалогом,
+    // а явная просьба сформировать протокол отработает быстрым путём выше.
+    console.warn('🧭 Main agent: классификатор не отработал → chat:', (e as Error)?.message);
   }
 
   console.log("🧭 Main agent: chat stream + publishInvestigationProtocol tool");
