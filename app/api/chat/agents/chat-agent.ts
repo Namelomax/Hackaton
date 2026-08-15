@@ -221,11 +221,24 @@ export async function runChatAgent(
   const anonMapping = context.anonymizeMapping ?? {};
   const messagesWithUserPrompt: ModelMessage[] = [];
 
+  /**
+   * Всё системное уходит ОДНИМ блоком через параметр `system`, а не отдельными
+   * сообщениями с role:"system" внутри истории.
+   *
+   * Шлюз на vLLM применяет chat-шаблон Qwen и отклоняет запрос целиком:
+   *   «System message must be at the beginning» (400)
+   * Ollama такое прощал, поэтому проблема вылезла только после переезда.
+   *
+   * Полагаться на порядок здесь нельзя: role:"system" приходит из истории
+   * диалога (клиент шлёт роли как есть — route.ts, нормализация ролей) и из
+   * служебной пометки об обрезке контекста `__trim_notice__`. Такое сообщение
+   * оказывается в середине массива, и никакая сортировка «системные вперёд» не
+   * спасает — шаблон Qwen допускает ровно один системный блок в начале.
+   */
+  const systemBlocks: string[] = [];
+
   if (userPrompt && userPrompt.trim()) {
-    messagesWithUserPrompt.push({
-      role: "system",
-      content: userPrompt,
-    });
+    systemBlocks.push(userPrompt);
   }
 
   const lastUserMessage = messages[messages.length - 1];
@@ -247,13 +260,20 @@ export async function runChatAgent(
   const hasFixRequest = hasDocument && detectFixRequest(lastUserText);
 
   if (hasDocument) {
-    messagesWithUserPrompt.push({
-      role: "system",
-      content: `ТЕКУЩАЯ ВЕРСИЯ ДОКУМЕНТА (правая панель):\n\n${documentContent}\n\nИспользуй эту версию как основу для дальнейшей работы. Если пользователь вносит изменения, обновляй её через инструмент publishInvestigationProtocol, не пересылай полный текст протокола в чат.`,
-    });
+    systemBlocks.push(
+      `ТЕКУЩАЯ ВЕРСИЯ ДОКУМЕНТА (правая панель):\n\n${documentContent}\n\nИспользуй эту версию как основу для дальнейшей работы. Если пользователь вносит изменения, обновляй её через инструмент publishInvestigationProtocol, не пересылай полный текст протокола в чат.`,
+    );
   }
 
-  messagesWithUserPrompt.push(...(messages as ModelMessage[]));
+  // Системные сообщения из истории переносим в системный блок, остальные — как есть.
+  for (const m of messages as ModelMessage[]) {
+    if (m.role === "system") {
+      const text = typeof m.content === "string" ? m.content : "";
+      if (text.trim()) systemBlocks.push(text);
+      continue;
+    }
+    messagesWithUserPrompt.push(m);
+  }
 
   const hasFiles =
     hasAttachedFiles(messages) ||
@@ -276,6 +296,9 @@ export async function runChatAgent(
     );
     const issuesText = issuesMatch ? issuesMatch[0] : lastUserText;
     adaptedSystemPrompt += buildFixIssuesSystemAppendix(documentContent || "", issuesText);
+  }
+  if (systemBlocks.length > 0) {
+    adaptedSystemPrompt += "\n\n" + systemBlocks.join("\n\n");
   }
 
   const sink: ProtocolGenerationSink = { markdown: "" };

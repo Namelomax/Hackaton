@@ -105,6 +105,18 @@ export async function classifyIntent(context: AgentContext): Promise<IntentType>
     const { text: rawOutput } = await generateText({
       model,
       temperature: 0.1,
+      /**
+       * Ответ классификатора — три поля JSON, сотня токенов от силы.
+       *
+       * Без явного лимита fetch-обёртка подставляет свой потолок
+       * (ollamaHardCapOutputTokens), и запрос уходил с max_tokens=32768. У
+       * qwen3.5-35b столько же весь контекст, поэтому шлюз отвечал 400:
+       *   «maximum context length is 32768 tokens. However, you requested
+       *    32768 output tokens and your prompt contains 16996 characters»
+       * То есть классификатор падал ВСЕГДА, а main-agent молча уходил в чат —
+       * ровно тот хардкод-роутинг, от которого мы избавлялись.
+       */
+      maxOutputTokens: 400,
       prompt: SGR_CLASSIFIER_PROMPT
         .replace('{{USER_PROMPT}}', userPrompt || '')
         .replace('{{CONVERSATION_CONTEXT}}', conversationContext.map((msg, i) => {
