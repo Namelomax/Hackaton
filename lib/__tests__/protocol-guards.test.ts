@@ -149,3 +149,36 @@ describe('normalizeCyrillicHomoglyphs', () => {
     expect(normalizeCyrillicHomoglyphs('система MVP')).toBe('система MVP');
   });
 });
+
+describe('dedupeListened', () => {
+  const { dedupeListened } = require('../protocol-guards');
+  const make = (listened: string) =>
+    ({
+      meetingContent: {
+        topics: [{ title: 'т', listened, discussed: '', decided: '' }],
+        summary: [],
+      },
+    }) as any;
+
+  it('РЕГРЕССИЯ: один человек назван дважды — остаётся один раз', () => {
+    const out = dedupeListened(
+      make('Горбунова Светлана Игоревна (Заказчик), Горбунова Светлана Игоревна (Заказчик)'),
+    );
+    expect(out.meetingContent.topics[0].listened).toBe('Горбунова Светлана Игоревна (Заказчик)');
+  });
+
+  it('разные люди не схлопываются, порядок сохраняется', () => {
+    const src = 'Горбунова С.И. (Заказчик), Мельников П.Ю. (Исполнитель)';
+    expect(dedupeListened(make(src)).meetingContent.topics[0].listened).toBe(src);
+  });
+
+  it('регистр и «ё» не мешают увидеть дубль', () => {
+    const out = dedupeListened(make('Журавлёва Е.Б. (Заказчик), журавлева е.б. (заказчик)'));
+    expect(out.meetingContent.topics[0].listened).toBe('Журавлёва Е.Б. (Заказчик)');
+  });
+
+  it('пустое поле и одиночное имя не трогаются', () => {
+    expect(dedupeListened(make('')).meetingContent.topics[0].listened).toBe('');
+    expect(dedupeListened(make('Иванов И.И.')).meetingContent.topics[0].listened).toBe('Иванов И.И.');
+  });
+});
