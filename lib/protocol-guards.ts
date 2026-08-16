@@ -624,6 +624,35 @@ export function unifyUnresolvedMarkers(p: Protocol): Protocol {
   return fix(p) as Protocol;
 }
 
+/**
+ * Убирает повторы в «Слушали».
+ *
+ * Поле — простой перечень ФИО через запятую, и модель регулярно называет одного
+ * человека дважды, если он в расшифровке высказывался несколько раз:
+ *   «Слушали: Горбунова С.И. (Заказчик), Горбунова С.И. (Заказчик)»
+ * Промптом это лечится ненадёжно, а список уникальных значений — задача на три
+ * строки кода. Порядок сохраняем: первое упоминание остаётся на своём месте.
+ */
+export function dedupeListened(p: Protocol): Protocol {
+  const topics = p.meetingContent.topics.map((t) => {
+    const raw = String(t.listened ?? '');
+    if (!raw.trim() || !raw.includes(',')) return t;
+    const seen = new Set<string>();
+    const parts: string[] = [];
+    for (const piece of raw.split(',')) {
+      const value = piece.trim();
+      if (!value) continue;
+      const key = value.toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      parts.push(value);
+    }
+    const next = parts.join(', ');
+    return next === raw ? t : { ...t, listened: next };
+  });
+  return { ...p, meetingContent: { ...p.meetingContent, topics } };
+}
+
 /** Основа имени без падежного окончания: «Сергея» и «Сергей» → «Серге». */
 function nameStem(name: string): string {
   return String(name || '')

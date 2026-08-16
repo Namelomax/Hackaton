@@ -154,3 +154,52 @@ describe('неоднозначный фрагмент не применяетс�
     }
   });
 });
+
+/**
+ * «Решили» и его зеркало в «Резюме» — одно решение в двух полях. Правка обязана
+ * лечь в оба, иначе в резюме остаётся старый срок.
+ */
+describe('дублирование «Решили» ↔ «Резюме»', () => {
+  const mirrored = {
+    meetingDate: '09.10.2026',
+    participants: {
+      customer: { organizationName: 'ООО «Меридиан»', people: [] },
+      executor: { organizationName: '', people: [] },
+    },
+    meetingContent: {
+      topics: [
+        { title: 'Откат', listened: '', discussed: '', decided: 'Заказчик подготовит регламент отката. Срок: требует уточнения.' },
+      ],
+      summary: [
+        { question: 'Откат', decision: 'Заказчик подготовит регламент отката. Срок: требует уточнения.' },
+      ],
+    },
+  } as unknown as Protocol;
+
+  it('РЕГРЕССИЯ: два вхождения в decided и summary меняются ОБА, а не пропускаются', () => {
+    const res = applyEditsToProtocol(mirrored, [
+      {
+        find: 'Заказчик подготовит регламент отката. Срок: требует уточнения.',
+        replace: 'Заказчик подготовит регламент отката. Срок: 18.10.2026.',
+      },
+    ]);
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.applied).toHaveLength(1);
+      expect(res.protocol.meetingContent.topics[0].decided).toContain('18.10.2026');
+      expect(res.protocol.meetingContent.summary[0].decision).toContain('18.10.2026');
+      expect(res.warnings.some((w) => w.startsWith('AMBIGUOUS:'))).toBe(false);
+    }
+  });
+
+  it('markdown-разметка в find снимается: <br> и ** в полях JSON не существует', () => {
+    const res = applyEditsToProtocol(mirrored, [
+      {
+        find: 'Заказчик подготовит регламент отката.<br>**Срок:** требует уточнения.',
+        replace: 'Заказчик подготовит регламент отката. Срок: 18.10.2026.',
+      },
+    ]);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.applied).toHaveLength(1);
+  });
+});

@@ -213,6 +213,53 @@ function indexOfLoose(haystack: string, needle: string, from = 0): number {
   return haystack.toLowerCase().indexOf(needle.toLowerCase(), from);
 }
 
+/**
+ * Пути полей, в которых встретился фрагмент. Нужны, чтобы отличить настоящую
+ * неоднозначность от штатного дублирования: одно и то же решение по устройству
+ * протокола лежит и в «Решили» (topics[i].decided), и в «Резюме»
+ * (summary[j].decision). Такие два вхождения надо менять ОБА, а не пропускать.
+ */
+function occurrencePaths(protocol: Protocol, find: string): string[] {
+  const paths: string[] = [];
+  const walk = (value: unknown, path: string) => {
+    if (typeof value === 'string') {
+      if (indexOfLoose(value, find) !== -1) paths.push(path);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((v, i) => walk(v, `${path}.${i}`));
+      return;
+    }
+    if (value && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        walk(v, path ? `${path}.${k}` : k);
+      }
+    }
+  };
+  walk(protocol, '');
+  return paths;
+}
+
+const DECIDED_PATH_RX = /^meetingContent\.topics\.\d+\.decided$/;
+const SUMMARY_PATH_RX = /^meetingContent\.summary\.\d+\.decision$/;
+
+/**
+ * Зеркало — это РОВНО одно вхождение в «Решили» и одно в «Резюме»: одно решение,
+ * записанное в двух полях по устройству протокола.
+ *
+ * Условие намеренно жёсткое. Проверять «все пути — решения» нельзя: три пункта
+ * повестки с одинаковым «Срок: подлежит уточнению» тоже дадут три пути вида
+ * topics.N.decided, и правка разъедется по всем трём — ровно та тихая порча,
+ * ради устранения которой патч выключали.
+ */
+function isDecisionMirror(paths: string[]): boolean {
+  if (paths.length !== 2) return false;
+  return (
+    paths.filter((p) => DECIDED_PATH_RX.test(p)).length === 1 &&
+    paths.filter((p) => SUMMARY_PATH_RX.test(p)).length === 1
+  );
+}
+
 function countOccurrences(protocol: Protocol, find: string): number {
   let total = 0;
   mapStrings(protocol, (s) => {
@@ -373,6 +420,24 @@ export function applyEditsToProtocol(
       }
     }
 
+    // Разметка markdown в "find". Планировщик видит результат protocolToMarkdown,
+    // где есть <br> и **жирный**, а замены применяются к полям Protocol JSON —
+    // там этого нет по построению. Реальный промах со стенда:
+    //   find = «Заказчик подготовит регламент отката.<br>**Срок:** требует уточнения»
+    // Промпт запрещает брать разметку (правило 1.1), но модель правило нарушает.
+    if (countOccurrences(current, find) === 0) {
+      const plain = find
+        .replace(/<br\s*\/?>/gi, ' ')
+        .replace(/\*\*/g, '')
+        .replace(/^#{1,6}\s*/gm, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+      if (plain && plain !== find && countOccurrences(current, plain) > 0) {
+        console.log(`[protocol-patch] фрагмент найден после снятия markdown: "${plain.slice(0, 60)}"`);
+        find = plain;
+      }
+    }
+
     // Хвостовая пунктуация: модель дописывает точку, которой в поле нет
     // («…Ответственный: Исполнитель, Заказчик.» против «…Заказчик» в JSON).
     if (countOccurrences(current, find) === 0) {
@@ -421,10 +486,21 @@ export function applyEditsToProtocol(
       const looksLikeBlank =
         /(?:наименовани|названи|требует уточнени|подлежит уточнени|не указан)/i.test(find) &&
         !/срок/i.test(find);
+      // Штатное дублирование «Решили» ↔ «Резюме»: одно и то же решение по
+      // устройству протокола лежит в двух полях, и правка обязана лечь в оба.
+      // Иначе в резюме останется старый срок — заказчица это уже ловила.
+      const paths = occurrencePaths(current, find);
+      const mirrored = occurrences === 2 && isDecisionMirror(paths);
+
       if (looksLikeBlank) {
         replaceAll = true;
         console.log(
           `[protocol-patch] фрагмент встречается ${occurrences} раз и выглядит как незаполненное место — меняю везде`,
+        );
+      } else if (mirrored) {
+        replaceAll = true;
+        console.log(
+          `[protocol-patch] решение продублировано в «Резюме» (${paths.join(', ')}) — меняю оба места`,
         );
       } else {
         // РАНЬШЕ здесь менялось первое вхождение. Это и есть та самая тихая
