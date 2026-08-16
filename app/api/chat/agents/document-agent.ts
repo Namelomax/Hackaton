@@ -49,7 +49,11 @@ import {
   unifyUnresolvedMarkers,
   dedupeParticipants,
 } from '@/lib/protocol-guards';
-import { buildDateContextBlock, resolveRelativeDatesInText } from '@/lib/date-context';
+import {
+  buildDateContextBlock,
+  resolveRelativeDatesInText,
+  normalizeSpelledDates,
+} from '@/lib/date-context';
 import { documentReasoningOptions, formatUsage } from '@/lib/reasoning-options';
 import {
   cleanProtocolText,
@@ -245,7 +249,18 @@ export async function generateFinalDocument(
 
       const combined = [text, transcriptBlock].filter(Boolean).join('\n');
       const cleaned = stripTimecodeMarkers(combined);
-      return cleaned ? `${msg.role}: ${cleaned}` : '';
+      // Числительные словами превращаем в даты ДО отправки модели.
+      //
+      // Иначе «пересобери копию до пятнадцатого октября» она либо пересказывает
+      // теми же словами, либо считает ОТСУТСТВИЕМ срока и ставит «подлежит
+      // уточнению», либо выбрасывает дату из пересказа совсем — и тогда никакой
+      // гард после генерации уже не поможет, восстанавливать нечего.
+      // Проверено на стенде: три правки промпта подряд результата не дали.
+      // Якорь — сегодняшняя дата: реальная дата встречи здесь ещё не разобрана,
+      // а расшифровка свежая, поэтому год почти всегда совпадает; расхождение
+      // поправит resolveRelativeDates уже по разобранному meetingDate.
+      const withDates = normalizeSpelledDates(cleaned, new Date()).text;
+      return withDates ? `${msg.role}: ${withDates}` : '';
     })
     .filter(Boolean)
     .join('\n');

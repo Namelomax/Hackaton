@@ -6,7 +6,12 @@
  * к УЖЕ собранному протоколу перед выводом в DOCX. Все функции чистые и тестируемые.
  */
 import type { Protocol } from '@/lib/schemas/protocol-schema';
-import { parseRuDate, formatRuDate, resolveRelativeDatesInText } from '@/lib/date-context';
+import {
+  parseRuDate,
+  formatRuDate,
+  resolveRelativeDatesInText,
+  normalizeSpelledDates,
+} from '@/lib/date-context';
 
 /** Единая формулировка незаполненного места во всём документе. */
 export const UNRESOLVED_MARKER = 'требует уточнения';
@@ -504,7 +509,15 @@ export function resolveRelativeDates(
   const computedDates: string[] = [];
   const fix = (text: string, label: string): string => {
     if (!text) return text;
-    const { text: next, resolutions } = resolveRelativeDatesInText(text, anchor);
+    // Сначала числительные словами («до пятнадцатого октября»), потом
+    // относительные обороты («в четверг»). Порядок важен: после первой замены
+    // в тексте уже стоит ДД.ММ.ГГГГ, и вторая её не тронет.
+    const spelled = normalizeSpelledDates(text, anchor);
+    for (const r of spelled.resolutions) {
+      computedDates.push(r.to);
+      notes.push(`${label}: «${r.from}» → ${r.to} — проверьте`);
+    }
+    const { text: next, resolutions } = resolveRelativeDatesInText(spelled.text, anchor);
     for (const r of resolutions) {
       computedDates.push(r.to);
       notes.push(`${label}: «${r.from}» → ${r.to} (рассчитано ${anchorLabel}) — проверьте`);
