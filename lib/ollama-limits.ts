@@ -49,6 +49,52 @@ export function ollamaFileTurnMaxOutputTokens(): number {
 }
 
 /**
+ * НАСТОЯЩЕЕ окно модели на шлюзе — то, что отдаёт `max_model_len` в
+ * GET $OLLAMA_BASE_URL/models. Это НЕ то же самое, что OLLAMA_CONTEXT_LENGTH:
+ * та переменная — желаемый бюджет, и она вполне может врать.
+ *
+ * Реальный отказ (16.08.2026): в env стояло 65536, у qwen3.5-35b окно 32768.
+ * Лимит вывода считался как 0.4 × 65536 = 26214, промпт занял 6555, сумма
+ * 32769 — ровно на один токен больше окна. Шлюз ответил 400, пользователь
+ * увидел бесконечный спиннер и пустую панель.
+ *
+ * Значение по умолчанию соответствует текущей модели. Меняете модель — меняйте
+ * и эту переменную вместе с FIXED_CHAT_MODEL и ALLOWED_OLLAMA_MODELS.
+ */
+export function llmMaxModelLen(): number {
+  const n = Number(process.env.LLM_MAX_MODEL_LEN);
+  return Number.isFinite(n) && n > 0 ? n : 32768;
+}
+
+/**
+ * Урезает max_tokens так, чтобы промпт и ответ вместе поместились в окно.
+ *
+ * Шлюз считает сумму `prompt_tokens + max_tokens` и отклоняет запрос целиком,
+ * если она превышает окно хотя бы на единицу. Ошибка приходит ДО генерации,
+ * поэтому ни стрима, ни текста пользователь не получает — только висящий
+ * спиннер.
+ *
+ * promptChars → токены по той же оценке, что и везде в проекте (2.34 символа
+ * на токен для русского), с запасом RESERVE на расхождение оценки с реальным
+ * токенизатором.
+ */
+export function clampMaxTokensToWindow(
+  promptChars: number,
+  requestedMax: number,
+): { max: number; clamped: boolean } {
+  const window = llmMaxModelLen();
+  const RESERVE = 512;
+  const promptTokens = Math.ceil(promptChars / 2.34);
+  const room = window - promptTokens - RESERVE;
+  // Меньше 256 токенов на ответ — запрос всё равно бессмыслен; отдаём этот
+  // минимум и пусть шлюз ответит внятной ошибкой про длину промпта, а не мы
+  // молча пришлём max_tokens=0.
+  const allowed = Math.max(256, room);
+  if (requestedMax <= allowed) return { max: requestedMax, clamped: false };
+  return { max: allowed, clamped: true };
+}
+
+/**
  * Полный JSON протокола может быть объёмным — отдельный, больший лимит.
  * 8192 не хватало: у qwen3 это общий бюджет на размышления и JSON, длинный
  * протокол обрывался на середине. Держим тот же запас, что и в облаке.

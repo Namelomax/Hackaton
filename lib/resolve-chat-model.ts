@@ -5,6 +5,8 @@ import {
   applyOllamaOpenAiCompatOptions,
   ollamaHardCapOutputTokens,
   supportsOllamaExtensions,
+  clampMaxTokensToWindow,
+  llmMaxModelLen,
 } from '@/lib/ollama-limits';
 import https from 'node:https';
 import http from 'node:http';
@@ -261,6 +263,25 @@ export function resolveChatLanguageModel(options: ResolveChatModelOptions = {}) 
             const requestedMax =
               typeof parsed.max_tokens === 'number' ? parsed.max_tokens : cap;
             parsed.max_tokens = Math.min(requestedMax, cap);
+
+            // Последний рубеж перед отправкой: промпт и ответ вместе обязаны
+            // помещаться в окно модели. Шлюз проверяет ровно эту сумму и на
+            // превышение отвечает 400 ДО генерации — пользователь видит вечный
+            // спиннер. Считаем здесь, потому что здесь впервые известны разом и
+            // финальный max_tokens, и полный текст запроса.
+            {
+              const promptChars = JSON.stringify(parsed.messages ?? '').length;
+              const { max, clamped } = clampMaxTokensToWindow(
+                promptChars,
+                parsed.max_tokens as number,
+              );
+              if (clamped) {
+                console.warn(
+                  `[llm→] max_tokens урезан ${parsed.max_tokens} → ${max}: промпт ≈${Math.ceil(promptChars / 2.34)} токенов, окно модели ${llmMaxModelLen()}`,
+                );
+                parsed.max_tokens = max;
+              }
+            }
             // keep_alive: сколько держать модель в VRAM после запроса.
             // Раньше было жёстко -1 (вечно) — на общей карте это копило модели при
             // переключении/RAG до OOM. Теперь конечный дефолт «30m» и override через
