@@ -13,7 +13,7 @@
  * целиком и вызывающий код уходит на полную генерацию.
  */
 
-import { generateObject } from 'ai';
+import { generateObject, generateText } from 'ai';
 import { z } from 'zod';
 import {
   extractNoObjectGeneratedText,
@@ -79,8 +79,13 @@ export async function planProtocolPatch(options: {
   documentMarkdown: string;
   userRequest: string;
   abortSignal?: AbortSignal;
+  /**
+   * Замечания к предыдущей попытке: какие "find" не нашлись или оказались
+   * неоднозначными. Планировщик получает их и берёт кусок длиннее.
+   */
+  previousFailures?: string[];
 }): Promise<ProtocolPatchPlan> {
-  const { model, documentMarkdown, userRequest, abortSignal } = options;
+  const { model, documentMarkdown, userRequest, abortSignal, previousFailures } = options;
   // Текст просьбы НЕ переписываем — решает модель. Но если в ней есть
   // относительная дата, считаем её и кладём рядом готовой подсказкой: модель
   // сама плохо считает от «сегодня» (выдавала то 20.06.2025, то сегодняшнее
@@ -96,13 +101,23 @@ export async function planProtocolPatch(options: {
 
   // Справку о дате кладём В НАЧАЛО: в хвосте промпта длиной в десятки тысяч
   // символов модель её попросту не замечала.
+  const retryBlock =
+    previousFailures && previousFailures.length > 0
+      ? '\n\n=== ПРЕДЫДУЩАЯ ПОПЫТКА НЕ ПРОШЛА ===\n' +
+        previousFailures.map((f) => `- ${f}`).join('\n') +
+        '\nВерни замены заново. Для каждого проблемного места возьми БОЛЬШЕ окружающего текста, ' +
+        'чтобы "find" встречался в протоколе ровно один раз: добавь начало предложения, ' +
+        'название пункта повестки или соседнюю фразу. Копируй символ в символ из протокола выше.'
+      : '';
+
   const prompt =
     buildDateContextBlock(today).trim() +
     '\n\n' +
     PATCH_PLANNER_PROMPT.replace('{{DOCUMENT}}', documentMarkdown).replace(
       '{{REQUEST}}',
       userRequest + dateHint,
-    );
+    ) +
+    retryBlock;
 
   try {
     const result = await generateObject({
@@ -134,6 +149,38 @@ export async function planProtocolPatch(options: {
       }
       console.warn('[protocol-patch] восстановленный ответ не подошёл под схему плана');
     }
+
+    // Запасной путь без structured output.
+    //
+    // generateObject просит у шлюза response_format: json_schema. vLLM отвечает
+    // на это 400, если поднят без guided decoding — ровно так же, как отверг
+    // поле `tools` (см. chat-agent). Тогда планировщик молча возвращал
+    // canPatch=false, и точечные правки НИКОГДА не срабатывали, а по логам это
+    // выглядело как «модель решила, что патчить нельзя».
+    // Тот же приём уже применён в lib/anonymization/verify-inflected.ts.
+    try {
+      const { text } = await generateText({
+        model,
+        prompt: prompt + '\n\nОтветь ТОЛЬКО JSON-объектом, без пояснений и без ```.',
+        temperature: 0,
+        maxOutputTokens: 2048,
+        providerOptions: documentReasoningOptions(),
+        ...(abortSignal ? { abortSignal } : {}),
+      });
+      const obj = parseLooseJsonObject(String(text ?? ''));
+      const parsed = obj ? PatchPlanSchema.safeParse(obj) : null;
+      if (parsed?.success) {
+        console.warn('[protocol-patch] план получен запасным путём (без structured output)');
+        return parsed.data;
+      }
+      console.warn('[protocol-patch] запасной путь: ответ не подошёл под схему плана');
+    } catch (fallbackErr) {
+      console.warn(
+        '[protocol-patch] запасной путь тоже не отработал:',
+        (fallbackErr as Error)?.message ?? fallbackErr,
+      );
+    }
+
     console.warn('[protocol-patch] план замен не построен:', (err as Error)?.message ?? err);
     return { canPatch: false, reason: 'planner failed', edits: [] };
   }
@@ -357,7 +404,7 @@ export function applyEditsToProtocol(
     let replaceAll = Boolean((edit as any)?.all);
     const occurrences = countOccurrences(current, find);
     if (occurrences === 0) {
-      warnings.push(`не нашёл в протоколе фрагмент «${find.slice(0, 70)}» — проверьте это место вручную`);
+      warnings.push(`NOTFOUND:не нашёл в протоколе фрагмент «${find.slice(0, 70)}»`);
       console.log(`[protocol-patch] пропуск замены: фрагмент не найден — "${find.slice(0, 60)}"`);
       continue;
     }
@@ -380,10 +427,18 @@ export function applyEditsToProtocol(
           `[protocol-patch] фрагмент встречается ${occurrences} раз и выглядит как незаполненное место — меняю везде`,
         );
       } else {
+        // РАНЬШЕ здесь менялось первое вхождение. Это и есть та самая тихая
+        // порча документа, из-за которой патч выключали: просили сменить срок в
+        // третьем пункте, а менялся первый, и пользователь видел «правка
+        // внесена». Промах строкой хуже, чем непроставленная правка: непроставленную
+        // видно, подменённую — нет.
         warnings.push(
-          `фрагмент «${find.slice(0, 60)}» встречается ${occurrences} раз — заменил только первое вхождение, проверьте остальные`,
+          `AMBIGUOUS:фрагмент «${find.slice(0, 60)}» встречается ${occurrences} раз — нужен более длинный кусок текста`,
         );
-        console.log(`[protocol-patch] неоднозначный фрагмент (${occurrences}) — меняю первое вхождение`);
+        console.log(
+          `[protocol-patch] пропуск: неоднозначный фрагмент (${occurrences} вхождений) — "${find.slice(0, 60)}"`,
+        );
+        continue;
       }
     }
 
@@ -427,8 +482,14 @@ export function applyEditsToProtocol(
     }
   }
 
+  // Ноль применённых замен — это НЕ ошибка разбора, а результат: замены были,
+  // но каждая оказалась неоднозначной или не нашлась. Возвращаем ok вместе с
+  // warnings, чтобы вызывающий код мог переспросить планировщика с разбором
+  // промаха. Раньше здесь стоял ok:false, и warnings терялись ровно в том
+  // случае, когда они нужнее всего. Решение «уйти на полную генерацию»
+  // принимает вызывающий код по пустому applied.
   if (applied.length === 0) {
-    return { ok: false, reason: 'ни одна замена не подошла' };
+    return { ok: true, protocol, applied: [], warnings: [...new Set(warnings)] };
   }
   // Одинаковые предупреждения по десятку однотипных замен читать невозможно.
   return { ok: true, protocol: current, applied, warnings: [...new Set(warnings)] };

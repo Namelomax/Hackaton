@@ -881,7 +881,7 @@ async function tryPatchExistingProtocol(options: {
     ? applyMappingForward(userRequest, anonMapping)
     : userRequest;
 
-  const plan = await planProtocolPatch({
+  const planOptions = {
     model,
     // Без markUnresolvedInMarkdown: значок ⚠️ живёт только в отрисовке, в полях
     // JSON его нет. Показав модели текст со значком, мы получали find, который
@@ -889,7 +889,8 @@ async function tryPatchExistingProtocol(options: {
     documentMarkdown: protocolToMarkdown(baseForModel),
     userRequest: requestForModel,
     abortSignal,
-  });
+  };
+  let plan = await planProtocolPatch(planOptions);
 
   if (!plan.canPatch || plan.edits.length === 0) {
     // Текст правки в логе обязателен: без него «нет замен» неразличимо —
@@ -903,7 +904,40 @@ async function tryPatchExistingProtocol(options: {
     return null;
   }
 
-  const applied = applyEditsToProtocol(baseForModel, plan.edits);
+  let applied = applyEditsToProtocol(baseForModel, plan.edits);
+
+  /**
+   * Вторая попытка планировщика с разбором промаха.
+   *
+   * Раньше неоднозначный фрагмент («Срок: требует уточнения» встречается в трёх
+   * пунктах) применялся к ПЕРВОМУ вхождению — то есть правка молча ложилась не
+   * туда. Теперь такие замены пропускаются, но просто пропустить мало:
+   * пользователь останется без правки. Показываем модели, что именно не
+   * получилось, и просим взять кусок текста длиннее. Планировщик — самый
+   * короткий вызов в пайплайне, вторая попытка дешевле полной пересборки.
+   */
+  const retryable = (applied.ok ? applied.warnings : [])
+    .filter((w) => w.startsWith('AMBIGUOUS:') || w.startsWith('NOTFOUND:'))
+    .map((w) => w.replace(/^(AMBIGUOUS|NOTFOUND):/, ''));
+
+  if (retryable.length > 0) {
+    console.log(`[protocol-patch] вторая попытка плана, проблемных замен: ${retryable.length}`);
+    const retryPlan = await planProtocolPatch({ ...planOptions, previousFailures: retryable });
+    if (retryPlan.canPatch && retryPlan.edits.length > 0) {
+      const retryApplied = applyEditsToProtocol(baseForModel, retryPlan.edits);
+      const appliedCount = (r: typeof retryApplied) => (r.ok ? r.applied.length : -1);
+      // Берём вторую попытку, только если она применила БОЛЬШЕ замен: иначе
+      // рискуем ухудшить результат ради самой попытки.
+      if (appliedCount(retryApplied) > appliedCount(applied)) {
+        console.log(
+          `[protocol-patch] вторая попытка лучше: ${appliedCount(retryApplied)} замен против ${appliedCount(applied)}`,
+        );
+        plan = retryPlan;
+        applied = retryApplied;
+      }
+    }
+  }
+
   if (!applied.ok) {
     console.log(
       `[protocol-patch] замены не применены (${applied.reason}) → полная генерация`,
@@ -911,6 +945,15 @@ async function tryPatchExistingProtocol(options: {
     );
     return null;
   }
+  // Ни одна замена не легла — точечная правка ничего не дала, документ вернулся
+  // бы пользователю без изменений с бодрым «правка внесена». Уходим на полную.
+  if (applied.applied.length === 0) {
+    console.log('[protocol-patch] ни одна замена не применилась → полная генерация');
+    return null;
+  }
+  // Служебные префиксы нужны были только для повторной попытки — в текст
+  // пользователю они не идут.
+  applied.warnings = applied.warnings.map((w) => w.replace(/^(AMBIGUOUS|NOTFOUND):/, ''));
 
   // Нормализующие гарды. Патч раньше шёл вообще мимо них, и в документ могли
   // попасть вещи, которые полная сборка отфильтровала бы: относительная дата
