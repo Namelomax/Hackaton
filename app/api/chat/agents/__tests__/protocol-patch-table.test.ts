@@ -81,3 +81,76 @@ describe('applyEditsToProtocol со строкой таблицы', () => {
     }
   });
 });
+
+/**
+ * Ради этого патч и выключали: правка молча ложилась не в тот пункт.
+ * Пользователь видел «правка внесена», а изменился соседний срок.
+ */
+describe('неоднозначный фрагмент не применяется к первому вхождению', () => {
+  const threeTopics = {
+    meetingDate: '09.10.2026',
+    participants: {
+      customer: { organizationName: 'ООО «Меридиан»', people: [] },
+      executor: { organizationName: '', people: [] },
+    },
+    meetingContent: {
+      topics: [
+        { title: 'Копии', listened: '', discussed: '', decided: 'Срок: подлежит уточнению.' },
+        { title: 'Перенос', listened: '', discussed: '', decided: 'Срок: подлежит уточнению.' },
+        { title: 'Откат', listened: '', discussed: '', decided: 'Срок: подлежит уточнению.' },
+      ],
+      summary: [],
+    },
+  } as unknown as Protocol;
+
+  it('замена пропускается и помечается как AMBIGUOUS, документ не меняется', () => {
+    const res = applyEditsToProtocol(threeTopics, [
+      { find: 'Срок: подлежит уточнению.', replace: 'Срок: 20.10.2026.' },
+    ]);
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.applied).toHaveLength(0);
+      expect(res.warnings.some((w) => w.startsWith('AMBIGUOUS:'))).toBe(true);
+      // Ни один из трёх пунктов не тронут.
+      for (const t of res.protocol.meetingContent.topics) {
+        expect(t.decided).toBe('Срок: подлежит уточнению.');
+      }
+    }
+  });
+
+  it('с достаточным окружением та же правка применяется ровно в нужный пункт', () => {
+    const withContext = {
+      ...threeTopics,
+      meetingContent: {
+        topics: [
+          { title: 'Копии', listened: '', discussed: '', decided: 'Восстановление копии. Срок: подлежит уточнению.' },
+          { title: 'Перенос', listened: '', discussed: '', decided: 'Перенос базы. Срок: подлежит уточнению.' },
+        ],
+        summary: [],
+      },
+    } as unknown as Protocol;
+
+    const res = applyEditsToProtocol(withContext, [
+      { find: 'Перенос базы. Срок: подлежит уточнению.', replace: 'Перенос базы. Срок: 20.10.2026.' },
+    ]);
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.applied).toHaveLength(1);
+      expect(res.protocol.meetingContent.topics[0].decided).toBe(
+        'Восстановление копии. Срок: подлежит уточнению.',
+      );
+      expect(res.protocol.meetingContent.topics[1].decided).toBe('Перенос базы. Срок: 20.10.2026.');
+    }
+  });
+
+  it('ненайденный фрагмент помечается NOTFOUND — для второй попытки планировщика', () => {
+    const res = applyEditsToProtocol(threeTopics, [
+      { find: 'такой фразы в протоколе нет совсем', replace: 'что угодно' },
+    ]);
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.applied).toHaveLength(0);
+      expect(res.warnings.some((w) => w.startsWith('NOTFOUND:'))).toBe(true);
+    }
+  });
+});
