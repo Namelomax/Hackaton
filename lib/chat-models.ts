@@ -7,34 +7,35 @@
  * другую модель, и на общей карте окажутся загружены две сразу → OOM. Именно
  * это уже случалось, когда тут стоял qwen, а в env — gemma.
  *
- * Сейчас qwen3.5-35b (Qwen3.5-35B-A3B-FP8 на vLLM за шлюзом). До 14.08.2026
- * здесь стояла gemma-4-31b — шлюз её снял, и КАЖДЫЙ запрос падал с
- * `HTTP 404: The model gemma-4-31b does not exist`: и локальный режим, и
- * LLM-слой анонимизатора (он ходит по тому же OLLAMA_BASE_URL), то есть облачный
- * режим тоже, потому что он не доживал до OpenRouter.
+ * Сейчас qwen3.8-27B. История замен на шлюзе — каждая ломала ВСЁ до правки
+ * имени здесь: gemma-4-31b → qwen3.5-35b (14.08.2026) → qwen3.8-27B (26.08.2026).
+ * Симптом всегда один: `HTTP 404: The model <старое имя> does not exist` на
+ * КАЖДОМ запросе — и локальный режим, и LLM-слой анонимизатора (он ходит по
+ * тому же OLLAMA_BASE_URL), то есть облачный режим тоже, потому что он не
+ * доживал до OpenRouter.
  *
  * Проверять имя нужно так — оно должно совпадать символ в символ:
  *   curl -s "$OLLAMA_BASE_URL/models" -H "Authorization: Bearer $OLLAMA_API_KEY"
  *
- * Оттуда же берётся max_model_len: у qwen3.5-35b это 32768, а не 128k. Бюджет
- * контекста задаётся в OLLAMA_CONTEXT_LENGTH и в effectiveOllamaContextTokens()
+ * Оттуда же берётся max_model_len. Бюджет контекста задаётся в
+ * OLLAMA_CONTEXT_LENGTH, LLM_MAX_MODEL_LEN и в effectiveOllamaContextTokens()
  * (app/api/chat/route.ts) — если оставить больше, чем держит модель, шлюз молча
  * отрежет НАЧАЛО промпта, то есть системные правила регламента.
  */
-export const FIXED_CHAT_MODEL = 'qwen3.5-35b';
+export const FIXED_CHAT_MODEL = 'qwen3.8-27B';
 
 /**
  * Разрешённые модели «локального» провайдера. Кавычки не случайны: с переездом
  * на внешний шлюз (OLLAMA_BASE_URL указывает на него) провайдер остался
  * OpenAI-совместимым, а вот идентификаторы моделей теперь в стиле шлюза
- * (`qwen3.5-35b`), а не тегов Ollama (`qwen3.5:35b`). Имя должно совпадать с
- * тем, что отдаёт GET {BASE_URL}/models, символ в символ.
+ * (`qwen3.8-27B`), а не тегов Ollama (`qwen3.8:27b`). Имя должно совпадать с
+ * тем, что отдаёт GET {BASE_URL}/models, символ в символ — включая регистр.
  */
-export const DEFAULT_LOCAL_CHAT_MODELS = ['qwen3.5-35b'] as const;
+export const DEFAULT_LOCAL_CHAT_MODELS = ['qwen3.8-27B'] as const;
 
 /** Короткие подписи для селектора моделей в UI */
 export const LOCAL_MODEL_LABELS: Record<string, string> = {
-  'qwen3.5-35b': 'Qwen3.5 35B',
+  'qwen3.8-27B': 'Qwen3.8 27B',
 };
 
 /**

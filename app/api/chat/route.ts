@@ -229,6 +229,10 @@ const DEFAULT_OLLAMA_CONTEXT_TOKENS = 131072;
  * Поэтому каждая известная модель тут ограничивается явно.
  */
 const MODEL_CONTEXT_CAPS: { match: (id: string) => boolean; cap: number }[] = [
+  // Qwen3.8-27B на vLLM за шлюзом: max_model_len = 32768 (проверено 26.08.2026
+  // по GET /v1/models). Завышать нельзя: шлюз МОЛЧА отрежет начало промпта
+  // вместе с регламентом.
+  { match: (id) => id.includes('qwen3.8-27b') || id.includes('qwen3.8:27b'), cap: 32768 },
   // Qwen3.5-35B-A3B-FP8 за шлюзом: max_model_len = 32768 (проверено 14.08.2026).
   { match: (id) => id.includes('qwen3.5-35b') || id.includes('qwen3.5:35b'), cap: 32768 },
   // qwen3:14b в GGUF часто n_ctx_train ≈ 40960 — 128k не поднимется.
