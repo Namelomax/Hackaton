@@ -31,7 +31,7 @@ function loadEnv(file: string) {
 
 const BASE = process.env.OLLAMA_BASE_URL;
 const KEY = process.env.OLLAMA_API_KEY || 'ollama';
-const MODEL = (process.env.ALLOWED_OLLAMA_MODELS || 'qwen3.5-35b').split(',')[0].trim();
+const MODEL = (process.env.ALLOWED_OLLAMA_MODELS || 'qwen3.8-27B').split(',')[0].trim();
 if (!BASE) { console.error('OLLAMA_BASE_URL не задан'); process.exit(2); }
 
 function post(url: string, body: unknown): Promise<{ status: number; body: string }> {

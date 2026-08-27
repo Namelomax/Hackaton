@@ -7,7 +7,7 @@ describe('промпт и ответ должны помещаться в окн
     else process.env.LLM_MAX_MODEL_LEN = OLD;
   });
 
-  it('по умолчанию окно 32768 — как у qwen3.5-35b на шлюзе', () => {
+  it('по умолчанию окно 32768 — как у qwen3.8-27B на шлюзе', () => {
     delete process.env.LLM_MAX_MODEL_LEN;
     expect(llmMaxModelLen()).toBe(32768);
   });
