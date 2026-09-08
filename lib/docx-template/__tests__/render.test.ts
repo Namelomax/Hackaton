@@ -109,4 +109,21 @@ describe('renderProtocolDocx', () => {
     expect(await read(first)).toContain('ПРОТОКОЛ №7');
     expect(await read(second)).toContain('ПРОТОКОЛ №99');
   });
+
+  it('кладёт на диск открываемый образец для визуальной сверки', async () => {
+    const { mkdir, readFile, writeFile } = await import('node:fs/promises');
+    await mkdir('tmp/docx-preview', { recursive: true });
+
+    const target = 'tmp/docx-preview/sample.docx';
+    await writeFile(target, await renderProtocolDocx(SAMPLE_PROTOCOL));
+
+    // Файл кладём безусловно: tmp/ в .gitignore, зато образец для сверки
+    // всегда свежий. Проверяем, что на диск лёг именно открываемый пакет.
+    const written = await readFile(target);
+    expect(written.length).toBeGreaterThan(10_000);
+
+    const zip = await JSZip.loadAsync(written);
+    const doc = await zip.file('word/document.xml')!.async('string');
+    expect(doc).toContain('ПРОТОКОЛ №7');
+  });
 });
