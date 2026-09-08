@@ -20,6 +20,7 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/lib/docx-template/assets ./lib/docx-template/assets
 USER nextjs
 EXPOSE 3000
 CMD ["npm", "run", "start"]
