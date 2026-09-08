@@ -4,24 +4,34 @@
  */
 import {
   cleanProtocolText,
+  formatApprovalOrgLine,
   formatContractBlock,
   isValidOrgDisplayName,
   isValidParticipantRow,
   parseInlineMarkdownBold,
+  resolveApprovalForDocument,
+  splitDecisionSegments,
 } from '@/lib/protocol-markdown-format';
 import type { Protocol } from '@/lib/schemas/protocol-schema';
 import { cell, paragraph, row, run, table } from './ooxml';
 import {
   IND_AGENDA_HANGING,
   IND_AGENDA_LEFT,
+  IND_APPROVAL_NAME_LEFT,
+  IND_APPROVAL_NAME_RIGHT,
   IND_SECTION_HANGING,
   IND_SECTION_LEFT,
+  IND_TOPIC_HANGING,
+  IND_TOPIC_LEFT,
   LINE_115,
   NUM_AGENDA,
   NUM_SECTION,
+  NUM_TOPIC,
   SPACING_AFTER_BLOCK,
   SZ_TITLE,
+  TBL_APPROVAL,
   TBL_PARTICIPANTS,
+  TBL_SUMMARY,
 } from './style';
 
 /** Пустой абзац-разделитель. После таблицы обязателен: иначе Word склеит соседние таблицы. */
@@ -156,5 +166,182 @@ export function buildParticipantsXml(protocol: Protocol): string {
     sideLabel('Исполнитель', executor.organizationName) +
     participantsTable(executor.people) +
     spacer()
+  );
+}
+
+/** «Слушали:» / «Обсудили:» / «Решили:». Многострочное значение — по абзацу на строку. */
+function labeledBlock(label: string, value: string): string {
+  const text = cleanProtocolText(value);
+  if (!text) return '';
+
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+
+  if (lines.length <= 1) {
+    return paragraph(run(`${label} `, { bold: true }) + inlineRuns(text), {
+      indentFirstLine: 0,
+      spacingLine: LINE_115,
+    });
+  }
+
+  return (
+    paragraph(run(label, { bold: true }), { indentFirstLine: 0, spacingLine: LINE_115 }) +
+    lines
+      .map((line) =>
+        paragraph(run('• ') + inlineRuns(line), {
+          indentFirstLine: 0,
+          indentLeft: IND_TOPIC_LEFT,
+          spacingLine: LINE_115,
+        }),
+      )
+      .join('')
+  );
+}
+
+export function buildMeetingContentXml(protocol: Protocol): string {
+  const topics = protocol.meetingContent.topics
+    .map((topic) =>
+      [
+        paragraph(inlineRuns(topic.title, { bold: true }), {
+          numId: NUM_TOPIC,
+          indentLeft: IND_TOPIC_LEFT,
+          indentHanging: IND_TOPIC_HANGING,
+          spacingLine: LINE_115,
+        }),
+        labeledBlock('Слушали:', topic.listened),
+        labeledBlock('Обсудили:', topic.discussed),
+        labeledBlock('Решили:', topic.decided),
+        spacer(),
+      ].join(''),
+    )
+    .join('');
+
+  return sectionHeading('Содержание встречи:') + topics;
+}
+
+/** Ячейка решения: основной текст, затем «Срок:» и «Ответственные:» отдельными абзацами. */
+function decisionParagraphs(raw: string): string {
+  const segments = splitDecisionSegments(raw);
+  if (segments.length === 0) return paragraph('', { indentFirstLine: 0 });
+
+  return segments
+    .map((segment) => {
+      // \w не покрывает кириллицу, поэтому суффикс «-ый/-ая/-ые» задан явным классом.
+      const m = segment.match(/^(Срок\s*:|Ответственн[а-яё]*\s*:)\s*([\s\S]*)/i);
+      if (m) {
+        const rest = m[2].trim();
+        return paragraph(run(m[1].trim(), { bold: true }) + (rest ? run(` ${rest}`) : ''), {
+          indentFirstLine: 0,
+        });
+      }
+      return paragraph(inlineRuns(segment), { indentFirstLine: 0 });
+    })
+    .join('');
+}
+
+export function buildSummaryXml(protocol: Protocol): string {
+  const rows = protocol.meetingContent.summary;
+  if (rows.length === 0) return '';
+
+  const [wQuestion, wDecision] = TBL_SUMMARY.grid;
+  const centered = { align: 'center', indentFirstLine: 0 } as const;
+
+  const header = row(
+    cell(paragraph(run('Обсуждаемые вопросы'), centered), { width: wQuestion }) +
+      cell(paragraph(run('Принятые решения'), centered), { width: wDecision }),
+  );
+
+  const body = rows
+    .map((r) =>
+      row(
+        cell(paragraph(inlineRuns(r.question), { indentFirstLine: 0 }), { width: wQuestion }) +
+          cell(decisionParagraphs(r.decision), { width: wDecision }),
+      ),
+    )
+    .join('');
+
+  return (
+    paragraph(run('Резюме:', { underline: true }), { indentFirstLine: 0, spacingLine: LINE_115 }) +
+    table(header + body, {
+      grid: TBL_SUMMARY.grid,
+      width: TBL_SUMMARY.width,
+      borders: 'single',
+    }) +
+    spacer()
+  );
+}
+
+export function buildApprovalXml(protocol: Protocol): string {
+  const sides = resolveApprovalForDocument(protocol);
+  const [wNameLeft, wSignLeft, wNameRight, wSignRight] = TBL_APPROVAL.grid;
+
+  const headSide = (width: number, title: string, organization: string) =>
+    cell(
+      paragraph(run(title, { bold: true }), { align: 'center' }) +
+        paragraph(run(formatApprovalOrgLine(organization)), { align: 'center' }),
+      { width, gridSpan: 2, borders: 'none' },
+    );
+
+  const header = row(
+    headSide(wNameLeft + wSignLeft, 'Со стороны Заказчика', sides.customer.organization) +
+      headSide(wNameRight + wSignRight, 'Со стороны Исполнителя', sides.executor.organization),
+  );
+
+  const customerSignatories = sides.customer.signatories;
+  const executorSignatories = sides.executor.signatories;
+  const rowCount = Math.max(customerSignatories.length, executorSignatories.length, 1);
+
+  const body: string[] = [];
+  for (let i = 0; i < rowCount; i++) {
+    const customer = customerSignatories[i]?.trim() ?? '';
+    const executor = executorSignatories[i]?.trim() ?? '';
+
+    // Сторона без подписантов всё равно получает одну линию для подписи от руки.
+    const customerHasLine = i < Math.max(customerSignatories.length, 1);
+    const executorHasLine = i < Math.max(executorSignatories.length, 1);
+
+    body.push(
+      row(
+        cell(paragraph(run(customer), { indentLeft: IND_APPROVAL_NAME_LEFT, indentFirstLine: 0 }), {
+          width: wNameLeft,
+          borders: 'none',
+        }) +
+          cell(paragraph(''), {
+            width: wSignLeft,
+            borders: customerHasLine ? 'bottom' : 'none',
+          }) +
+          cell(
+            paragraph(run(executor), { indentLeft: IND_APPROVAL_NAME_RIGHT, indentFirstLine: 0 }),
+            { width: wNameRight, borders: 'none' },
+          ) +
+          cell(paragraph(''), {
+            width: wSignRight,
+            borders: executorHasLine ? 'bottom' : 'none',
+          }),
+      ),
+    );
+  }
+
+  return (
+    sectionHeading('Согласовано:') +
+    table(header + body.join(''), {
+      grid: TBL_APPROVAL.grid,
+      width: TBL_APPROVAL.width,
+      indent: TBL_APPROVAL.indent,
+      borders: 'single',
+    })
+  );
+}
+
+export function buildProtocolBodyXml(protocol: Protocol): string {
+  return (
+    buildHeaderXml(protocol) +
+    buildMeetingDateXml(protocol) +
+    buildAgendaXml(protocol) +
+    buildParticipantsXml(protocol) +
+    buildMeetingContentXml(protocol) +
+    buildSummaryXml(protocol) +
+    buildApprovalXml(protocol) +
+    // Абзац после последней таблицы: без него Word считает файл повреждённым.
+    paragraph('')
   );
 }
