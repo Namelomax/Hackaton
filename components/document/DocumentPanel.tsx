@@ -432,7 +432,16 @@ export const DocumentPanel = ({
         ),
       });
 
-      if (!response.ok) throw new Error('Failed to download docx');
+      if (!response.ok) {
+        if (response.status === 422) {
+          toast.error('Не удалось собрать документ', {
+            description:
+              'Не распознана структура протокола. Откройте протокол и пересоздайте его.',
+          });
+          return;
+        }
+        throw new Error('Failed to download docx');
+      }
 
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
@@ -445,6 +454,9 @@ export const DocumentPanel = ({
       URL.revokeObjectURL(url);
     } catch (error) {
       console.error('Error downloading docx:', error);
+      toast.error('Не удалось собрать документ', {
+        description: 'Не распознана структура протокола. Откройте протокол и пересоздайте его.',
+      });
     }
   };
 

@@ -20,9 +20,33 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing content or filename' }, { status: 400 });
     }
 
-    const buffer = content
-      ? Buffer.from(content, 'base64')
-      : await generateProtocolDocx(markdownToProtocol(markdown));
+    let buffer: Buffer;
+
+    if (content) {
+      buffer = Buffer.from(content, 'base64');
+    } else {
+      const protocol = markdownToProtocol(markdown);
+
+      // Если разбор дал пустой каркас на непустом (не коротком) входе — это не
+      // «пользователь написал мало», а маркер того, что markdownToProtocol не
+      // распознал структуру. Раньше в этом случае молча уходил .docx с одним
+      // скелетом раздела 1 и без единого слова пользователя (см. A2 в отчёте).
+      const isStructureEmpty =
+        protocol.agenda.items.length === 0 &&
+        protocol.participants.customer.people.length === 0 &&
+        protocol.participants.executor.people.length === 0 &&
+        protocol.meetingContent.topics.length === 0 &&
+        protocol.meetingContent.summary.length === 0;
+
+      if (String(markdown ?? '').trim().length > 200 && isStructureEmpty) {
+        return NextResponse.json(
+          { error: 'Не удалось разобрать структуру протокола' },
+          { status: 422 },
+        );
+      }
+
+      buffer = await generateProtocolDocx(protocol);
+    }
 
     return new NextResponse(
       // Buffer, полученный через await (тип Buffer<ArrayBufferLike>), не совпадает
