@@ -5,7 +5,11 @@
  * панели руками, и DOCX надо пересобрать из правленого текста. Формат входа
  * фиксирован — его порождает protocolToMarkdown. Детерминированно, без LLM.
  */
-import { isMarkdownTableSeparatorRow, isValidParticipantRow } from './protocol-markdown-format';
+import {
+  fixProtocolSectionHeadingsInMarkdown,
+  isMarkdownTableSeparatorRow,
+  isValidParticipantRow,
+} from './protocol-markdown-format';
 import { coerceProtocolPartial, type Protocol } from './schemas/protocol-schema';
 
 const SECTION_RX = /^##\s*(\d{1,2})\.\s*(.+?)\s*$/;
@@ -239,7 +243,11 @@ function parseApproval(body: string[]) {
 }
 
 export function markdownToProtocol(markdown: string): Protocol {
-  const lines = stripUnresolvedMarkers(markdown).replace(/\r\n?/g, '\n').split('\n');
+  // Раньше нормализация «1. Раздел» → «## 1. Раздел» применялась только для показа
+  // в панели (lib/document/formatting.ts). На сервер уходил сырой markdown, и
+  // старые протоколы без «## N.» разбирались в пустой каркас (см. A2 в отчёте).
+  const normalized = fixProtocolSectionHeadingsInMarkdown(stripUnresolvedMarkers(markdown));
+  const lines = normalized.replace(/\r\n?/g, '\n').split('\n');
   const { preamble, sections } = splitSections(lines);
 
   const head = parsePreamble(preamble);

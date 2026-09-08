@@ -42,4 +42,39 @@ describe('POST /api/download-docx', () => {
     const response = await POST(request({ filename: 'Протокол.docx' }) as never);
     expect(response.status).toBe(400);
   });
+
+  it('разбирает старую нумерацию разделов без markdown-заголовков «## N.» (A1+A2.1)', async () => {
+    // Легаси-протокол: сервер получал именно такой текст до того, как \b перестал
+    // ломать распознавание разделов (см. A1 в отчёте) — секции шли строками
+    // «1. Дата собрания: …» без «## ».
+    const legacyMarkdown = protocolToMarkdown(SAMPLE_PROTOCOL).replace(/^## /gm, '');
+    expect(legacyMarkdown).not.toContain('##');
+
+    const response = await POST(request({
+      markdown: legacyMarkdown,
+      filename: 'Протокол.docx',
+    }) as never);
+
+    expect(response.status).toBe(200);
+
+    const zip = await JSZip.loadAsync(Buffer.from(await response.arrayBuffer()));
+    const doc = await zip.file('word/document.xml')!.async('string');
+    expect(doc).toContain('Иванов И.И.');
+    expect(doc).toContain('Версия и дата обновления 1С:БГУ');
+  });
+
+  it('возвращает 422, если структура протокола не распозналась на непустом markdown (A2.2)', async () => {
+    const unstructuredMarkdown =
+      'Просто заметка про встречу, без какой-либо структуры протокола. '.repeat(4);
+    expect(unstructuredMarkdown.trim().length).toBeGreaterThan(200);
+
+    const response = await POST(request({
+      markdown: unstructuredMarkdown,
+      filename: 'Протокол.docx',
+    }) as never);
+
+    expect(response.status).toBe(422);
+    const body = await response.json();
+    expect(body.error).toBe('Не удалось разобрать структуру протокола');
+  });
 });
