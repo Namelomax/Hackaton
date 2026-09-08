@@ -49,6 +49,17 @@ function findSection(sections: Section[], rx: RegExp): Section | undefined {
   return sections.find((s) => rx.test(s.title));
 }
 
+/**
+ * Разэкранирует ячейку markdown-таблицы: \| → |, <br> → перенос строки.
+ * Симметрична escapeMarkdownTableCell в lib/protocol-markdown-format.ts.
+ * Осторожно: summaryCellToPlain ниже по цепочке тоже разворачивает <br> —
+ * после этой функции в ячейке уже обычный \n, поэтому повторный проход
+ * там просто не находит совпадений (двойного преобразования нет).
+ */
+function unescapeMarkdownTableCell(text: string): string {
+  return text.replace(/\\\|/g, '|').replace(/<br\s*\/?>/gi, '\n');
+}
+
 /** Читает подряд идущие строки markdown-таблицы, пропуская строку-разделитель. */
 function parseTableRows(lines: string[], start: number): { rows: string[][]; next: number } {
   const rows: string[][] = [];
@@ -59,8 +70,9 @@ function parseTableRows(lines: string[], start: number): { rows: string[][]; nex
       .trim()
       .replace(/^\|/, '')
       .replace(/\|$/, '')
-      .split('|')
-      .map((c) => c.trim());
+      // Не резать по экранированному \| — это часть текста ячейки, а не граница колонки.
+      .split(/(?<!\\)\|/)
+      .map((c) => unescapeMarkdownTableCell(c.trim()));
     if (!isMarkdownTableSeparatorRow(cells)) rows.push(cells);
     i++;
   }
@@ -97,7 +109,10 @@ function parseContract(text: string): { contractNumber?: string; contractDate?: 
 function parsePreamble(preamble: string[]) {
   const text = preamble.join('\n');
 
-  const head = text.match(/ПРОТОКОЛ\s*(\S+)\s*ОТ\s*([^\n]*)/i);
+  // [ \t]* перед группой даты, а не \s*: \s захватывает и перенос строки, и при
+  // пустой дате ("ОТ \n\n**Заголовок**") группа "утекала" на следующую строку —
+  // meetingDate становился "**Заголовок**" (см. B1 в отчёте).
+  const head = text.match(/ПРОТОКОЛ\s*(\S+)\s*ОТ[ \t]*([^\n]*)/i);
   const protocolNumber = head ? head[1].trim() : '';
   const meetingDate = head ? head[2].trim() : '';
 
@@ -209,7 +224,10 @@ function parseContent(body: string[]) {
     }
 
     if (topic && label && trimmed) {
-      const value = trimmed.replace(/^[-*]\s+/, '');
+      // • тоже маркер списка: buildProtocolBodyXml рендерит пункты через "• ",
+      // и если пользователь при правке наберёт такую же строку, маркер иначе
+      // уедет в текст поля вместо того, чтобы быть снятым (см. B4).
+      const value = trimmed.replace(/^[-*•]\s+/, '');
       topic[label] = topic[label] ? `${topic[label]}\n${value}` : value;
     }
   }
