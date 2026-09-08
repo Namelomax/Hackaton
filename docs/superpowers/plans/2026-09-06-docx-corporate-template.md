@@ -2438,8 +2438,15 @@ npm uninstall @mohtasham/md-to-docx
 
 - [ ] **Step 7: Проверить сборку и тесты**
 
-Run: `npx tsc --noEmit && npm test && npm run lint && npm run build`
+Run: `npx tsc --noEmit && npm test && npm run build`
 Expected: всё зелёное.
+
+Затем линтер — только по файлам этой ветки, а не по всему репозиторию:
+
+Run: `npx biome check lib/docx-template lib/protocol-markdown-parse.ts lib/docx-generator.ts app/api/download-docx components/document/DocumentPanel.tsx lib/document/types.ts`
+Expected: `Found 0 errors`.
+
+Репозиторный `npm run lint` НЕ является критерием: на базовом коммите ветки (`5d43ba0`) biome уже даёт 310 ошибок и 467 предупреждений по всему проекту. Приводить чужой код в порядок в объём этой работы не входит — важно лишь не добавить своих.
 
 - [ ] **Step 8: Коммит**
 
@@ -2588,8 +2595,11 @@ Expected: `tmp/docx-preview/sample.png`.
 
 - [ ] **Step 7: Финальная проверка**
 
-Run: `npm test && npm run lint && npm run build`
+Run: `npm test && npm run build`
 Expected: всё зелёное.
+
+Run: `npx biome check lib/docx-template lib/protocol-markdown-parse.ts lib/docx-generator.ts app/api/download-docx components/document/DocumentPanel.tsx lib/document/types.ts scripts/build-protocol-template.mjs scripts/render-docx-preview.mjs`
+Expected: `Found 0 errors` — по файлам этой ветки. Репозиторные ошибки biome в чужом коде (310 штук на базовом коммите) не трогаем.
 
 - [ ] **Step 8: Коммит**
 
