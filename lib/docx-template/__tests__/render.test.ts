@@ -31,6 +31,26 @@ describe('assembleDocumentXml', () => {
       assembleDocumentXml('<w:document><w:body></w:body></w:document>', ''),
     ).toThrow(/sectPr/);
   });
+
+  it('падает понятной ошибкой на шаблоне без <w:document>', () => {
+    expect(() =>
+      assembleDocumentXml('<w:body><w:sectPr><w:pgSz w:w="11906"/></w:sectPr></w:body>', ''),
+    ).toThrow(/w:document/);
+  });
+
+  it('берёт финальный sectPr, а не вложенный в разрыв раздела', () => {
+    const templateWithSectionBreak =
+      '<?xml version="1.0"?><w:document xmlns:w="urn:w"><w:body>' +
+      '<w:p><w:pPr><w:sectPr><w:pgSz w:w="16838" w:orient="landscape"/></w:sectPr></w:pPr></w:p>' +
+      '<w:p>таблица</w:p>' +
+      '<w:sectPr><w:pgSz w:w="11906"/></w:sectPr>' +
+      '</w:body></w:document>';
+
+    const xml = assembleDocumentXml(templateWithSectionBreak, '<w:p>новое</w:p>');
+
+    expect(xml).toContain('<w:sectPr><w:pgSz w:w="11906"/></w:sectPr>');
+    expect(xml).not.toContain('w:orient="landscape"');
+  });
 });
 
 describe('renderProtocolDocx', () => {
