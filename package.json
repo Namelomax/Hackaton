@@ -10,7 +10,8 @@
     "format": "biome format --write",
     "test": "jest",
     "inspect:surreal": "node scripts/inspect-conversations.mjs",
-    "build:protocol-template": "node scripts/build-protocol-template.mjs"
+    "build:protocol-template": "node scripts/build-protocol-template.mjs",
+    "preview:protocol": "jest lib/docx-template/__tests__/render.test.ts && node scripts/render-docx-preview.mjs tmp/docx-preview/sample.docx"
   },
   "dependencies": {
     "@ai-sdk/google": "^2.0.25",
