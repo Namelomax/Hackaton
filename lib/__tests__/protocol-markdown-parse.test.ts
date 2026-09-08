@@ -127,11 +127,84 @@ describe('круговой разбор', () => {
         },
       },
     ],
+    [
+      // B1: \s* перед группой даты в parsePreamble захватывал перенос строки и
+      // "утекал" в заголовок протокола, когда дата собрания пуста.
+      'пустая дата собрания',
+      { ...SAMPLE_PROTOCOL, meetingDate: '' },
+    ],
+    [
+      // B2: должность с переносом строки — ячейка таблицы участников должна
+      // экранировать \n в <br>, а не терять вторую строку.
+      'должность с переносом строки',
+      {
+        ...SAMPLE_PROTOCOL,
+        participants: {
+          ...SAMPLE_PROTOCOL.participants,
+          customer: {
+            ...SAMPLE_PROTOCOL.participants.customer,
+            people: [{ fullName: 'Иванов И.И.', position: 'Главный\nбухгалтер' }],
+          },
+        },
+      },
+    ],
+    [
+      // B2: должность с | — без экранирования | ломает границы колонок таблицы.
+      'должность с |',
+      {
+        ...SAMPLE_PROTOCOL,
+        participants: {
+          ...SAMPLE_PROTOCOL.participants,
+          executor: {
+            ...SAMPLE_PROTOCOL.participants.executor,
+            people: [{ fullName: 'Петров П.П.', position: 'Директор | зам' }],
+          },
+        },
+      },
+    ],
+    [
+      // B3: formatApprovalOrgLine не идемпотентна — заглушка «не указано в
+      // расшифровке», один раз попав в ячейку, на втором проходе получала
+      // лишнее двоеточие. Обобщённые «Заказчик»/«Исполнитель» без названия
+      // организации — самый частый путь получить эту заглушку.
+      'обобщённые организации без явного названия',
+      {
+        ...SAMPLE_PROTOCOL,
+        participants: {
+          customer: { organizationName: '', people: SAMPLE_PROTOCOL.participants.customer.people },
+          executor: { organizationName: '', people: SAMPLE_PROTOCOL.participants.executor.people },
+        },
+        approval: {
+          customer: { organization: '', signatories: SAMPLE_PROTOCOL.approval.customer.signatories },
+          executor: { organization: '', signatories: SAMPLE_PROTOCOL.approval.executor.signatories },
+        },
+      },
+    ],
   ];
 
   it.each(cases)('%s: markdown → Protocol → та же вёрстка', (_name, protocol) => {
     const roundTripped = markdownToProtocol(protocolToMarkdown(protocol));
 
     expect(buildProtocolBodyXml(roundTripped)).toBe(buildProtocolBodyXml(protocol));
+  });
+
+  it('поле, начинающееся с «•» после ручной правки — маркер снимается как «-» и «*» (B4)', () => {
+    // protocolToMarkdown пишет пункты через "- ", buildProtocolBodyXml рендерит их
+    // через "• ". Пользователь, правя markdown вручную, вполне может набрать "• "
+    // по образцу того, что видит в документе — маркер не должен уехать в текст поля
+    // (иначе на следующей сборке .docx получится задвоенное "• • пункт").
+    const original = protocolToMarkdown(SAMPLE_PROTOCOL);
+    expect(original).toContain('- Обновить 1С:БГУ на релиз 2.0.102.79');
+
+    const manuallyEdited = original.replace(
+      '- Обновить 1С:БГУ на релиз 2.0.102.79',
+      '• Обновить 1С:БГУ на релиз 2.0.102.79',
+    );
+
+    const parsed = markdownToProtocol(manuallyEdited);
+    const decided = parsed.meetingContent.topics[0].decided;
+
+    expect(decided.startsWith('•')).toBe(false);
+    expect(decided).toContain('Обновить 1С:БГУ на релиз 2.0.102.79');
   });
 });

@@ -15,8 +15,10 @@ export function cleanProtocolText(text: string): string {
   s = s.replace(BOILERPLATE_RX, '').trim();
   s = s.replace(TRAILING_NUMBERED_JUNK_RX, '').trim();
 
-  // Снять внешние маркеры списка, если попали в поле
-  s = s.replace(/^\s*[-*+]\s+/, '');
+  // Снять внешние маркеры списка, если попали в поле.
+  // • добавлен вместе с - * +: buildProtocolBodyXml рендерит пункты списка
+  // именно через "• ", и такой же ввод пользователя иначе не снимался (см. B4).
+  s = s.replace(/^\s*[-*+•]\s+/, '');
   s = s.replace(/^\s*\d+[.)]\s+/, '');
 
   s = normalizeMarkdownBold(s);
@@ -245,6 +247,18 @@ export function isMarkdownTableSeparatorRow(cells: string[]): boolean {
   return cells.every((c) => /^:?-{2,}:?$/.test(c.trim()) || /^[-–—:\s|]+$/i.test(c.trim()));
 }
 
+/**
+ * Экранирует ячейку markdown-таблицы перед записью: | ломает границы колонок,
+ * перенос строки разрывает саму строку таблицы. Симметрична unescapeMarkdownTableCell
+ * в lib/protocol-markdown-parse.ts.
+ */
+export function escapeMarkdownTableCell(text: string): string {
+  return String(text ?? '')
+    .replace(/\|/g, '\\|')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\n/g, '<br>');
+}
+
 export function isValidParticipantRow(fullName: string, position: string): boolean {
   const fn = fullName.trim();
   const pos = position.trim();
@@ -320,10 +334,15 @@ export function isValidOrgDisplayName(name: string): boolean {
   return true;
 }
 
+const APPROVAL_ORG_PLACEHOLDER = 'не указано в расшифровке';
+
 /** Строка организации в разделе «Согласовано»: «ООО «Ромашка»:». */
 export function formatApprovalOrgLine(org: string): string {
   const t = org.trim();
-  if (!t || /^(заказчик|исполнитель)$/i.test(t)) return 'не указано в расшифровке';
+  // Круговой разбор кормит сюда уже готовую заглушку — без этой проверки на выходе
+  // получалось "не указано в расшифровке:" с лишним двоеточием (см. B3).
+  if (t === APPROVAL_ORG_PLACEHOLDER) return APPROVAL_ORG_PLACEHOLDER;
+  if (!t || /^(заказчик|исполнитель)$/i.test(t)) return APPROVAL_ORG_PLACEHOLDER;
   if (/^ООО\s/i.test(t)) return `${t}:`;
   const inner = t.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').trim();
   if (inner !== t) return `ООО «${inner}»:`;
@@ -375,7 +394,9 @@ export function protocolToMarkdown(protocol: Protocol): string {
   md += '| --- | --- |\n';
   protocol.participants.customer.people
     .filter((p) => isValidParticipantRow(p.fullName, p.position))
-    .forEach((p) => { md += `| ${p.fullName} | ${p.position} |\n`; });
+    .forEach((p) => {
+      md += `| ${escapeMarkdownTableCell(p.fullName)} | ${escapeMarkdownTableCell(p.position)} |\n`;
+    });
 
   md += '\n\n';
 
@@ -385,7 +406,9 @@ export function protocolToMarkdown(protocol: Protocol): string {
   md += '| --- | --- |\n';
   protocol.participants.executor.people
     .filter((p) => isValidParticipantRow(p.fullName, p.position))
-    .forEach((p) => { md += `| ${p.fullName} | ${p.position} |\n`; });
+    .forEach((p) => {
+      md += `| ${escapeMarkdownTableCell(p.fullName)} | ${escapeMarkdownTableCell(p.position)} |\n`;
+    });
 
   md += '\n\n';
 
@@ -408,7 +431,9 @@ export function protocolToMarkdown(protocol: Protocol): string {
     protocol.meetingContent.summary.forEach((row) => {
       const q = cleanProtocolText(row.question);
       const d = formatSummaryDecisionForMarkdown(row.decision);
-      if (q || d) md += `| ${q} | ${d} |\n`;
+      if (q || d) {
+        md += `| ${escapeMarkdownTableCell(q)} | ${escapeMarkdownTableCell(d)} |\n`;
+      }
     });
     md += '\n';
   }
