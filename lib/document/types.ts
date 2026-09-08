@@ -2,7 +2,8 @@ export type DocumentState = {
   title: string;
   content: string;
   isStreaming: boolean;
-  docxData?: { content: string; filename: string };
+  /** content отсутствует, когда протокол правили руками: файл пересоберёт сервер. */
+  docxData?: { content?: string; filename: string };
 };
 
 export type Attachment = {

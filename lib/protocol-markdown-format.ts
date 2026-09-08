@@ -172,7 +172,7 @@ export function formatSummaryDecisionForMarkdown(raw: string): string {
     .join('<br>');
 }
 
-/** Убирает HTML-жирный из markdown перед md-to-docx — в Word иначе видны сырые &lt;strong&gt;. */
+/** Убирает HTML-жирный из markdown перед экспортом в docx — в Word иначе видны сырые &lt;strong&gt;. */
 export function normalizeMarkdownBoldForDocxExport(markdown: string): string {
   let s = String(markdown ?? '').replace(/\r\n?/g, '\n');
   s = s.replace(/<strong>([^<]*)<\/strong>/gi, '**$1**');
