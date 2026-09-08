@@ -2522,30 +2522,30 @@ console.log(
 В конец `lib/docx-template/__tests__/render.test.ts`, внутрь `describe('renderProtocolDocx', …)`, добавить:
 
 ```ts
-  it('кладёт образец для визуальной сверки', async () => {
-    // Пишет файл только по требованию, чтобы обычный прогон не мусорил на диске.
-    if (!process.env.WRITE_PREVIEW) return;
-
-    const { mkdir, writeFile } = await import('node:fs/promises');
+  it('кладёт на диск открываемый образец для визуальной сверки', async () => {
+    const { mkdir, readFile, writeFile } = await import('node:fs/promises');
     await mkdir('tmp/docx-preview', { recursive: true });
-    await writeFile('tmp/docx-preview/sample.docx', await renderProtocolDocx(SAMPLE_PROTOCOL));
+
+    const target = 'tmp/docx-preview/sample.docx';
+    await writeFile(target, await renderProtocolDocx(SAMPLE_PROTOCOL));
+
+    // Файл кладём безусловно: tmp/ в .gitignore, зато образец для сверки
+    // всегда свежий. Проверяем, что на диск лёг именно открываемый пакет.
+    const written = await readFile(target);
+    expect(written.length).toBeGreaterThan(10_000);
+
+    const zip = await JSZip.loadAsync(written);
+    const doc = await zip.file('word/document.xml')!.async('string');
+    expect(doc).toContain('ПРОТОКОЛ №7');
   });
 ```
 
-- [ ] **Step 3: Прописать команды и игнор**
+- [ ] **Step 3: Прописать команду и игнор**
 
-В `package.json`, раздел `scripts` (на Windows использовать `cross-env`-совместимую форму нельзя — `cross-env` в проекте нет, поэтому переменную задаём через `npx --node-options` не получится; проще вызвать Jest c флагом):
+В `package.json`, раздел `scripts`:
 
 ```json
-"preview:protocol": "jest lib/docx-template/__tests__/render.test.ts -t \"визуальной сверки\" && node scripts/render-docx-preview.mjs tmp/docx-preview/sample.docx"
-```
-
-Переменную `WRITE_PREVIEW` в этой команде не задать кроссплатформенно, поэтому заменить условие в тесте на проверку аргумента Jest: вместо `process.env.WRITE_PREVIEW` использовать `process.env.npm_lifecycle_event === 'preview:protocol'`.
-
-Итоговое условие в тесте:
-
-```ts
-    if (process.env.npm_lifecycle_event !== 'preview:protocol') return;
+"preview:protocol": "jest lib/docx-template/__tests__/render.test.ts && node scripts/render-docx-preview.mjs tmp/docx-preview/sample.docx"
 ```
 
 В `.gitignore` добавить строку:
