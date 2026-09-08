@@ -68,6 +68,43 @@ describe('buildSummaryXml', () => {
     expect(xml).toContain('<w:t xml:space="preserve">Ответственные:</w:t>');
   });
 
+  // Регрессия: \w в DECISION_LABEL_SPLIT_RX не покрывает кириллицу, поэтому
+  // «Ответственный:»/«Ответственные:» никогда не отделялись от «Срок:», если
+  // модель вернула решение одной строкой — именно так, как требует системный
+  // промпт (lib/prompts/sgr-prompts.ts:196), а не так, как вручную с \n
+  // расставляет фикстура SAMPLE_PROTOCOL. Фикстура с \n маскировала баг.
+  it('однострочное решение из промпта разносит Срок и Ответственный(е) по разным жирным абзацам', () => {
+    const buildDecisionLabelParagraphRx = (label: string) =>
+      new RegExp(
+        `<w:p>(?:<w:pPr>.*?</w:pPr>)?<w:r><w:rPr><w:b/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr><w:t xml:space="preserve">${label}`,
+      );
+
+    const withSummary = (decision: string) => ({
+      ...SAMPLE_PROTOCOL,
+      meetingContent: {
+        ...SAMPLE_PROTOCOL.meetingContent,
+        summary: [{ question: 'Версия и дата обновления 1С:БГУ', decision }],
+      },
+    });
+
+    const singular = buildSummaryXml(
+      withSummary(
+        'Обновить релиз. Срок: 09.04.2025. Ответственный: Исполнитель (Петров П.П.).',
+      ),
+    );
+    const plural = buildSummaryXml(
+      withSummary(
+        'Обновить релиз. Срок: 09.04.2025. Ответственные: Петров П.П., Сидоров С.С.',
+      ),
+    );
+
+    expect(singular).toMatch(buildDecisionLabelParagraphRx('Срок:'));
+    expect(singular).toMatch(buildDecisionLabelParagraphRx('Ответственный:'));
+
+    expect(plural).toMatch(buildDecisionLabelParagraphRx('Срок:'));
+    expect(plural).toMatch(buildDecisionLabelParagraphRx('Ответственные:'));
+  });
+
   it('на пустом резюме не выводит ничего', () => {
     const xml = buildSummaryXml({
       ...SAMPLE_PROTOCOL,

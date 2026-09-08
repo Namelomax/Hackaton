@@ -24,13 +24,14 @@ export function cleanProtocolText(text: string): string {
 
 /** Убирает пробелы внутри **…** и снимает «висячие» пары звёздочек. */
 /** Маркеры «Срок:» / «Ответственный:» в поле решения (после снятия **). */
-const DECISION_LABEL_SPLIT_RX = /(?=(?:Срок\s*:|Ответственн\w*\s*:))/i;
+// \w не покрывает кириллицу, поэтому суффикс «-ый/-ая/-ые» задан явным классом [а-яё]*.
+const DECISION_LABEL_SPLIT_RX = /(?=(?:Срок\s*:|Ответственн[а-яё]*\s*:))/i;
 
 /** Перенос перед метками, если модель пишет «Срок:» и «Ответственный:» в одной строке. */
 function normalizeDecisionLabelBreaks(s: string): string {
   return s
     .replace(/([^\n<])\s*(Срок\s*:)/gi, '$1\n$2')
-    .replace(/([^\n<])\s*(Ответственн\w*\s*:)/gi, '$1\n$2');
+    .replace(/([^\n<])\s*(Ответственн[а-яё]*\s*:)/gi, '$1\n$2');
 }
 
 /** Текст решения для DOCX / разбора: без markdown-звёздочек, переносы из &lt;br&gt; сохранены. */
@@ -146,7 +147,7 @@ export function formatSummaryDecisionForMarkdown(raw: string): string {
   // Явный <br> перед метками — в GFM-ячейке таблицы это надёжнее, чем только \n
   s = s
     .replace(/([^\n<])\s*(Срок\s*:)/gi, '$1<br>$2')
-    .replace(/([^\n<])\s*(Ответственн\w*\s*:)/gi, '$1<br>$2')
+    .replace(/([^\n<])\s*(Ответственн[а-яё]*\s*:)/gi, '$1<br>$2')
     .replace(/^(<br>)+/i, '');
 
   const parts = s
@@ -158,7 +159,7 @@ export function formatSummaryDecisionForMarkdown(raw: string): string {
 
   return parts
     .map((segment) => {
-      const m = segment.match(/^(Срок\s*:|Ответственн\w*\s*:)\s*([\s\S]*)/i);
+      const m = segment.match(/^(Срок\s*:|Ответственн[а-яё]*\s*:)\s*([\s\S]*)/i);
       if (m) {
         const label = m[1].trim();
         const rest = m[2].trim();
