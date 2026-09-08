@@ -10,6 +10,9 @@ const config = {
   transform: {
     '^.+\\.(ts|tsx)$': ['ts-jest', { tsconfig: 'tsconfig.json', isolatedModules: true }],
   },
+  // Дефолтный testMatch подхватывает любой .ts внутри __tests__, включая
+  // не-тестовые модули (например, общие фикстуры). Требуем «.test.» в имени.
+  testMatch: ['**/__tests__/**/*.test.[jt]s?(x)', '**/?(*.)+(spec|test).[tj]s?(x)'],
   testPathIgnorePatterns: ['<rootDir>/.next/', '<rootDir>/node_modules/'],
   collectCoverageFrom: [
     'app/**/*.{ts,tsx}',

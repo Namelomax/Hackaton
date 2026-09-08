@@ -2,7 +2,9 @@ import { Document, Packer, Paragraph, TextRun, Table, TableCell, TableRow, Align
 import type { Protocol } from './schemas/protocol-schema';
 import {
   cleanProtocolText,
+  formatApprovalOrgLine,
   formatContractBlock,
+  isValidOrgDisplayName,
   parseInlineMarkdownBold,
   resolveApprovalForDocument,
   splitDecisionSegments,
@@ -41,10 +43,6 @@ function buildMultilineLabeledBlock(label: string, text: string, spacingAfter: n
   ];
 }
 
-function normalizeDocxOrgName(org: string): string {
-  return org.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').replace(/^ООО\s+/, '').trim();
-}
-
 function docxRunsFromInlineMarkdown(
   text: string,
   options?: { defaultBold?: boolean; italics?: boolean },
@@ -71,15 +69,6 @@ function docxParagraphFromInlineMarkdown(
     children: runs.length ? runs : [new TextRun('')],
     ...(options?.spacingAfter != null ? { spacing: { after: options.spacingAfter } } : {}),
   });
-}
-
-function isValidOrgDisplayName(name: string): boolean {
-  const s = name.trim();
-  if (!s) return false;
-  if (/^[-–—\s.]+$/.test(s)) return false;
-  if (/^(заказчик|исполнитель)$/i.test(s)) return false;
-  if (s.length > 100) return false;
-  return true;
 }
 
 /** Несколько Paragraph в ячейке таблицы — переносы сохраняются в DOCX; метки жирным через TextRun. */
@@ -335,13 +324,6 @@ function createSummaryTable(summary: Array<{ question: string; decision: string 
       insideVertical: { style: BorderStyle.SINGLE, size: 1 },
     },
   });
-}
-
-function formatApprovalOrgLine(org: string): string {
-  const n = normalizeDocxOrgName(org);
-  if (!n || /^(заказчик|исполнитель)$/i.test(n)) return 'не указано в расшифровке';
-  if (/^ООО\s/i.test(org.trim())) return `${org.trim()}:`;
-  return `ООО «${n}»:`;
 }
 
 function signatoryParagraph(name?: string): Paragraph {
