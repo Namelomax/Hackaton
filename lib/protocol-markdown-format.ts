@@ -1,5 +1,7 @@
 /** Очистка текста полей протокола перед выводом в markdown / DOCX. */
 
+import type { Protocol } from './schemas/protocol-schema';
+
 const BOILERPLATE_RX =
   /есть\s+ли\s+у\s+вас\s+другие|возможно,?\s+я\s+что[-–—\s]?то\s+пропустил|которые\s+стоит\s+включить/i;
 
@@ -331,4 +333,105 @@ export function formatMultilineField(text: string): string {
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
   if (lines.length <= 1) return text;
   return lines.map((l) => `- ${l}`).join('\n');
+}
+
+export function protocolToMarkdown(protocol: Protocol): string {
+  const normalizedNumber = String(protocol.protocolNumber || '').trim().startsWith('№')
+    ? String(protocol.protocolNumber).trim()
+    : `№${String(protocol.protocolNumber || '').trim()}`;
+
+  let md = `ПРОТОКОЛ ${normalizedNumber} ОТ ${protocol.meetingDate}\n\n`;
+
+  const title = cleanProtocolText(protocol.protocolTitle);
+  if (title) md += `**${title}**\n\n`;
+
+  md += `${formatContractBlock(protocol)}\n\n`;
+  if (protocol.contractSubject) {
+    md += `Тема договора: ${cleanProtocolText(protocol.contractSubject)}\n\n`;
+  }
+
+  md += '---\n\n';
+
+  // 1. Дата собрания
+  md += formatProtocolSectionHeading(1, `Дата собрания: ${protocol.meetingDate}`);
+
+  // 2. Повестка
+  md += formatProtocolSectionHeading(2, 'Повестка:');
+  if (protocol.agenda.items.length > 0) {
+    protocol.agenda.items.forEach((item, i) => {
+      md += `${i + 1}) ${cleanProtocolText(item)};\n`;
+    });
+  }
+  md += '\n\n';
+
+  // 3. Участники
+  md += formatProtocolSectionHeading(3, 'Участники:');
+
+  const custOrg = protocol.participants.customer.organizationName.trim();
+  md += `**Заказчик${isValidOrgDisplayName(custOrg) ? ` — ${custOrg}` : ''}**\n\n`;
+  md += '| ФИО | Должность |\n';
+  md += '| --- | --- |\n';
+  protocol.participants.customer.people
+    .filter((p) => isValidParticipantRow(p.fullName, p.position))
+    .forEach((p) => { md += `| ${p.fullName} | ${p.position} |\n`; });
+
+  md += '\n\n';
+
+  const execOrg = protocol.participants.executor.organizationName.trim();
+  md += `**Исполнитель${isValidOrgDisplayName(execOrg) ? ` — ${execOrg}` : ''}**\n\n`;
+  md += '| ФИО | Должность |\n';
+  md += '| --- | --- |\n';
+  protocol.participants.executor.people
+    .filter((p) => isValidParticipantRow(p.fullName, p.position))
+    .forEach((p) => { md += `| ${p.fullName} | ${p.position} |\n`; });
+
+  md += '\n\n';
+
+  // 4. Содержание встречи
+  md += formatProtocolSectionHeading(4, 'Содержание встречи:');
+  protocol.meetingContent.topics.forEach((topic, i) => {
+    md += `**${i + 1}) ${cleanProtocolText(topic.title)}**\n\n`;
+    const listened = cleanProtocolText(topic.listened);
+    const discussed = cleanProtocolText(topic.discussed);
+    const decided = cleanProtocolText(topic.decided);
+    if (listened) md += `**Слушали:** ${listened}\n\n`;
+    if (discussed) md += `**Обсудили:**\n\n${formatMultilineField(discussed)}\n\n`;
+    if (decided) md += `**Решили:**\n\n${formatMultilineField(decided)}\n\n`;
+  });
+
+  if (protocol.meetingContent.summary.length > 0) {
+    md += '**Резюме:**\n\n';
+    md += '| **Обсуждаемые вопросы** | **Принятые решения** |\n';
+    md += '| --- | --- |\n';
+    protocol.meetingContent.summary.forEach((row) => {
+      const q = cleanProtocolText(row.question);
+      const d = formatSummaryDecisionForMarkdown(row.decision);
+      if (q || d) md += `| ${q} | ${d} |\n`;
+    });
+    md += '\n';
+  }
+
+  md += '\n\n';
+
+  // 5. Согласовано — двухколоночная таблица
+  md += formatProtocolSectionHeading(5, 'Согласовано:');
+
+  const approval = resolveApprovalForDocument(protocol);
+
+  const custSigs = approval.customer.signatories;
+  const execSigs = approval.executor.signatories;
+  const sigLen = Math.max(custSigs.length, execSigs.length, 1);
+
+  md += `| **Со стороны Заказчика** | **Со стороны Исполнителя** |\n`;
+  md += `| --- | --- |\n`;
+  md += `| ${formatApprovalOrgLine(approval.customer.organization)} | ${formatApprovalOrgLine(approval.executor.organization)} |\n`;
+
+  for (let i = 0; i < sigLen; i++) {
+    const cust = custSigs[i] ? `${custSigs[i].trim()} /______________` : '______________________';
+    const exec = execSigs[i] ? `${execSigs[i].trim()} /______________` : '______________________';
+    md += `| ${cust} | ${exec} |\n`;
+  }
+  md += '\n';
+
+  return md;
 }
