@@ -26,7 +26,7 @@ import { DocumentReviewPanel } from '@/components/document/DocumentReviewPanel';
 import type { DocumentReview } from '@/app/api/chat/agents/review-agent';
 import type { Attachment, DocumentState } from '@/lib/document/types';
 import type { ChatTransportBodyExtras } from '@/components/chat/PromptInputWrapper';
-import { buildDocxMarkdown, extractTitleFromMarkdown, formatDocumentContent, normalizeDocumentPanelMarkdown, sanitizeFilename } from '@/lib/document/formatting';
+import { extractTitleFromMarkdown, formatDocumentContent, normalizeDocumentPanelMarkdown, sanitizeFilename } from '@/lib/document/formatting';
 import { copyTextToClipboard } from '@/lib/copyToClipboard';
 
 type DocumentPanelProps = {
@@ -164,7 +164,7 @@ export const DocumentPanel = ({
   const [draftTitle, setDraftTitle] = useState(document.title);
   const [draftContent, setDraftContent] = useState(document.content);
   const [localDoc, setLocalDoc] = useState<DocumentState>(document);
-  const [docxData, setDocxData] = useState<{ content: string; filename: string } | null>(null);
+  const [docxData, setDocxData] = useState<{ content?: string; filename: string } | null>(null);
   const [reviewResult, setReviewResult] = useState<DocumentReview | null>(null);
   const [isReviewing, setIsReviewing] = useState(false);
   const [isReviewPanelOpen, setIsReviewPanelOpen] = useState(false);
@@ -199,14 +199,8 @@ export const DocumentPanel = ({
       setDraftTitle(document.title);
       setDraftContent(document.content);
 
-      // Проверяем наличие .docx данных в документе
       if (document.docxData) {
         setDocxData(document.docxData);
-      } else if (document.content.trim() && !docxData && !document.isStreaming) {
-        // Автоматически генерируем docxData если контент есть, но docxData нет
-        buildDocxData(document.title || 'Протокол', document.content)
-          .then(data => setDocxData(data))
-          .catch(err => console.warn('Failed to auto-generate docx', err));
       }
     }
   }, [document, editing]);
@@ -328,14 +322,20 @@ export const DocumentPanel = ({
     try {
       void persistProtocolExample();
       const JSZip = (await import('jszip')).default;
-      const { convertMarkdownToDocx } = await import('@mohtasham/md-to-docx');
       const zip = new JSZip();
 
-      const docFilename = sanitizeFilename(displayTitle, 'document') + '.docx';
-      const docBody = buildDocxMarkdown(displayTitle, viewContent);
-      const docxBlob = await convertMarkdownToDocx(docBody);
-      const docxBuffer = await docxBlob.arrayBuffer();
-      zip.file(docFilename, docxBuffer);
+      const docFilename = docxData?.filename ?? `${sanitizeFilename(displayTitle, 'document')}.docx`;
+      const response = await fetch('/api/download-docx', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          docxData?.content
+            ? { content: docxData.content, filename: docFilename }
+            : { markdown: viewContent, filename: docFilename },
+        ),
+      });
+      if (!response.ok) throw new Error('Failed to build docx');
+      zip.file(docFilename, await response.arrayBuffer());
 
       const list = Array.isArray(attachments) ? attachments : [];
       if (list.length > 0) {
@@ -416,14 +416,20 @@ export const DocumentPanel = ({
   };
 
   const handleDownloadDocx = async () => {
-    if (!hasProtocol || !docxData) return;
+    if (!hasProtocol) return;
+
+    const filename = docxData?.filename ?? `${sanitizeFilename(displayTitle, 'document')}.docx`;
 
     try {
       void persistProtocolExample();
       const response = await fetch('/api/download-docx', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(docxData),
+        body: JSON.stringify(
+          docxData?.content
+            ? { content: docxData.content, filename }
+            : { markdown: localDoc.content, filename },
+        ),
       });
 
       if (!response.ok) throw new Error('Failed to download docx');
@@ -432,7 +438,7 @@ export const DocumentPanel = ({
       const url = URL.createObjectURL(blob);
       const link = window.document.createElement('a');
       link.href = url;
-      link.download = docxData.filename;
+      link.download = filename;
       window.document.body.appendChild(link);
       link.click();
       window.document.body.removeChild(link);
@@ -440,27 +446,6 @@ export const DocumentPanel = ({
     } catch (error) {
       console.error('Error downloading docx:', error);
     }
-  };
-
-  const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
-    let binary = '';
-    const bytes = new Uint8Array(buffer);
-    const chunkSize = 0x8000;
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-    }
-    return btoa(binary);
-  };
-
-  const buildDocxData = async (title: string, content: string) => {
-    const { convertMarkdownToDocx } = await import('@mohtasham/md-to-docx');
-    const docBody = buildDocxMarkdown(title, content);
-    const docxBlob = await convertMarkdownToDocx(docBody);
-    const docxBuffer = await docxBlob.arrayBuffer();
-    return {
-      content: arrayBufferToBase64(docxBuffer),
-      filename: sanitizeFilename(title, 'document') + '.docx',
-    };
   };
 
   const startEdit = () => {
@@ -483,15 +468,12 @@ export const DocumentPanel = ({
     };
     setLocalDoc(updated);
     setEditing(false);
-    try {
-      const nextDocx = await buildDocxData(updated.title, updated.content);
-      setDocxData(nextDocx);
-      onEdit?.({ ...updated, docxData: nextDocx });
-    } catch (error) {
-      console.warn('Failed to rebuild docx after edit', error);
-      setDocxData(null);
-      onEdit?.({ ...updated, docxData: undefined });
-    }
+
+    // Файл пересоберёт сервер по корпоративному шаблону — на клиенте его больше
+    // не собираем, иначе правленый протокол выходил бы с другим оформлением.
+    const next = { filename: docxData?.filename ?? `${sanitizeFilename(updated.title, 'document')}.docx` };
+    setDocxData(next);
+    onEdit?.({ ...updated, docxData: next });
   };
 
   if (collapsed) {
@@ -592,7 +574,7 @@ export const DocumentPanel = ({
                   type="button"
                   title="Скачать протокол (.docx)"
                   aria-label="Скачать протокол (.docx)"
-                  disabled={!hasProtocol || !docxData || localDoc.isStreaming}
+                  disabled={!hasProtocol || localDoc.isStreaming}
                 >
                   <FileText className="size-4" />
                 </Button>
@@ -603,7 +585,7 @@ export const DocumentPanel = ({
                   type="button"
                   title="Скачать ZIP (документ + вложения)"
                   aria-label="Скачать ZIP (документ + вложения)"
-                  disabled={!hasProtocol || !docxData || localDoc.isStreaming || isBundling}
+                  disabled={!hasProtocol || localDoc.isStreaming || isBundling}
                 >
                   <Download className="size-4" />
                 </Button>
