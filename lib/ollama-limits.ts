@@ -1,3 +1,5 @@
+import { getCachedGatewayModel } from '@/lib/gateway-model';
+
 /**
  * Понимает ли эндпоинт вендорские поля Ollama (`think`, `keep_alive`).
  *
@@ -59,12 +61,21 @@ export function ollamaFileTurnMaxOutputTokens(): number {
  * 32769 — ровно на один токен больше окна. Шлюз ответил 400, пользователь
  * увидел бесконечный спиннер и пустую панель.
  *
- * Значение по умолчанию соответствует текущей модели. Меняете модель — меняйте
- * и эту переменную вместе с FIXED_CHAT_MODEL и ALLOWED_OLLAMA_MODELS.
+ * Приоритет источников (08.09.2026): явный LLM_MAX_MODEL_LEN из env — чтобы
+ * можно было вручную прижать окно — затем max_model_len, обнаруженный через
+ * lib/gateway-model.ts (тот же GET /models, что и для имени модели), и только
+ * если ни того ни другого нет — дефолт 32768 под текущую FIXED_CHAT_MODEL.
+ * Раньше значение было жёстко зашито и расходилось с реальным окном при
+ * каждой подмене модели на шлюзе.
  */
 export function llmMaxModelLen(): number {
   const n = Number(process.env.LLM_MAX_MODEL_LEN);
-  return Number.isFinite(n) && n > 0 ? n : 32768;
+  if (Number.isFinite(n) && n > 0) return n;
+  const discovered = getCachedGatewayModel()?.maxModelLen;
+  if (typeof discovered === 'number' && Number.isFinite(discovered) && discovered > 0) {
+    return discovered;
+  }
+  return 32768;
 }
 
 /**
