@@ -58,9 +58,12 @@ import {
 import { documentReasoningOptions, formatUsage } from '@/lib/reasoning-options';
 import {
   cleanProtocolText,
+  formatApprovalOrgLine,
   formatProtocolSectionHeading,
   formatContractBlock,
+  formatMultilineField,
   formatSummaryDecisionForMarkdown,
+  isValidOrgDisplayName,
   isValidParticipantRow,
   resolveApprovalForDocument,
 } from '@/lib/protocol-markdown-format';
@@ -1088,23 +1091,6 @@ function markUnresolvedInMarkdown(md: string): string {
     .replace(/(—\s*(?:⚠️\s*)?требует уточнения)(\s*—\s*(?:⚠️\s*)?требует уточнения)+/gi, '$1');
 }
 
-/** Проверяет, что название организации — реальное имя, а не заглушка или мусор из LLM. */
-function isValidOrgDisplayName(name: string): boolean {
-  const s = name.trim();
-  if (!s) return false;
-  if (/^[-–—\s.]+$/.test(s)) return false;         // только дефисы/тире/точки
-  if (/^(заказчик|исполнитель)$/i.test(s)) return false;
-  if (s.length > 100) return false;                 // слишком длинно — попал контент встречи
-  return true;
-}
-
-/** Converts a multiline string to a markdown bullet list. Single-line text is returned as-is. */
-function formatMultilineField(text: string): string {
-  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
-  if (lines.length <= 1) return text;
-  return lines.map((l) => `- ${l}`).join('\n');
-}
-
 function protocolToMarkdown(protocol: Protocol): string {
   const normalizedNumber = String(protocol.protocolNumber || '').trim().startsWith('№')
     ? String(protocol.protocolNumber).trim()
@@ -1187,14 +1173,6 @@ function protocolToMarkdown(protocol: Protocol): string {
   md += formatProtocolSectionHeading(5, 'Согласовано:');
 
   const approval = resolveApprovalForDocument(protocol);
-  const formatApprOrg = (org: string) => {
-    const t = org.trim();
-    if (!t || /^(заказчик|исполнитель)$/i.test(t)) return 'не указано в расшифровке';
-    if (/^ООО\s/i.test(t)) return `${t}:`;
-    const inner = t.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').trim();
-    if (inner !== t) return `ООО «${inner}»:`;
-    return `${t}:`;
-  };
 
   const custSigs = approval.customer.signatories;
   const execSigs = approval.executor.signatories;
@@ -1202,7 +1180,7 @@ function protocolToMarkdown(protocol: Protocol): string {
 
   md += `| **Со стороны Заказчика** | **Со стороны Исполнителя** |\n`;
   md += `| --- | --- |\n`;
-  md += `| ${formatApprOrg(approval.customer.organization)} | ${formatApprOrg(approval.executor.organization)} |\n`;
+  md += `| ${formatApprovalOrgLine(approval.customer.organization)} | ${formatApprovalOrgLine(approval.executor.organization)} |\n`;
 
   for (let i = 0; i < sigLen; i++) {
     const cust = custSigs[i] ? `${custSigs[i].trim()} /______________` : '______________________';

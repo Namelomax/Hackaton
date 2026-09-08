@@ -304,3 +304,30 @@ export function fixProtocolSectionHeadingsInMarkdown(raw: string): string {
   s = fixAgendaHeadingInMarkdown(s);
   return stripDuplicateMarkdownTableSeparators(s);
 }
+
+/** Проверяет, что название организации — реальное имя, а не заглушка или мусор из LLM. */
+export function isValidOrgDisplayName(name: string): boolean {
+  const s = name.trim();
+  if (!s) return false;
+  if (/^[-–—\s.]+$/.test(s)) return false;
+  if (/^(заказчик|исполнитель)$/i.test(s)) return false;
+  if (s.length > 100) return false;
+  return true;
+}
+
+/** Строка организации в разделе «Согласовано»: «ООО «Ромашка»:». */
+export function formatApprovalOrgLine(org: string): string {
+  const t = org.trim();
+  if (!t || /^(заказчик|исполнитель)$/i.test(t)) return 'не указано в расшифровке';
+  if (/^ООО\s/i.test(t)) return `${t}:`;
+  const inner = t.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').trim();
+  if (inner !== t) return `ООО «${inner}»:`;
+  return `${t}:`;
+}
+
+/** Многострочное поле → markdown-список. Однострочное возвращается как есть. */
+export function formatMultilineField(text: string): string {
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length <= 1) return text;
+  return lines.map((l) => `- ${l}`).join('\n');
+}
