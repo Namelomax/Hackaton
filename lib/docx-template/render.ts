@@ -2,11 +2,12 @@
  * Сборка .docx: берём шаблон, подменяем word/document.xml, остальное не трогаем.
  * Про структуру протокола тут не знают — за неё отвечает protocol-body.ts.
  */
-import type { Protocol } from '@/lib/schemas/protocol-schema';
-import { buildProtocolBodyXml } from './protocol-body';
-import { loadTemplateZip } from './template';
+import type { Protocol } from "@/lib/schemas/protocol-schema";
+import { buildProtocolBodyXml } from "./protocol-body";
+import { loadTemplateZip } from "./template";
 
-const XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n';
+const XML_DECLARATION =
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n';
 const ROOT_OPEN_RX = /<w:document\b[^>]*>/;
 // В OOXML разрыв раздела в середине документа оформляется вложенным <w:sectPr>
 // внутри <w:pPr> абзаца (например, альбомная страница под широкую таблицу).
@@ -27,15 +28,22 @@ const SECT_PR_RX = /<w:sectPr\b[\s\S]*?<\/w:sectPr>/g;
  * Инвариант: bodyXml приходит из buildProtocolBodyXml и по контракту не
  * содержит собственных <w:sectPr> или <w:body> — иначе разбор сломался бы.
  */
-export function assembleDocumentXml(templateXml: string, bodyXml: string): string {
+export function assembleDocumentXml(
+  templateXml: string,
+  bodyXml: string,
+): string {
   const rootOpen = templateXml.match(ROOT_OPEN_RX);
   if (!rootOpen) {
-    throw new Error('Шаблон протокола повреждён: в word/document.xml нет <w:document>');
+    throw new Error(
+      "Шаблон протокола повреждён: в word/document.xml нет <w:document>",
+    );
   }
 
   const sectPrMatches = templateXml.match(SECT_PR_RX);
   if (!sectPrMatches) {
-    throw new Error('Шаблон протокола повреждён: в word/document.xml нет <w:sectPr>');
+    throw new Error(
+      "Шаблон протокола повреждён: в word/document.xml нет <w:sectPr>",
+    );
   }
   const finalSectPr = sectPrMatches[sectPrMatches.length - 1];
 
@@ -45,17 +53,17 @@ export function assembleDocumentXml(templateXml: string, bodyXml: string): strin
 export async function renderProtocolDocx(protocol: Protocol): Promise<Buffer> {
   const zip = await loadTemplateZip();
 
-  const templateEntry = zip.file('word/document.xml');
+  const templateEntry = zip.file("word/document.xml");
   if (!templateEntry) {
-    throw new Error('Шаблон протокола повреждён: нет word/document.xml');
+    throw new Error("Шаблон протокола повреждён: нет word/document.xml");
   }
 
   const documentXml = assembleDocumentXml(
-    await templateEntry.async('string'),
+    await templateEntry.async("string"),
     buildProtocolBodyXml(protocol),
   );
 
-  zip.file('word/document.xml', documentXml);
+  zip.file("word/document.xml", documentXml);
 
-  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }

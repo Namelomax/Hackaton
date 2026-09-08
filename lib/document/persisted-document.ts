@@ -1,7 +1,7 @@
-import type { DocumentState } from '@/lib/document/types';
+import type { DocumentState } from "@/lib/document/types";
 
-const DOCX_META_START = '---DOCX_META---';
-const DOCX_META_END = '---DOCX_META_END---';
+const DOCX_META_START = "---DOCX_META---";
+const DOCX_META_END = "---DOCX_META_END---";
 
 export type PersistedDocxMeta = { filename: string; content: string };
 
@@ -10,10 +10,10 @@ export function packDocumentContentForDb(
   markdown: string,
   docx?: PersistedDocxMeta | null,
 ): string {
-  const body = String(markdown ?? '').trim();
+  const body = String(markdown ?? "").trim();
   if (!docx?.content?.trim()) return body;
   const meta = JSON.stringify({
-    filename: docx.filename || 'Протокол.docx',
+    filename: docx.filename || "Протокол.docx",
     content: docx.content,
   });
   return `${DOCX_META_START}\n${meta}\n${DOCX_META_END}\n\n${body}`;
@@ -23,7 +23,7 @@ export function unpackDocumentContentFromDb(stored?: string | null): {
   markdown: string;
   docxData?: PersistedDocxMeta;
 } {
-  const raw = String(stored ?? '');
+  const raw = String(stored ?? "");
   if (!raw.includes(DOCX_META_START)) {
     return { markdown: raw };
   }
@@ -35,7 +35,7 @@ export function unpackDocumentContentFromDb(stored?: string | null): {
   try {
     const json = raw.slice(start + DOCX_META_START.length, end).trim();
     const meta = JSON.parse(json) as PersistedDocxMeta;
-    const markdown = raw.slice(end + DOCX_META_END.length).replace(/^\s+/, '');
+    const markdown = raw.slice(end + DOCX_META_END.length).replace(/^\s+/, "");
     if (meta?.content) {
       return { markdown, docxData: meta };
     }
@@ -51,7 +51,7 @@ export function documentStateFromStored(
 ): DocumentState {
   const { markdown, docxData } = unpackDocumentContentFromDb(stored);
   return {
-    title: titleFallback || 'Протокол',
+    title: titleFallback || "Протокол",
     content: markdown,
     isStreaming: false,
     ...(docxData ? { docxData } : {}),

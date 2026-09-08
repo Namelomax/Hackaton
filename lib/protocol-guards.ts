@@ -447,7 +447,9 @@ export function fillHeaderFromDialogue(p: Protocol, dialogueText: string): Proto
       /(?:назван[а-яё]*|тема|наименован[а-яё]*)\s+протокол[а-яё]*\s*[:\-—]\s*«?([^.\n;»)]{3,120})»?/gi,
     )) {
       const cand = m[1].trim();
-      if (cand && !/догов|\bнеобходимо\b|уточн/i.test(cand) && !/^\d+[).]/.test(cand)) {
+      // \b после кириллицы в JS не работает (\w — только ASCII): соседние
+      // паттерны «догов»/«уточн» уже написаны без границы, эту просто пропустили.
+      if (cand && !/догов|необходимо|уточн/i.test(cand) && !/^\d+[).]/.test(cand)) {
         lastTitle = cand;
       }
     }

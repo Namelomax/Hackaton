@@ -1,6 +1,5 @@
-'use client';
+"use client";
 
-import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   ChevronLeft,
@@ -15,19 +14,30 @@ import {
   Paperclip,
   PencilIcon,
   PresentationIcon,
-  X,
   Shield,
-} from 'lucide-react';
-import { toast } from 'sonner';
-import { Response } from '@/components/ai-elements/response';
-import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { DocumentReviewPanel } from '@/components/document/DocumentReviewPanel';
-import type { DocumentReview } from '@/app/api/chat/agents/review-agent';
-import type { Attachment, DocumentState } from '@/lib/document/types';
-import type { ChatTransportBodyExtras } from '@/components/chat/PromptInputWrapper';
-import { extractTitleFromMarkdown, formatDocumentContent, normalizeDocumentPanelMarkdown, sanitizeFilename } from '@/lib/document/formatting';
-import { copyTextToClipboard } from '@/lib/copyToClipboard';
+  X,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
+import type { DocumentReview } from "@/app/api/chat/agents/review-agent";
+import { Response } from "@/components/ai-elements/response";
+import type { ChatTransportBodyExtras } from "@/components/chat/PromptInputWrapper";
+import { DocumentReviewPanel } from "@/components/document/DocumentReviewPanel";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { copyTextToClipboard } from "@/lib/copyToClipboard";
+import {
+  extractTitleFromMarkdown,
+  formatDocumentContent,
+  normalizeDocumentPanelMarkdown,
+  sanitizeFilename,
+} from "@/lib/document/formatting";
+import type { Attachment, DocumentState } from "@/lib/document/types";
 
 type DocumentPanelProps = {
   document: DocumentState;
@@ -36,7 +46,10 @@ type DocumentPanelProps = {
   attachments?: Attachment[];
   onSendReview?: (text: string) => void;
   onQuote?: (text: string) => void;
-  chatReviewBody?: Pick<ChatTransportBodyExtras, 'chatProvider' | 'chatModel' | 'useThinking'>;
+  chatReviewBody?: Pick<
+    ChatTransportBodyExtras,
+    "chatProvider" | "chatModel" | "useThinking"
+  >;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
   anonymization?: { anonymizedText: string; mapping: Record<string, string> };
@@ -47,65 +60,95 @@ type DocumentPanelProps = {
 };
 
 function getFileExt(name: string) {
-  const n = String(name || '').trim();
+  const n = String(name || "").trim();
   const m = n.match(/\.([A-Za-z0-9]+)$/);
-  return (m?.[1] || '').toLowerCase();
+  return (m?.[1] || "").toLowerCase();
 }
 
 function getAttachmentAccentClass(att: Attachment) {
-  const name = att?.name || '';
+  const name = att?.name || "";
   const ext = getFileExt(name);
-  const mt = String(att?.mediaType || '').toLowerCase();
+  const mt = String(att?.mediaType || "").toLowerCase();
 
-  if (mt.includes('pdf') || ext === 'pdf') return 'text-destructive';
+  if (mt.includes("pdf") || ext === "pdf") return "text-destructive";
 
   const isDocLike =
-    mt.includes('word') || mt.includes('text') || ['doc', 'docx', 'txt', 'md', 'rtf'].includes(ext);
-  if (isDocLike) return 'text-[color:var(--chart-1)]';
+    mt.includes("word") ||
+    mt.includes("text") ||
+    ["doc", "docx", "txt", "md", "rtf"].includes(ext);
+  if (isDocLike) return "text-[color:var(--chart-1)]";
 
   const isPresentation =
-    mt.includes('presentation') || mt.includes('powerpoint') || ['ppt', 'pptx'].includes(ext);
-  if (isPresentation) return 'text-[color:var(--chart-3)]';
+    mt.includes("presentation") ||
+    mt.includes("powerpoint") ||
+    ["ppt", "pptx"].includes(ext);
+  if (isPresentation) return "text-[color:var(--chart-3)]";
 
   const isSpreadsheet =
-    mt.includes('spreadsheet') || mt.includes('excel') || ['xls', 'xlsx', 'csv'].includes(ext);
-  if (isSpreadsheet) return 'text-[color:var(--chart-2)]';
+    mt.includes("spreadsheet") ||
+    mt.includes("excel") ||
+    ["xls", "xlsx", "csv"].includes(ext);
+  if (isSpreadsheet) return "text-[color:var(--chart-2)]";
 
-  return 'text-muted-foreground';
+  return "text-muted-foreground";
 }
 
 function getAttachmentIcon(att: Attachment, className?: string) {
-  const name = att?.name || '';
+  const name = att?.name || "";
   const ext = getFileExt(name);
-  const mt = String(att?.mediaType || '').toLowerCase();
+  const mt = String(att?.mediaType || "").toLowerCase();
 
-  const isImage = mt.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(ext);
-  if (isImage) return <ImageIcon className={className ? `size-4 ${className}` : 'size-4'} />;
+  const isImage =
+    mt.startsWith("image/") ||
+    ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"].includes(ext);
+  if (isImage)
+    return (
+      <ImageIcon className={className ? `size-4 ${className}` : "size-4"} />
+    );
 
   const isPresentation =
-    mt.includes('presentation') || mt.includes('powerpoint') || ['ppt', 'pptx'].includes(ext);
-  if (isPresentation) return <PresentationIcon className={className ? `size-4 ${className}` : 'size-4'} />;
+    mt.includes("presentation") ||
+    mt.includes("powerpoint") ||
+    ["ppt", "pptx"].includes(ext);
+  if (isPresentation)
+    return (
+      <PresentationIcon
+        className={className ? `size-4 ${className}` : "size-4"}
+      />
+    );
 
   const isSpreadsheet =
-    mt.includes('spreadsheet') || mt.includes('excel') || ['xls', 'xlsx', 'csv'].includes(ext);
-  if (isSpreadsheet) return <FileSpreadsheetIcon className={className ? `size-4 ${className}` : 'size-4'} />;
+    mt.includes("spreadsheet") ||
+    mt.includes("excel") ||
+    ["xls", "xlsx", "csv"].includes(ext);
+  if (isSpreadsheet)
+    return (
+      <FileSpreadsheetIcon
+        className={className ? `size-4 ${className}` : "size-4"}
+      />
+    );
 
   const isDocLike =
-    mt.includes('pdf') ||
-    mt.includes('word') ||
-    mt.includes('text') ||
-    ['pdf', 'doc', 'docx', 'txt', 'md', 'rtf'].includes(ext);
-  if (isDocLike) return <FileText className={className ? `size-4 ${className}` : 'size-4'} />;
+    mt.includes("pdf") ||
+    mt.includes("word") ||
+    mt.includes("text") ||
+    ["pdf", "doc", "docx", "txt", "md", "rtf"].includes(ext);
+  if (isDocLike)
+    return (
+      <FileText className={className ? `size-4 ${className}` : "size-4"} />
+    );
 
-  return <Paperclip className={className ? `size-4 ${className}` : 'size-4'} />;
+  return <Paperclip className={className ? `size-4 ${className}` : "size-4"} />;
 }
 
 function isImageAttachment(att: Attachment) {
-  const name = att?.name || '';
+  const name = att?.name || "";
   const ext = getFileExt(name);
-  const mt = String(att?.mediaType || '').toLowerCase();
+  const mt = String(att?.mediaType || "").toLowerCase();
   return Boolean(
-    (mt.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(ext)) && att?.url
+    (mt.startsWith("image/") ||
+      ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"].includes(ext)) &&
+      att?.url,
   );
 }
 
@@ -124,14 +167,17 @@ export const DocumentPanel = ({
   userId,
 }: DocumentPanelProps) => {
   const [copied, setCopied] = useState(false);
-  const [anonView, setAnonView] = useState<{ title: string; content: string } | null>(null);
+  const [anonView, setAnonView] = useState<{
+    title: string;
+    content: string;
+  } | null>(null);
   const [mappingOpen, setMappingOpen] = useState(false);
   // Пары mapping для таблицы: сгруппированы по метке и отсортированы по номеру.
   const mappingRows = useMemo(() => {
     const m = anonymization?.mapping || {};
     const labelOf = (ph: string) => {
-      const inner = ph.replace(/^\[/, '').replace(/\]$/, '');
-      const i = inner.lastIndexOf('_');
+      const inner = ph.replace(/^\[/, "").replace(/\]$/, "");
+      const i = inner.lastIndexOf("_");
       return i === -1 ? inner : inner.slice(0, i);
     };
     const numOf = (ph: string) => {
@@ -139,24 +185,32 @@ export const DocumentPanel = ({
       return mm ? Number(mm[1]) : 0;
     };
     return Object.entries(m)
-      .map(([placeholder, original]) => ({ placeholder, original: String(original), label: labelOf(placeholder) }))
+      .map(([placeholder, original]) => ({
+        placeholder,
+        original: String(original),
+        label: labelOf(placeholder),
+      }))
       .sort((a, b) =>
         a.label === b.label
           ? numOf(a.placeholder) - numOf(b.placeholder)
           : a.label.localeCompare(b.label),
       );
   }, [anonymization?.mapping]);
-  const downloadTextFile = (filename: string, content: string, mime = 'text/plain') => {
+  const downloadTextFile = (
+    filename: string,
+    content: string,
+    mime = "text/plain",
+  ) => {
     try {
       const blob = new Blob([content], { type: `${mime};charset=utf-8` });
       const url = URL.createObjectURL(blob);
-      const a = window.document.createElement('a');
+      const a = window.document.createElement("a");
       a.href = url;
       a.download = filename;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch {
-      toast.error('Не удалось скачать файл');
+      toast.error("Не удалось скачать файл");
     }
   };
   const [editing, setEditing] = useState(false);
@@ -164,7 +218,10 @@ export const DocumentPanel = ({
   const [draftTitle, setDraftTitle] = useState(document.title);
   const [draftContent, setDraftContent] = useState(document.content);
   const [localDoc, setLocalDoc] = useState<DocumentState>(document);
-  const [docxData, setDocxData] = useState<{ content?: string; filename: string } | null>(null);
+  const [docxData, setDocxData] = useState<{
+    content?: string;
+    filename: string;
+  } | null>(null);
   const [reviewResult, setReviewResult] = useState<DocumentReview | null>(null);
   const [isReviewing, setIsReviewing] = useState(false);
   const [isReviewPanelOpen, setIsReviewPanelOpen] = useState(false);
@@ -174,12 +231,19 @@ export const DocumentPanel = ({
   const [displayContent, setDisplayContent] = useState(document.content);
   const rafRef = useRef<number>(0);
   // Quote tooltip: shown when user selects text inside the document panel
-  const [quoteTooltip, setQuoteTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
+  const [quoteTooltip, setQuoteTooltip] = useState<{
+    text: string;
+    x: number;
+    y: number;
+  } | null>(null);
 
   useEffect(() => {
     displayContentRef.current = document.content;
     if (!document.isStreaming) {
-      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = 0;
+      }
       setDisplayContent(document.content);
       return;
     }
@@ -191,7 +255,12 @@ export const DocumentPanel = ({
     }
   }, [document.content, document.isStreaming]);
 
-  useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
+  useEffect(
+    () => () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!editing) {
@@ -205,6 +274,7 @@ export const DocumentPanel = ({
     }
   }, [document, editing]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: document.content не читается в теле, но именно на его изменение и должен переигрываться эффект — это автоскролл при стриминге, каждый чанк должен его перезапускать.
   useEffect(() => {
     if (!document.isStreaming || !scrollRef.current) return;
     const el = scrollRef.current;
@@ -218,27 +288,32 @@ export const DocumentPanel = ({
   // Use document prop (not localDoc) for empty/protocol checks to avoid a one-frame lag:
   // localDoc is synced via useEffect which runs after paint, so on the render where the
   // loading overlay disappears, localDoc can still be empty while document already has content.
-  const isEmpty = !document.isStreaming && !document.title && !document.content.trim().length;
+  const isEmpty =
+    !document.isStreaming && !document.title && !document.content.trim().length;
   /** Реальный протокол в документе (не плейсхолдер пустой панели). */
   const hasProtocol = Boolean(document.content.trim());
 
   const displayTitle = (() => {
-    const raw = String(document.title || '').trim();
+    const raw = String(document.title || "").trim();
     if (document.isStreaming) {
-      return raw || 'Генерация документа…';
+      return raw || "Генерация документа…";
     }
 
     const generic =
       !raw ||
-      raw.toLowerCase() === 'чат' ||
-      raw.toLowerCase() === 'документ' ||
-      raw.toLowerCase() === 'протокол' ||
-      raw.toLowerCase() === 'пример документа';
+      raw.toLowerCase() === "чат" ||
+      raw.toLowerCase() === "документ" ||
+      raw.toLowerCase() === "протокол" ||
+      raw.toLowerCase() === "пример документа";
     const fromContent = extractTitleFromMarkdown(document.content);
-    return generic && fromContent ? fromContent : raw || 'Протокол';
+    return generic && fromContent ? fromContent : raw || "Протокол";
   })();
 
-  const viewContent = isEmpty ? 'Здесь будет ваш протокол.' : (editing ? draftContent : (displayContent || document.content));
+  const viewContent = isEmpty
+    ? "Здесь будет ваш протокол."
+    : editing
+      ? draftContent
+      : displayContent || document.content;
   const formattedContent = useMemo(() => {
     const normalized = normalizeDocumentPanelMarkdown(viewContent);
     return formatDocumentContent(normalized);
@@ -247,7 +322,7 @@ export const DocumentPanel = ({
   const handleCopy = async () => {
     const raw = `# ${displayTitle}\n\n${viewContent}`;
     // Strip HTML tags so <br> doesn't appear literally in the clipboard
-    const formatted = raw.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '');
+    const formatted = raw.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "");
 
     const ok = await copyTextToClipboard(formatted);
     if (ok) {
@@ -255,38 +330,41 @@ export const DocumentPanel = ({
       onCopy?.({ title: document.title, content: document.content });
       setTimeout(() => setCopied(false), 2000);
     } else {
-      console.error('Ошибка при копировании: буфер недоступен');
-      toast.error('Копирование недоступно', { description: 'Требуется HTTPS или разрешение браузера на буфер обмена.' });
+      console.error("Ошибка при копировании: буфер недоступен");
+      toast.error("Копирование недоступно", {
+        description: "Требуется HTTPS или разрешение браузера на буфер обмена.",
+      });
     }
   };
 
   const handleReview = async () => {
     if (!hasProtocol) {
-      toast.warning('Протокол ещё не сформирован', {
-        description: 'Сначала сформируйте протокол в диалоге, затем проверьте его.',
+      toast.warning("Протокол ещё не сформирован", {
+        description:
+          "Сначала сформируйте протокол в диалоге, затем проверьте его.",
       });
       return;
     }
 
     setIsReviewing(true);
     try {
-      const response = await fetch('/api/review-document', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch("/api/review-document", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           content: localDoc.content,
           ...(conversationId ? { conversationId } : {}),
           ...(userId ? { userId } : {}),
-          ...(chatReviewBody ?? { chatProvider: 'ollama' as const }),
+          ...(chatReviewBody ?? { chatProvider: "ollama" as const }),
         }),
       });
 
       const result = await response.json().catch(() => ({}));
       if (!response.ok) {
         const msg =
-          typeof result?.error === 'string'
+          typeof result?.error === "string"
             ? result.error
-            : 'Ошибка при проверке документа';
+            : "Ошибка при проверке документа";
         throw new Error(msg);
       }
 
@@ -294,8 +372,8 @@ export const DocumentPanel = ({
       setReviewResult(review);
       setIsReviewPanelOpen(true);
     } catch (error) {
-      console.error('Review error:', error);
-      toast.error('Ошибка проверки документа', { description: String(error) });
+      console.error("Review error:", error);
+      toast.error("Ошибка проверки документа", { description: String(error) });
     } finally {
       setIsReviewing(false);
     }
@@ -305,13 +383,13 @@ export const DocumentPanel = ({
     const formatted = `# ${displayTitle}\n\n${viewContent}`.trim();
     if (!formatted || formatted.length < 50) return;
     try {
-      await fetch('/api/protocol-examples', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      await fetch("/api/protocol-examples", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: formatted }),
       });
     } catch (err) {
-      console.warn('Failed to save protocol example', err);
+      console.warn("Failed to save protocol example", err);
     }
   };
 
@@ -321,32 +399,34 @@ export const DocumentPanel = ({
     setIsBundling(true);
     try {
       void persistProtocolExample();
-      const JSZip = (await import('jszip')).default;
+      const JSZip = (await import("jszip")).default;
       const zip = new JSZip();
 
-      const docFilename = docxData?.filename ?? `${sanitizeFilename(displayTitle, 'document')}.docx`;
-      const response = await fetch('/api/download-docx', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const docFilename =
+        docxData?.filename ??
+        `${sanitizeFilename(displayTitle, "document")}.docx`;
+      const response = await fetch("/api/download-docx", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
           docxData?.content
             ? { content: docxData.content, filename: docFilename }
             : { markdown: viewContent, filename: docFilename },
         ),
       });
-      if (!response.ok) throw new Error('Failed to build docx');
+      if (!response.ok) throw new Error("Failed to build docx");
       zip.file(docFilename, await response.arrayBuffer());
 
       const list = Array.isArray(attachments) ? attachments : [];
       if (list.length > 0) {
-        const folder = zip.folder('Загруженные документы');
+        const folder = zip.folder("Загруженные документы");
         const usedNames = new Set<string>();
 
         for (const att of list) {
           const url = att?.url;
           if (!url) continue;
 
-          const base = sanitizeFilename(att?.name || '', 'attachment');
+          const base = sanitizeFilename(att?.name || "", "attachment");
           let candidate = base;
           let i = 1;
           while (usedNames.has(candidate)) {
@@ -365,11 +445,11 @@ export const DocumentPanel = ({
         }
       }
 
-      const blob = await zip.generateAsync({ type: 'blob' });
+      const blob = await zip.generateAsync({ type: "blob" });
       const objectUrl = URL.createObjectURL(blob);
-      const link = window.document.createElement('a');
+      const link = window.document.createElement("a");
       link.href = objectUrl;
-      link.download = sanitizeFilename(displayTitle, 'documents') + '.zip';
+      link.download = `${sanitizeFilename(displayTitle, "documents")}.zip`;
       window.document.body.appendChild(link);
       link.click();
       window.document.body.removeChild(link);
@@ -383,14 +463,14 @@ export const DocumentPanel = ({
     const url = att?.url;
     if (!url) return;
 
-    const filename = (att?.name || 'attachment')
-      .replace(/[<>:"/\\|?*]/g, '')
-      .replace(/\s+/g, '_')
+    const filename = (att?.name || "attachment")
+      .replace(/[<>:"/\\|?*]/g, "")
+      .replace(/\s+/g, "_")
       .slice(0, 140);
 
     try {
-      if (url.startsWith('data:')) {
-        const link = window.document.createElement('a');
+      if (url.startsWith("data:")) {
+        const link = window.document.createElement("a");
         link.href = url;
         link.download = filename;
         window.document.body.appendChild(link);
@@ -400,10 +480,10 @@ export const DocumentPanel = ({
       }
 
       const res = await fetch(url);
-      if (!res.ok) throw new Error('Failed to fetch attachment');
+      if (!res.ok) throw new Error("Failed to fetch attachment");
       const blob = await res.blob();
       const objectUrl = URL.createObjectURL(blob);
-      const link = window.document.createElement('a');
+      const link = window.document.createElement("a");
       link.href = objectUrl;
       link.download = filename;
       window.document.body.appendChild(link);
@@ -411,20 +491,22 @@ export const DocumentPanel = ({
       window.document.body.removeChild(link);
       URL.revokeObjectURL(objectUrl);
     } catch (e) {
-      console.warn('Failed to download attachment', e);
+      console.warn("Failed to download attachment", e);
     }
   };
 
   const handleDownloadDocx = async () => {
     if (!hasProtocol) return;
 
-    const filename = docxData?.filename ?? `${sanitizeFilename(displayTitle, 'document')}.docx`;
+    const filename =
+      docxData?.filename ??
+      `${sanitizeFilename(displayTitle, "document")}.docx`;
 
     try {
       void persistProtocolExample();
-      const response = await fetch('/api/download-docx', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch("/api/download-docx", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
           docxData?.content
             ? { content: docxData.content, filename }
@@ -434,18 +516,18 @@ export const DocumentPanel = ({
 
       if (!response.ok) {
         if (response.status === 422) {
-          toast.error('Не удалось собрать документ', {
+          toast.error("Не удалось собрать документ", {
             description:
-              'Не распознана структура протокола. Откройте протокол и пересоздайте его.',
+              "Не распознана структура протокола. Откройте протокол и пересоздайте его.",
           });
           return;
         }
-        throw new Error('Failed to download docx');
+        throw new Error("Failed to download docx");
       }
 
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
-      const link = window.document.createElement('a');
+      const link = window.document.createElement("a");
       link.href = url;
       link.download = filename;
       window.document.body.appendChild(link);
@@ -453,9 +535,10 @@ export const DocumentPanel = ({
       window.document.body.removeChild(link);
       URL.revokeObjectURL(url);
     } catch (error) {
-      console.error('Error downloading docx:', error);
-      toast.error('Не удалось собрать документ', {
-        description: 'Не распознана структура протокола. Откройте протокол и пересоздайте его.',
+      console.error("Error downloading docx:", error);
+      toast.error("Не удалось собрать документ", {
+        description:
+          "Не распознана структура протокола. Откройте протокол и пересоздайте его.",
       });
     }
   };
@@ -483,7 +566,11 @@ export const DocumentPanel = ({
 
     // Файл пересоберёт сервер по корпоративному шаблону — на клиенте его больше
     // не собираем, иначе правленый протокол выходил бы с другим оформлением.
-    const next = { filename: docxData?.filename ?? `${sanitizeFilename(updated.title, 'document')}.docx` };
+    const next = {
+      filename:
+        docxData?.filename ??
+        `${sanitizeFilename(updated.title, "document")}.docx`,
+    };
     setDocxData(next);
     onEdit?.({ ...updated, docxData: next });
   };
@@ -492,8 +579,8 @@ export const DocumentPanel = ({
     return (
       <div
         className={
-          'flex h-full w-10 shrink-0 flex-col border-l bg-background overflow-hidden ' +
-          'transition-[width] duration-200 ease-in-out'
+          "flex h-full w-10 shrink-0 flex-col border-l bg-background overflow-hidden " +
+          "transition-[width] duration-200 ease-in-out"
         }
       >
         <div className="flex flex-1 items-start justify-start border-b p-2 pl-1">
@@ -514,8 +601,8 @@ export const DocumentPanel = ({
   return (
     <div
       className={
-        'flex h-full flex-1 min-w-[280px] flex-col border-l bg-background shrink-0 overflow-hidden ' +
-        'transition-[width] duration-200 ease-in-out'
+        "flex h-full flex-1 min-w-[280px] flex-col border-l bg-background shrink-0 overflow-hidden " +
+        "transition-[width] duration-200 ease-in-out"
       }
     >
       <div className="border-b py-3 pl-2 pr-4">
@@ -533,10 +620,12 @@ export const DocumentPanel = ({
               </button>
             )}
             <div className="min-w-0">
-            <div className="text-sm font-medium truncate">{displayTitle}</div>
-            {localDoc.isStreaming && (
-              <div className="text-xs text-muted-foreground">Генерация протокола…</div>
-            )}
+              <div className="text-sm font-medium truncate">{displayTitle}</div>
+              {localDoc.isStreaming && (
+                <div className="text-xs text-muted-foreground">
+                  Генерация протокола…
+                </div>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -557,8 +646,12 @@ export const DocumentPanel = ({
                   size="icon"
                   onClick={handleReview}
                   type="button"
-                  title={isReviewing ? "Проверка документа..." : "Проверить документ"}
-                  aria-label={isReviewing ? "Проверка документа..." : "Проверить документ"}
+                  title={
+                    isReviewing ? "Проверка документа..." : "Проверить документ"
+                  }
+                  aria-label={
+                    isReviewing ? "Проверка документа..." : "Проверить документ"
+                  }
                   disabled={!hasProtocol || isReviewing || localDoc.isStreaming}
                 >
                   {isReviewing ? (
@@ -606,10 +699,14 @@ export const DocumentPanel = ({
                   size="icon"
                   onClick={handleCopy}
                   type="button"
-                  title={copied ? 'Скопировано' : 'Скопировать'}
-                  aria-label={copied ? 'Скопировано' : 'Скопировать'}
+                  title={copied ? "Скопировано" : "Скопировать"}
+                  aria-label={copied ? "Скопировано" : "Скопировать"}
                 >
-                  {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
+                  {copied ? (
+                    <Check className="size-4" />
+                  ) : (
+                    <Copy className="size-4" />
+                  )}
                 </Button>
               </>
             ) : (
@@ -640,6 +737,7 @@ export const DocumentPanel = ({
         </div>
       </div>
 
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: пассивный слушатель выделения текста (цитирование в чат), а не интерактивный элемент — семантической роли для этого нет. */}
       <div
         ref={scrollRef}
         className="flex-1 overflow-auto p-6"
@@ -647,14 +745,15 @@ export const DocumentPanel = ({
         onMouseUp={() => {
           if (!onQuote || editing || document.isStreaming) return;
           const sel = window.getSelection();
-          const text = sel?.toString().trim() ?? '';
-          if (!text || text.length > 600) return;
-          const range = sel!.getRangeAt(0);
+          const text = sel?.toString().trim() ?? "";
+          if (!sel || !text || text.length > 600) return;
+          const range = sel.getRangeAt(0);
           const rect = range.getBoundingClientRect();
           setQuoteTooltip({ text, x: rect.left + rect.width / 2, y: rect.top });
         }}
       >
         {quoteTooltip && (
+          // biome-ignore lint/a11y/noStaticElementInteractions: обёртка только гасит всплытие клика к родителю (чтобы не закрыть тултип), реальная интерактивность — на кнопке внутри.
           <div
             className="fixed z-50 -translate-x-1/2 -translate-y-full pointer-events-auto"
             style={{ left: quoteTooltip.x, top: quoteTooltip.y - 6 }}
@@ -708,26 +807,33 @@ export const DocumentPanel = ({
         )}
       </div>
 
-      {((Array.isArray(attachments) && attachments.length > 0) || anonymization) && (
+      {((Array.isArray(attachments) && attachments.length > 0) ||
+        anonymization) && (
         <div className="border-t bg-background px-4 py-2 min-h-[104px]">
           <div className="flex items-center gap-2">
-            <div className="text-xs font-medium text-muted-foreground">Загруженные документы</div>
+            <div className="text-xs font-medium text-muted-foreground">
+              Загруженные документы
+            </div>
           </div>
           <div className="mt-2 max-h-40 overflow-y-auto no-scrollbar pr-1">
             <div className="flex flex-wrap gap-2">
               {(attachments || []).map((att, idx) => {
-                const name = att?.name || 'attachment';
+                const name = att?.name || "attachment";
                 const canDownload = Boolean(att?.url);
-                const extension = (att?.name || '').split('.').pop()?.toUpperCase();
+                const extension = (att?.name || "")
+                  .split(".")
+                  .pop()
+                  ?.toUpperCase();
                 const showImage = isImageAttachment(att);
                 const accent = getAttachmentAccentClass(att);
 
                 return (
+                  // biome-ignore lint/a11y/noStaticElementInteractions: role и обработчики зависят от одного и того же canDownload — когда скачивать нечего, role сознательно не задан, а обработчики no-op.
                   <div
                     key={att?.id || `${name}-${idx}`}
-                    className={`group relative h-14 w-14 overflow-hidden rounded-md border bg-muted/20 transition-colors ${canDownload ? 'cursor-pointer hover:bg-muted/30' : ''}`}
+                    className={`group relative h-14 w-14 overflow-hidden rounded-md border bg-muted/20 transition-colors ${canDownload ? "cursor-pointer hover:bg-muted/30" : ""}`}
                     title={name}
-                    role={canDownload ? 'button' : undefined}
+                    role={canDownload ? "button" : undefined}
                     tabIndex={canDownload ? 0 : -1}
                     onClick={() => {
                       if (!canDownload) return;
@@ -735,18 +841,29 @@ export const DocumentPanel = ({
                     }}
                     onKeyDown={(e) => {
                       if (!canDownload) return;
-                      if (e.key === 'Enter' || e.key === ' ') {
+                      if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
                         handleDownloadAttachment(att);
                       }
                     }}
                   >
                     {showImage ? (
-                      <img alt={name} className="size-full rounded-md object-cover" height={56} src={att?.url} width={56} />
+                      // biome-ignore lint/performance/noImgElement: att.url — blob:/data: URL вложения, next/image их не оптимизирует и требует настройки loader'а — вне объёма этой ветки.
+                      <img
+                        alt={name}
+                        className="size-full rounded-md object-cover"
+                        height={56}
+                        src={att?.url}
+                        width={56}
+                      />
                     ) : (
                       <div className="flex size-full flex-col items-center justify-center gap-1">
-                        <span className={accent}>{getAttachmentIcon(att, accent)}</span>
-                        <span className="text-[10px] font-medium uppercase tracking-wide">{extension || 'FILE'}</span>
+                        <span className={accent}>
+                          {getAttachmentIcon(att, accent)}
+                        </span>
+                        <span className="text-[10px] font-medium uppercase tracking-wide">
+                          {extension || "FILE"}
+                        </span>
                       </div>
                     )}
 
@@ -776,71 +893,112 @@ export const DocumentPanel = ({
               })}
             </div>
           </div>
-          {anonymization && (Object.keys(anonymization.mapping || {}).length > 0 || anonymization.anonymizedText) && (
-            <div className="mt-3 border-t pt-2">
-              <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                <Shield className="size-3.5" /> Версия для облака (без ПДн, 152-ФЗ)
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <div className="flex items-center gap-2 text-xs">
-                  <FileText className="size-3.5 shrink-0 text-[color:var(--chart-1)]" />
-                  <span className="flex-1 truncate" title="Анонимизированный текст, который уходит в облако">
-                    Анонимизированная версия (.txt)
-                  </span>
-                  <button
-                    type="button"
-                    className="rounded border px-2 py-0.5 hover:bg-muted"
-                    onClick={() => setAnonView({ title: 'Анонимизированная версия (уходит в облако)', content: anonymization.anonymizedText || '(пусто)' })}
-                  >
-                    Просмотр
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded border px-2 py-0.5 hover:bg-muted"
-                    onClick={() => downloadTextFile('anonymized.txt', anonymization.anonymizedText || '', 'text/plain')}
-                  >
-                    Скачать
-                  </button>
+          {anonymization &&
+            (Object.keys(anonymization.mapping || {}).length > 0 ||
+              anonymization.anonymizedText) && (
+              <div className="mt-3 border-t pt-2">
+                <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <Shield className="size-3.5" /> Версия для облака (без ПДн,
+                  152-ФЗ)
                 </div>
-                <div className="flex items-center gap-2 text-xs">
-                  <Shield className="size-3.5 shrink-0 text-[color:var(--chart-2)]" />
-                  <span className="flex-1 truncate" title="Ключ обратной подстановки (placeholder → оригинал)">
-                    Mapping — ключ деанонимизации ({Object.keys(anonymization.mapping || {}).length})
-                  </span>
-                  <button
-                    type="button"
-                    className="rounded border px-2 py-0.5 hover:bg-muted"
-                    onClick={() => setMappingOpen(true)}
-                  >
-                    Просмотр
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded border px-2 py-0.5 hover:bg-muted"
-                    onClick={() => downloadTextFile('mapping.map.json', JSON.stringify(anonymization.mapping || {}, null, 2), 'application/json')}
-                  >
-                    Скачать
-                  </button>
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center gap-2 text-xs">
+                    <FileText className="size-3.5 shrink-0 text-[color:var(--chart-1)]" />
+                    <span
+                      className="flex-1 truncate"
+                      title="Анонимизированный текст, который уходит в облако"
+                    >
+                      Анонимизированная версия (.txt)
+                    </span>
+                    <button
+                      type="button"
+                      className="rounded border px-2 py-0.5 hover:bg-muted"
+                      onClick={() =>
+                        setAnonView({
+                          title: "Анонимизированная версия (уходит в облако)",
+                          content: anonymization.anonymizedText || "(пусто)",
+                        })
+                      }
+                    >
+                      Просмотр
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded border px-2 py-0.5 hover:bg-muted"
+                      onClick={() =>
+                        downloadTextFile(
+                          "anonymized.txt",
+                          anonymization.anonymizedText || "",
+                          "text/plain",
+                        )
+                      }
+                    >
+                      Скачать
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <Shield className="size-3.5 shrink-0 text-[color:var(--chart-2)]" />
+                    <span
+                      className="flex-1 truncate"
+                      title="Ключ обратной подстановки (placeholder → оригинал)"
+                    >
+                      Mapping — ключ деанонимизации (
+                      {Object.keys(anonymization.mapping || {}).length})
+                    </span>
+                    <button
+                      type="button"
+                      className="rounded border px-2 py-0.5 hover:bg-muted"
+                      onClick={() => setMappingOpen(true)}
+                    >
+                      Просмотр
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded border px-2 py-0.5 hover:bg-muted"
+                      onClick={() =>
+                        downloadTextFile(
+                          "mapping.map.json",
+                          JSON.stringify(anonymization.mapping || {}, null, 2),
+                          "application/json",
+                        )
+                      }
+                    >
+                      Скачать
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
+            )}
         </div>
       )}
 
-      <Dialog open={!!anonView} onOpenChange={(o) => { if (!o) setAnonView(null); }} panelClassName="max-w-2xl w-full">
+      <Dialog
+        open={!!anonView}
+        onOpenChange={(o) => {
+          if (!o) setAnonView(null);
+        }}
+        panelClassName="max-w-2xl w-full"
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{anonView?.title}</DialogTitle>
           </DialogHeader>
           <div className="max-h-[60vh] overflow-auto rounded-md border bg-muted/30 p-3">
-            <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed">{anonView?.content}</pre>
+            <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed">
+              {anonView?.content}
+            </pre>
           </div>
         </DialogContent>
       </Dialog>
 
       {/* Таблица mapping — как модель анонимизировала (placeholder → оригинал). */}
-      <Dialog open={mappingOpen} onOpenChange={(o) => { if (!o) setMappingOpen(false); }} panelClassName="max-w-2xl w-full">
+      <Dialog
+        open={mappingOpen}
+        onOpenChange={(o) => {
+          if (!o) setMappingOpen(false);
+        }}
+        panelClassName="max-w-2xl w-full"
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
@@ -851,11 +1009,15 @@ export const DocumentPanel = ({
             </DialogTitle>
           </DialogHeader>
           <div className="mb-2 text-xs text-muted-foreground">
-            Слева — плейсхолдер, который ушёл в облако вместо персональных данных; справа — исходное значение (152-ФЗ). Обратная подстановка выполняется автоматически.
+            Слева — плейсхолдер, который ушёл в облако вместо персональных
+            данных; справа — исходное значение (152-ФЗ). Обратная подстановка
+            выполняется автоматически.
           </div>
           <div className="max-h-[60vh] overflow-auto rounded-md border">
             {mappingRows.length === 0 ? (
-              <div className="p-4 text-sm text-muted-foreground">Персональные данные не обнаружены.</div>
+              <div className="p-4 text-sm text-muted-foreground">
+                Персональные данные не обнаружены.
+              </div>
             ) : (
               <table className="w-full border-collapse text-xs">
                 <thead className="sticky top-0 bg-muted/60 backdrop-blur">
@@ -866,13 +1028,18 @@ export const DocumentPanel = ({
                 </thead>
                 <tbody>
                   {mappingRows.map((row) => (
-                    <tr key={row.placeholder} className="border-t hover:bg-muted/30">
+                    <tr
+                      key={row.placeholder}
+                      className="border-t hover:bg-muted/30"
+                    >
                       <td className="whitespace-nowrap px-3 py-1.5 align-top">
                         <code className="rounded bg-[color:var(--chart-1)]/10 px-1.5 py-0.5 font-mono text-[color:var(--chart-1)]">
                           {row.placeholder}
                         </code>
                       </td>
-                      <td className="px-3 py-1.5 align-top break-words">{row.original}</td>
+                      <td className="px-3 py-1.5 align-top break-words">
+                        {row.original}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -883,7 +1050,13 @@ export const DocumentPanel = ({
             <button
               type="button"
               className="rounded border px-3 py-1.5 text-sm hover:bg-muted"
-              onClick={() => downloadTextFile('mapping.map.json', JSON.stringify(anonymization?.mapping || {}, null, 2), 'application/json')}
+              onClick={() =>
+                downloadTextFile(
+                  "mapping.map.json",
+                  JSON.stringify(anonymization?.mapping || {}, null, 2),
+                  "application/json",
+                )
+              }
             >
               Скачать JSON
             </button>
