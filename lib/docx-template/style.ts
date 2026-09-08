@@ -35,4 +35,8 @@ export const IND_APPROVAL_NAME_RIGHT = 317;
 
 export const TBL_PARTICIPANTS = { grid: [4672, 5388], width: 10060 } as const;
 export const TBL_SUMMARY = { grid: [3810, 6255], width: 10065 } as const;
-export const TBL_APPROVAL = { grid: [1830, 3000, 2025, 2235], width: 9090, indent: 284 } as const;
+export const TBL_APPROVAL = {
+  grid: [1830, 3000, 2025, 2235],
+  width: 9090,
+  indent: 284,
+} as const;

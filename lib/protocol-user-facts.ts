@@ -37,7 +37,8 @@ export function parseSection1FromUserText(text: string): UserSection1Facts {
 
   // «номер протокола 1, дата 05.04.2026» без слова «протокол» перед цифрой
   if (!protocolNumber && /номер\s+протокол/i.test(t)) {
-    const m = raw.match(/номер\s+протокол\w*\s*(\d+)/i);
+    // \w не покрывает кириллицу — окончание "-а/-ы" не распознавалось.
+    const m = raw.match(/номер\s+протокол[а-яё]*\s*(\d+)/i);
     if (m) protocolNumber = m[1];
   }
 

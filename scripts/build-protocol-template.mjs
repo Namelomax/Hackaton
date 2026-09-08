@@ -7,18 +7,22 @@
  *
  * Запуск: npm run build:protocol-template
  */
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import path from 'node:path';
-import JSZip from 'jszip';
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import JSZip from "jszip";
 
-const SRC = process.argv[2] ?? 'Шаблон протокола чистый.docx';
-const DST = process.argv[3] ?? 'lib/docx-template/assets/protocol-template.docx';
+const SRC = process.argv[2] ?? "Шаблон протокола чистый.docx";
+const DST =
+  process.argv[3] ?? "lib/docx-template/assets/protocol-template.docx";
 
 const zip = await JSZip.loadAsync(await readFile(SRC));
 
 // Сами файлы шрифтов и связи на них.
 for (const name of Object.keys(zip.files)) {
-  if (name.startsWith('word/fonts/') || name === 'word/_rels/fontTable.xml.rels') {
+  if (
+    name.startsWith("word/fonts/") ||
+    name === "word/_rels/fontTable.xml.rels"
+  ) {
     zip.remove(name);
   }
 }
@@ -26,17 +30,24 @@ for (const name of Object.keys(zip.files)) {
 const patch = async (name, fn) => {
   const entry = zip.file(name);
   if (!entry) return;
-  zip.file(name, fn(await entry.async('string')));
+  zip.file(name, fn(await entry.async("string")));
 };
 
 // Объявление типа .odttf, флаг внедрения и ссылки на шрифты в таблице шрифтов.
-await patch('[Content_Types].xml', (s) => s.replace(/<Default[^>]*Extension="odttf"[^>]*\/>/g, ''));
-await patch('word/settings.xml', (s) => s.replace(/<w:embedTrueTypeFonts\s*\/>/g, ''));
-await patch('word/fontTable.xml', (s) =>
-  s.replace(/<w:embed(?:Regular|Bold|Italic|BoldItalic)\b[^>]*\/>/g, ''),
+await patch("[Content_Types].xml", (s) =>
+  s.replace(/<Default[^>]*Extension="odttf"[^>]*\/>/g, ""),
+);
+await patch("word/settings.xml", (s) =>
+  s.replace(/<w:embedTrueTypeFonts\s*\/>/g, ""),
+);
+await patch("word/fontTable.xml", (s) =>
+  s.replace(/<w:embed(?:Regular|Bold|Italic|BoldItalic)\b[^>]*\/>/g, ""),
 );
 
 await mkdir(path.dirname(DST), { recursive: true });
-await writeFile(DST, await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
+await writeFile(
+  DST,
+  await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }),
+);
 
 console.log(`Шаблон готов: ${DST}`);

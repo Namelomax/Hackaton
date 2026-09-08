@@ -1,6 +1,6 @@
-import { type NextRequest, NextResponse } from 'next/server';
-import { generateProtocolDocx } from '@/lib/docx-generator';
-import { markdownToProtocol } from '@/lib/protocol-markdown-parse';
+import { type NextRequest, NextResponse } from "next/server";
+import { generateProtocolDocx } from "@/lib/docx-generator";
+import { markdownToProtocol } from "@/lib/protocol-markdown-parse";
 
 /**
  * Отдаёт .docx протокола.
@@ -17,13 +17,16 @@ export async function POST(request: NextRequest) {
     const { content, markdown, filename } = await request.json();
 
     if (!filename || (!content && !markdown)) {
-      return NextResponse.json({ error: 'Missing content or filename' }, { status: 400 });
+      return NextResponse.json(
+        { error: "Missing content or filename" },
+        { status: 400 },
+      );
     }
 
     let buffer: Buffer;
 
     if (content) {
-      buffer = Buffer.from(content, 'base64');
+      buffer = Buffer.from(content, "base64");
     } else {
       const protocol = markdownToProtocol(markdown);
 
@@ -38,15 +41,25 @@ export async function POST(request: NextRequest) {
         protocol.meetingContent.topics.length === 0 &&
         protocol.meetingContent.summary.length === 0;
 
-      if (String(markdown ?? '').trim().length > 200 && isStructureEmpty) {
+      if (String(markdown ?? "").trim().length > 200 && isStructureEmpty) {
         return NextResponse.json(
-          { error: 'Не удалось разобрать структуру протокола' },
+          { error: "Не удалось разобрать структуру протокола" },
           { status: 422 },
         );
       }
 
       buffer = await generateProtocolDocx(protocol);
     }
+
+    // Браузеры не декодируют percent-encoding в обычном filename — кириллическое
+    // имя уходило пользователю как "%D0%9F%D1%80...docx" (см. C5). filename* с
+    // percent-encoded UTF-8 — то, что реально читают браузеры; filename= с
+    // ASCII-заменой символов вне диапазона — фолбэк для совсем древних клиентов.
+    const asciiFilenameFallback = (
+      String(filename)
+        .replace(/[^\x20-\x7E]/g, "_")
+        .trim() || "document.docx"
+    ).replace(/"/g, "'");
 
     return new NextResponse(
       // Buffer, полученный через await (тип Buffer<ArrayBufferLike>), не совпадает
@@ -55,15 +68,18 @@ export async function POST(request: NextRequest) {
       buffer as BodyInit,
       {
         headers: {
-          'Content-Type':
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-          'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
-          'Content-Length': buffer.length.toString(),
+          "Content-Type":
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "Content-Disposition": `attachment; filename="${asciiFilenameFallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+          "Content-Length": buffer.length.toString(),
         },
       },
     );
   } catch (error) {
-    console.error('Error generating docx:', error);
-    return NextResponse.json({ error: 'Failed to generate document' }, { status: 500 });
+    console.error("Error generating docx:", error);
+    return NextResponse.json(
+      { error: "Failed to generate document" },
+      { status: 500 },
+    );
   }
 }

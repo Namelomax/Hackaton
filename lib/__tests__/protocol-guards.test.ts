@@ -1,4 +1,8 @@
-import { enforceDateProvenance, fillContractFromDialogue } from '@/lib/protocol-guards';
+import {
+  enforceDateProvenance,
+  fillContractFromDialogue,
+  fillHeaderFromDialogue,
+} from '@/lib/protocol-guards';
 import { extractUserAnswerTexts, extractLatestUserCorrections } from '@/lib/protocol-chat-extract';
 import { normalizeCyrillicHomoglyphs } from '@/lib/prompts/glossary';
 import type { Protocol } from '@/lib/schemas/protocol-schema';
@@ -180,5 +184,25 @@ describe('dedupeListened', () => {
   it('пустое поле и одиночное имя не трогаются', () => {
     expect(dedupeListened(make('')).meetingContent.topics[0].listened).toBe('');
     expect(dedupeListened(make('Иванов И.И.')).meetingContent.topics[0].listened).toBe('Иванов И.И.');
+  });
+});
+
+describe('fillHeaderFromDialogue', () => {
+  // \b после кириллицы в JS не работает (\w — только ASCII), поэтому
+  // /\bнеобходимо\b/ не матчила НИКОГДА — кандидат в название с этим словом
+  // проходил фильтр вместо того, чтобы быть отсеянным как служебный текст.
+  it('отсекает кандидата в название, содержащего «необходимо»', () => {
+    const protocol = makeProtocol({ protocolTitle: '' });
+    const result = fillHeaderFromDialogue(
+      protocol,
+      'тема протокола: необходимо доработать регламент оплаты',
+    );
+    expect(result.protocolTitle).toBe('');
+  });
+
+  it('принимает нормальное название протокола', () => {
+    const protocol = makeProtocol({ protocolTitle: '' });
+    const result = fillHeaderFromDialogue(protocol, 'тема протокола: Обновление 1С:БГУ');
+    expect(result.protocolTitle).toBe('Обновление 1С:БГУ');
   });
 });

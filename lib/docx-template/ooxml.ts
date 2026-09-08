@@ -1,22 +1,28 @@
-﻿/**
+/**
  * Примитивы сборки WordprocessingML. Ничего не знают про структуру протокола.
  *
  * Порядок дочерних элементов внутри pPr / tblPr / tcPr задан схемой OOXML.
  * Word не ругается на нарушение — он молча игнорирует свойства, оказавшиеся
  * не на своём месте, поэтому порядок здесь жёстко зашит.
  */
-import { SZ_BODY } from './style';
+import { SZ_BODY } from "./style";
 
-/** Символы, недопустимые в XML 1.0. Word на них молча отказывается открывать файл. */
-const INVALID_XML_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g;
+/**
+ * Символы, недопустимые в XML 1.0. Word на них молча отказывается открывать файл:
+ * управляющие символы (кроме табуляции/переносов строки), U+FFFE/U+FFFF и одиночные
+ * суррогаты без парного (валидные суррогатные пары — эмодзи, ⚠️ — не трогаем).
+ */
+const INVALID_XML_CHARS =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: осознанно вырезаем управляющие символы, недопустимые в XML 1.0, — в этом и есть назначение регулярки.
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 
 export function esc(text: string): string {
-  return String(text ?? '')
-    .replace(INVALID_XML_CHARS, '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+  return String(text ?? "")
+    .replace(INVALID_XML_CHARS, "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 export interface RunOptions {
@@ -35,24 +41,27 @@ export function run(text: string, options: RunOptions = {}): string {
   const rPr: string[] = [];
   if (font) {
     const f = esc(font);
-    rPr.push(`<w:rFonts w:ascii="${f}" w:eastAsia="${f}" w:hAnsi="${f}" w:cs="${f}"/>`);
+    rPr.push(
+      `<w:rFonts w:ascii="${f}" w:eastAsia="${f}" w:hAnsi="${f}" w:cs="${f}"/>`,
+    );
   }
-  if (bold) rPr.push('<w:b/>');
-  if (italic) rPr.push('<w:i/>');
+  if (bold) rPr.push("<w:b/>");
+  if (italic) rPr.push("<w:i/>");
   if (underline) rPr.push('<w:u w:val="single"/>');
-  if (size != null) rPr.push(`<w:sz w:val="${size}"/><w:szCs w:val="${size}"/>`);
-  const rPrXml = rPr.length ? `<w:rPr>${rPr.join('')}</w:rPr>` : '';
+  if (size != null)
+    rPr.push(`<w:sz w:val="${size}"/><w:szCs w:val="${size}"/>`);
+  const rPrXml = rPr.length ? `<w:rPr>${rPr.join("")}</w:rPr>` : "";
 
-  const body = String(text ?? '')
+  const body = String(text ?? "")
     .split(/\r\n|\r|\n/)
     .map((line) => `<w:t xml:space="preserve">${esc(line)}</w:t>`)
-    .join('<w:br/>');
+    .join("<w:br/>");
 
   return `<w:r>${rPrXml}${body}</w:r>`;
 }
 
 export interface ParagraphOptions {
-  align?: 'left' | 'center' | 'right' | 'both';
+  align?: "left" | "center" | "right" | "both";
   indentLeft?: number;
   indentHanging?: number;
   indentFirstLine?: number;
@@ -62,27 +71,36 @@ export interface ParagraphOptions {
 }
 
 /** Один <w:p>. */
-export function paragraph(runsXml: string, options: ParagraphOptions = {}): string {
+export function paragraph(
+  runsXml: string,
+  options: ParagraphOptions = {},
+): string {
   const pPr: string[] = [];
 
   if (options.numId != null) {
-    pPr.push(`<w:numPr><w:ilvl w:val="0"/><w:numId w:val="${options.numId}"/></w:numPr>`);
+    pPr.push(
+      `<w:numPr><w:ilvl w:val="0"/><w:numId w:val="${options.numId}"/></w:numPr>`,
+    );
   }
 
   const spacing: string[] = [];
-  if (options.spacingAfter != null) spacing.push(`w:after="${options.spacingAfter}"`);
-  if (options.spacingLine != null) spacing.push(`w:line="${options.spacingLine}" w:lineRule="auto"`);
-  if (spacing.length) pPr.push(`<w:spacing ${spacing.join(' ')}/>`);
+  if (options.spacingAfter != null)
+    spacing.push(`w:after="${options.spacingAfter}"`);
+  if (options.spacingLine != null)
+    spacing.push(`w:line="${options.spacingLine}" w:lineRule="auto"`);
+  if (spacing.length) pPr.push(`<w:spacing ${spacing.join(" ")}/>`);
 
   const ind: string[] = [];
   if (options.indentLeft != null) ind.push(`w:left="${options.indentLeft}"`);
-  if (options.indentHanging != null) ind.push(`w:hanging="${options.indentHanging}"`);
-  if (options.indentFirstLine != null) ind.push(`w:firstLine="${options.indentFirstLine}"`);
-  if (ind.length) pPr.push(`<w:ind ${ind.join(' ')}/>`);
+  if (options.indentHanging != null)
+    ind.push(`w:hanging="${options.indentHanging}"`);
+  if (options.indentFirstLine != null)
+    ind.push(`w:firstLine="${options.indentFirstLine}"`);
+  if (ind.length) pPr.push(`<w:ind ${ind.join(" ")}/>`);
 
   if (options.align) pPr.push(`<w:jc w:val="${options.align}"/>`);
 
-  const pPrXml = pPr.length ? `<w:pPr>${pPr.join('')}</w:pPr>` : '';
+  const pPrXml = pPr.length ? `<w:pPr>${pPr.join("")}</w:pPr>` : "";
   return `<w:p>${pPrXml}${runsXml}</w:p>`;
 }
 
@@ -92,7 +110,7 @@ export function paragraph(runsXml: string, options: ParagraphOptions = {}): stri
  * - `none` — рамки нет.
  * - `bottom` — гасим всё, кроме низа; низ наследуется из tblBorders и даёт линию подписи.
  */
-export type CellBorders = 'inherit' | 'none' | 'bottom';
+export type CellBorders = "inherit" | "none" | "bottom";
 
 export interface CellOptions {
   width: number;
@@ -107,17 +125,19 @@ export function cell(paragraphsXml: string, options: CellOptions): string {
     tcPr.push(`<w:gridSpan w:val="${options.gridSpan}"/>`);
   }
 
-  if (options.borders === 'none') {
+  if (options.borders === "none") {
     tcPr.push(
       '<w:tcBorders><w:top w:val="nil"/><w:left w:val="nil"/><w:bottom w:val="nil"/><w:right w:val="nil"/></w:tcBorders>',
     );
-  } else if (options.borders === 'bottom') {
-    tcPr.push('<w:tcBorders><w:top w:val="nil"/><w:left w:val="nil"/><w:right w:val="nil"/></w:tcBorders>');
+  } else if (options.borders === "bottom") {
+    tcPr.push(
+      '<w:tcBorders><w:top w:val="nil"/><w:left w:val="nil"/><w:right w:val="nil"/></w:tcBorders>',
+    );
   }
 
   // Ячейка без единого блочного элемента делает файл невалидным.
-  const content = paragraphsXml || paragraph('');
-  return `<w:tc><w:tcPr>${tcPr.join('')}</w:tcPr>${content}</w:tc>`;
+  const content = paragraphsXml || paragraph("");
+  return `<w:tc><w:tcPr>${tcPr.join("")}</w:tcPr>${content}</w:tc>`;
 }
 
 export function row(cellsXml: string): string {
@@ -128,27 +148,29 @@ export interface TableOptions {
   grid: readonly number[];
   width: number;
   indent?: number;
-  borders: 'single' | 'none';
+  borders: "single" | "none";
 }
 
 export function table(rowsXml: string, options: TableOptions): string {
   const border = (tag: string) =>
-    options.borders === 'single'
+    options.borders === "single"
       ? `<w:${tag} w:val="single" w:sz="4" w:space="0" w:color="000000"/>`
       : `<w:${tag} w:val="nil"/>`;
 
-  const borders = ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map(border).join('');
+  const borders = ["top", "left", "bottom", "right", "insideH", "insideV"]
+    .map(border)
+    .join("");
 
   const tblPr =
-    '<w:tblPr>' +
+    "<w:tblPr>" +
     `<w:tblW w:w="${options.width}" w:type="dxa"/>` +
     `<w:tblInd w:w="${options.indent ?? 0}" w:type="dxa"/>` +
     `<w:tblBorders>${borders}</w:tblBorders>` +
     '<w:tblLayout w:type="fixed"/>' +
     '<w:tblLook w:val="0600" w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/>' +
-    '</w:tblPr>';
+    "</w:tblPr>";
 
-  const grid = `<w:tblGrid>${options.grid.map((w) => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>`;
+  const grid = `<w:tblGrid>${options.grid.map((w) => `<w:gridCol w:w="${w}"/>`).join("")}</w:tblGrid>`;
 
   return `<w:tbl>${tblPr}${grid}${rowsXml}</w:tbl>`;
 }

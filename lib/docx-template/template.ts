@@ -1,14 +1,14 @@
 /** Единственное место, где шаблон читается с диска. */
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
-import JSZip from 'jszip';
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import JSZip from "jszip";
 
 export const TEMPLATE_PATH = path.join(
   process.cwd(),
-  'lib',
-  'docx-template',
-  'assets',
-  'protocol-template.docx',
+  "lib",
+  "docx-template",
+  "assets",
+  "protocol-template.docx",
 );
 
 let cached: Buffer | null = null;
@@ -20,8 +20,8 @@ export async function loadTemplateBuffer(): Promise<Buffer> {
   } catch (cause) {
     throw new Error(
       `Не найден шаблон протокола: ${TEMPLATE_PATH}. ` +
-        'Соберите его командой npm run build:protocol-template, ' +
-        'а в Docker убедитесь, что каталог lib/docx-template/assets попадает в образ.',
+        "Соберите его командой npm run build:protocol-template, " +
+        "а в Docker убедитесь, что каталог lib/docx-template/assets попадает в образ.",
       { cause },
     );
   }

@@ -1,6 +1,6 @@
 /** Очистка текста полей протокола перед выводом в markdown / DOCX. */
 
-import type { Protocol } from './schemas/protocol-schema';
+import type { Protocol } from "./schemas/protocol-schema";
 
 const BOILERPLATE_RX =
   /есть\s+ли\s+у\s+вас\s+другие|возможно,?\s+я\s+что[-–—\s]?то\s+пропустил|которые\s+стоит\s+включить/i;
@@ -9,17 +9,17 @@ const BOILERPLATE_RX =
 const TRAILING_NUMBERED_JUNK_RX = /(?:\s+\d+\.\s*\*+\s*|\s+\d+\.\s*)+$/;
 
 export function cleanProtocolText(text: string): string {
-  let s = String(text ?? '').trim();
-  if (!s) return '';
+  let s = String(text ?? "").trim();
+  if (!s) return "";
 
-  s = s.replace(BOILERPLATE_RX, '').trim();
-  s = s.replace(TRAILING_NUMBERED_JUNK_RX, '').trim();
+  s = s.replace(BOILERPLATE_RX, "").trim();
+  s = s.replace(TRAILING_NUMBERED_JUNK_RX, "").trim();
 
   // Снять внешние маркеры списка, если попали в поле.
   // • добавлен вместе с - * +: buildProtocolBodyXml рендерит пункты списка
   // именно через "• ", и такой же ввод пользователя иначе не снимался (см. B4).
-  s = s.replace(/^\s*[-*+•]\s+/, '');
-  s = s.replace(/^\s*\d+[.)]\s+/, '');
+  s = s.replace(/^\s*[-*+•]\s+/, "");
+  s = s.replace(/^\s*\d+[.)]\s+/, "");
 
   s = normalizeMarkdownBold(s);
 
@@ -27,36 +27,64 @@ export function cleanProtocolText(text: string): string {
 }
 
 /** Убирает пробелы внутри **…** и снимает «висячие» пары звёздочек. */
-/** Маркеры «Срок:» / «Ответственный:» в поле решения (после снятия **). */
-// \w не покрывает кириллицу, поэтому суффикс «-ый/-ая/-ые» задан явным классом [а-яё]*.
-const DECISION_LABEL_SPLIT_RX = /(?=(?:Срок\s*:|Ответственн[а-яё]*\s*:))/i;
+/**
+ * Общая часть паттерна меток «Срок:» / «Ответственный:» — только перечисление
+ * самих меток, без якорей и обвязки. Раньше была продублирована по всему
+ * файлу и в lib/docx-template/protocol-body.ts с разной обвязкой (lookahead,
+ * вставка переноса, разбор сегмента), из-за чего кириллический баг с \b чинили
+ * в нескольких копиях по отдельности (см. C2). Дальше подставляется в regex
+ * через RegExp(...) — каждая обвязка своя, общая только сама пара меток.
+ * \w не покрывает кириллицу, поэтому суффикс «-ый/-ая/-ые» задан явным классом [а-яё]*.
+ */
+export const DECISION_LABEL_PATTERN_SOURCE =
+  "Срок\\s*:|Ответственн[а-яё]*\\s*:";
 
-/** Перенос перед метками, если модель пишет «Срок:» и «Ответственный:» в одной строке. */
+const DECISION_LABEL_SPLIT_RX = new RegExp(
+  `(?=(?:${DECISION_LABEL_PATTERN_SOURCE}))`,
+  "i",
+);
+
+/** Вставляет перенос/<br> перед меткой в указанный разделитель (напр. если модель пишет «Срок:» и «Ответственный:» в одной строке). */
+const DECISION_LABEL_BREAK_RX = new RegExp(
+  `([^\\n<])\\s*(${DECISION_LABEL_PATTERN_SOURCE})`,
+  "gi",
+);
+
+/** Разбор сегмента «Метка: значение» — общая с lib/docx-template/protocol-body.ts форма (C2). */
+export const DECISION_LABEL_SEGMENT_RX = new RegExp(
+  `^(${DECISION_LABEL_PATTERN_SOURCE})\\s*([\\s\\S]*)`,
+  "i",
+);
+
 function normalizeDecisionLabelBreaks(s: string): string {
-  return s
-    .replace(/([^\n<])\s*(Срок\s*:)/gi, '$1\n$2')
-    .replace(/([^\n<])\s*(Ответственн[а-яё]*\s*:)/gi, '$1\n$2');
+  return s.replace(DECISION_LABEL_BREAK_RX, "$1\n$2");
 }
 
 /** Текст решения для DOCX / разбора: без markdown-звёздочек, переносы из &lt;br&gt; сохранены. */
 export function prepareDecisionPlainText(raw: string): string {
-  let s = String(raw ?? '').trim();
-  if (!s) return '';
-  s = s.replace(/<br\s*\/?>/gi, '\n');
-  s = s.replace(/\*\*/g, '');
-  s = s.replace(/(?<!\*)\*(?!\*)/g, '');
-  s = s.replace(/\r\n?/g, '\n');
-  s = s.replace(BOILERPLATE_RX, '').trim();
-  s = s.replace(TRAILING_NUMBERED_JUNK_RX, '').trim();
+  let s = String(raw ?? "").trim();
+  if (!s) return "";
+  s = s.replace(/<br\s*\/?>/gi, "\n");
+  s = s.replace(/\*\*/g, "");
+  s = s.replace(/(?<!\*)\*(?!\*)/g, "");
+  s = s.replace(/\r\n?/g, "\n");
+  s = s.replace(BOILERPLATE_RX, "").trim();
+  s = s.replace(TRAILING_NUMBERED_JUNK_RX, "").trim();
   return s.trim();
 }
 
 /** Рекурсивно режет строку, если «Ответственный:» остался внутри блока после «Срок:». */
 function splitLineByDecisionLabels(line: string): string[] {
-  const parts = line.split(DECISION_LABEL_SPLIT_RX).map((p) => p.trim()).filter(Boolean);
+  const parts = line
+    .split(DECISION_LABEL_SPLIT_RX)
+    .map((p) => p.trim())
+    .filter(Boolean);
   const out: string[] = [];
   for (const part of parts) {
-    const nested = part.split(DECISION_LABEL_SPLIT_RX).map((p) => p.trim()).filter(Boolean);
+    const nested = part
+      .split(DECISION_LABEL_SPLIT_RX)
+      .map((p) => p.trim())
+      .filter(Boolean);
     if (nested.length > 1) out.push(...splitLineByDecisionLabels(part));
     else out.push(part);
   }
@@ -77,13 +105,15 @@ export function formatContractBlock(protocol: {
   contractDate?: string;
 }): string {
   // Strip leading № to avoid "№№2"
-  const rawNum = prepareDecisionPlainText(protocol.contractNumber ?? '').trim().replace(/^№\s*/i, '');
-  const rawDate = prepareDecisionPlainText(protocol.contractDate ?? '').trim();
+  const rawNum = prepareDecisionPlainText(protocol.contractNumber ?? "")
+    .trim()
+    .replace(/^№\s*/i, "");
+  const rawDate = prepareDecisionPlainText(protocol.contractDate ?? "").trim();
 
   const hasNum = rawNum.length > 0 && !/не\s+указан/i.test(rawNum);
   const hasDate = rawDate.length > 0 && !/не\s+указан/i.test(rawDate);
 
-  if (!hasNum && !hasDate) return 'Договор: не указан в расшифровке';
+  if (!hasNum && !hasDate) return "Договор: не указан в расшифровке";
   if (hasNum && hasDate) return `Договор №${rawNum} от ${rawDate} г.`;
   if (hasNum) return `Договор №${rawNum}`;
   return `Договор от ${rawDate} г.`;
@@ -107,16 +137,25 @@ export function resolveApprovalForDocument(protocol: {
   customer: { organization: string; signatories: string[] };
   executor: { organization: string; signatories: string[] };
 } {
-  const pickOrg = (approvalOrg: string, participantOrg: string, fallback: string) => {
+  const pickOrg = (
+    approvalOrg: string,
+    participantOrg: string,
+    fallback: string,
+  ) => {
     const a = approvalOrg.trim();
     const p = participantOrg.trim();
     if (a && !isGenericApprovalOrg(a)) return a;
     if (p && !isGenericApprovalOrg(p)) return p;
     return fallback;
   };
-  const pickSigs = (approvalSigs: string[], people: Array<{ fullName: string }>) => {
+  const pickSigs = (
+    approvalSigs: string[],
+    people: Array<{ fullName: string }>,
+  ) => {
     const fromApproval = approvalSigs.map((s) => s.trim()).filter(Boolean);
-    const fromParticipants = people.map((p) => p.fullName.trim()).filter(Boolean);
+    const fromParticipants = people
+      .map((p) => p.fullName.trim())
+      .filter(Boolean);
     // Явно заданные подписанты — авторитетны: если пользователь попросил оставить
     // подписи только для 2 сотрудников, НЕ подставляем всех участников из таблицы.
     // Список участников — фолбэк ТОЛЬКО когда подписанты не заданы вовсе.
@@ -129,41 +168,44 @@ export function resolveApprovalForDocument(protocol: {
       organization: pickOrg(
         protocol.approval.customer.organization,
         protocol.participants.customer.organizationName,
-        'Заказчик',
+        "Заказчик",
       ),
-      signatories: pickSigs(protocol.approval.customer.signatories, protocol.participants.customer.people),
+      signatories: pickSigs(
+        protocol.approval.customer.signatories,
+        protocol.participants.customer.people,
+      ),
     },
     executor: {
       organization: pickOrg(
         protocol.approval.executor.organization,
         protocol.participants.executor.organizationName,
-        'Исполнитель',
+        "Исполнитель",
       ),
-      signatories: pickSigs(protocol.approval.executor.signatories, protocol.participants.executor.people),
+      signatories: pickSigs(
+        protocol.approval.executor.signatories,
+        protocol.participants.executor.people,
+      ),
     },
   };
 }
 
 export function formatSummaryDecisionForMarkdown(raw: string): string {
   let s = prepareDecisionPlainText(raw);
-  if (!s) return '';
+  if (!s) return "";
 
   // Явный <br> перед метками — в GFM-ячейке таблицы это надёжнее, чем только \n
-  s = s
-    .replace(/([^\n<])\s*(Срок\s*:)/gi, '$1<br>$2')
-    .replace(/([^\n<])\s*(Ответственн[а-яё]*\s*:)/gi, '$1<br>$2')
-    .replace(/^(<br>)+/i, '');
+  s = s.replace(DECISION_LABEL_BREAK_RX, "$1<br>$2").replace(/^(<br>)+/i, "");
 
   const parts = s
     .split(/<br\s*\/?>|\n+/i)
     .map((p) => p.trim())
     .filter(Boolean);
 
-  if (parts.length === 0) return '';
+  if (parts.length === 0) return "";
 
   return parts
     .map((segment) => {
-      const m = segment.match(/^(Срок\s*:|Ответственн[а-яё]*\s*:)\s*([\s\S]*)/i);
+      const m = segment.match(DECISION_LABEL_SEGMENT_RX);
       if (m) {
         const label = m[1].trim();
         const rest = m[2].trim();
@@ -171,37 +213,32 @@ export function formatSummaryDecisionForMarkdown(raw: string): string {
       }
       return segment;
     })
-    .join('<br>');
-}
-
-/** Убирает HTML-жирный из markdown перед экспортом в docx — в Word иначе видны сырые &lt;strong&gt;. */
-export function normalizeMarkdownBoldForDocxExport(markdown: string): string {
-  let s = String(markdown ?? '').replace(/\r\n?/g, '\n');
-  s = s.replace(/<strong>([^<]*)<\/strong>/gi, '**$1**');
-  s = s.replace(/<\/?strong>/gi, '');
-  return s;
+    .join("<br>");
 }
 
 /** Разбирает inline **жирный** на сегменты { text, bold } для Word (docx). */
-export function parseInlineMarkdownBold(text: string): Array<{ text: string; bold: boolean }> {
-  const s = String(text ?? '');
-  if (!s) return [{ text: '', bold: false }];
+export function parseInlineMarkdownBold(
+  text: string,
+): Array<{ text: string; bold: boolean }> {
+  const s = String(text ?? "");
+  if (!s) return [{ text: "", bold: false }];
   const segments: Array<{ text: string; bold: boolean }> = [];
   const rx = /\*\*([^*]+)\*\*/g;
   let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = rx.exec(s)) !== null) {
+  let m: RegExpExecArray | null = rx.exec(s);
+  while (m !== null) {
     if (m.index > last) {
       segments.push({ text: s.slice(last, m.index), bold: false });
     }
     segments.push({ text: m[1], bold: true });
     last = m.index + m[0].length;
+    m = rx.exec(s);
   }
   if (last < s.length) {
     segments.push({ text: s.slice(last), bold: false });
   }
   if (segments.length === 0) {
-    return [{ text: s.replace(/\*\*/g, ''), bold: false }];
+    return [{ text: s.replace(/\*\*/g, ""), bold: false }];
   }
   return segments;
 }
@@ -209,14 +246,14 @@ export function parseInlineMarkdownBold(text: string): Array<{ text: string; bol
 export function normalizeMarkdownBold(text: string): string {
   let s = text;
   for (let i = 0; i < 6; i++) {
-    s = s.replace(/\*\*\s+/g, '**');
-    s = s.replace(/\s+\*\*/g, '**');
+    s = s.replace(/\*\*\s+/g, "**");
+    s = s.replace(/\s+\*\*/g, "**");
   }
 
   const count = (s.match(/\*\*/g) || []).length;
   if (count % 2 === 1) {
     // Незакрытое выделение — убираем разметку, оставляем текст
-    s = s.replace(/\*\*/g, '');
+    s = s.replace(/\*\*/g, "");
   }
 
   return s.trim();
@@ -231,12 +268,15 @@ export function isProtocolBoilerplateLine(text: string): boolean {
 /** Строка нумерованного пункта без вложенного «- 1.» (только «1. …»). */
 export function formatNumberedLine(index: number, text: string): string {
   const body = cleanProtocolText(text);
-  if (!body) return '';
+  if (!body) return "";
   return `${index + 1}.\t${body}`;
 }
 
 /** Заголовок раздела протокола (##), чтобы markdown не склеивал «4.» и вложенный «1. 2. 3.». */
-export function formatProtocolSectionHeading(sectionNum: number, title: string): string {
+export function formatProtocolSectionHeading(
+  sectionNum: number,
+  title: string,
+): string {
   const body = title.trim();
   return `## ${sectionNum}. ${body}\n\n`;
 }
@@ -244,7 +284,9 @@ export function formatProtocolSectionHeading(sectionNum: number, title: string):
 /** Строка markdown-таблицы вида | --- | --- | или | ----- | ---------- | */
 export function isMarkdownTableSeparatorRow(cells: string[]): boolean {
   if (cells.length < 2) return false;
-  return cells.every((c) => /^:?-{2,}:?$/.test(c.trim()) || /^[-–—:\s|]+$/i.test(c.trim()));
+  return cells.every(
+    (c) => /^:?-{2,}:?$/.test(c.trim()) || /^[-–—:\s|]+$/i.test(c.trim()),
+  );
 }
 
 /**
@@ -253,13 +295,16 @@ export function isMarkdownTableSeparatorRow(cells: string[]): boolean {
  * в lib/protocol-markdown-parse.ts.
  */
 export function escapeMarkdownTableCell(text: string): string {
-  return String(text ?? '')
-    .replace(/\|/g, '\\|')
-    .replace(/\r\n?/g, '\n')
-    .replace(/\n/g, '<br>');
+  return String(text ?? "")
+    .replace(/\|/g, "\\|")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\n/g, "<br>");
 }
 
-export function isValidParticipantRow(fullName: string, position: string): boolean {
+export function isValidParticipantRow(
+  fullName: string,
+  position: string,
+): boolean {
   const fn = fullName.trim();
   const pos = position.trim();
   if (!fn && !pos) return false;
@@ -278,39 +323,49 @@ const PROTOCOL_SECTION_HEADING_RX =
  */
 /** Повестка — только «## 2. Повестка:», нумерованные пункты отдельными абзацами. */
 export function fixAgendaHeadingInMarkdown(raw: string): string {
-  return raw.replace(/\r\n?/g, '\n').split('\n').map((line) => {
-    const trimmed = line.trimStart();
-    const m = trimmed.match(/^(#{1,6}\s+)?2\.\s+Повестка:\s*(.+)$/i);
-    if (!m?.[2]?.trim()) return line;
-    const indent = line.slice(0, line.length - trimmed.length);
-    return `${indent}## 2. Повестка:\n\n${indent}${m[2].trim()}`;
-  }).join('\n');
+  return raw
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => {
+      const trimmed = line.trimStart();
+      const m = trimmed.match(/^(#{1,6}\s+)?2\.\s+Повестка:\s*(.+)$/i);
+      if (!m?.[2]?.trim()) return line;
+      const indent = line.slice(0, line.length - trimmed.length);
+      return `${indent}## 2. Повестка:\n\n${indent}${m[2].trim()}`;
+    })
+    .join("\n");
 }
 
 /** Убирает дублирующую строку | ----- | после стандартного | --- | --- |. */
 export function stripDuplicateMarkdownTableSeparators(raw: string): string {
-  const lines = raw.replace(/\r\n?/g, '\n').split('\n');
+  const lines = raw.replace(/\r\n?/g, "\n").split("\n");
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const trimmed = line.trim();
     if (/^\|/.test(trimmed)) {
-      const cells = trimmed.split('|').map((c) => c.trim()).filter(Boolean);
+      const cells = trimmed
+        .split("|")
+        .map((c) => c.trim())
+        .filter(Boolean);
       if (isMarkdownTableSeparatorRow(cells) && out.length > 0) {
-        const prev = out[out.length - 1]?.trim() ?? '';
-        const prevCells = prev.split('|').map((c) => c.trim()).filter(Boolean);
+        const prev = out[out.length - 1]?.trim() ?? "";
+        const prevCells = prev
+          .split("|")
+          .map((c) => c.trim())
+          .filter(Boolean);
         if (isMarkdownTableSeparatorRow(prevCells)) continue;
       }
     }
     out.push(line);
   }
-  return out.join('\n');
+  return out.join("\n");
 }
 
 export function fixProtocolSectionHeadingsInMarkdown(raw: string): string {
-  let s = raw.replace(/\r\n?/g, '\n');
+  let s = raw.replace(/\r\n?/g, "\n");
   s = s
-    .split('\n')
+    .split("\n")
     .map((line) => {
       const trimmed = line.trimStart();
       if (/^#{1,6}\s+\d{1,2}\./.test(trimmed)) return line;
@@ -319,7 +374,7 @@ export function fixProtocolSectionHeadingsInMarkdown(raw: string): string {
       const indent = line.slice(0, line.length - trimmed.length);
       return `${indent}## ${m[1]}. ${m[2]}${m[3]}`;
     })
-    .join('\n');
+    .join("\n");
   s = fixAgendaHeadingInMarkdown(s);
   return stripDuplicateMarkdownTableSeparators(s);
 }
@@ -334,7 +389,7 @@ export function isValidOrgDisplayName(name: string): boolean {
   return true;
 }
 
-const APPROVAL_ORG_PLACEHOLDER = 'не указано в расшифровке';
+const APPROVAL_ORG_PLACEHOLDER = "не указано в расшифровке";
 
 /** Строка организации в разделе «Согласовано»: «ООО «Ромашка»:». */
 export function formatApprovalOrgLine(org: string): string {
@@ -342,24 +397,30 @@ export function formatApprovalOrgLine(org: string): string {
   // Круговой разбор кормит сюда уже готовую заглушку — без этой проверки на выходе
   // получалось "не указано в расшифровке:" с лишним двоеточием (см. B3).
   if (t === APPROVAL_ORG_PLACEHOLDER) return APPROVAL_ORG_PLACEHOLDER;
-  if (!t || /^(заказчик|исполнитель)$/i.test(t)) return APPROVAL_ORG_PLACEHOLDER;
+  if (!t || /^(заказчик|исполнитель)$/i.test(t))
+    return APPROVAL_ORG_PLACEHOLDER;
   if (/^ООО\s/i.test(t)) return `${t}:`;
-  const inner = t.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, '$1').trim();
+  const inner = t.replace(/^ООО\s*[«"'„](.+?)[»"'"]$/, "$1").trim();
   if (inner !== t) return `ООО «${inner}»:`;
   return `${t}:`;
 }
 
 /** Многострочное поле → markdown-список. Однострочное возвращается как есть. */
 export function formatMultilineField(text: string): string {
-  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
   if (lines.length <= 1) return text;
-  return lines.map((l) => `- ${l}`).join('\n');
+  return lines.map((l) => `- ${l}`).join("\n");
 }
 
 export function protocolToMarkdown(protocol: Protocol): string {
-  const normalizedNumber = String(protocol.protocolNumber || '').trim().startsWith('№')
+  const normalizedNumber = String(protocol.protocolNumber || "")
+    .trim()
+    .startsWith("№")
     ? String(protocol.protocolNumber).trim()
-    : `№${String(protocol.protocolNumber || '').trim()}`;
+    : `№${String(protocol.protocolNumber || "").trim()}`;
 
   let md = `ПРОТОКОЛ ${normalizedNumber} ОТ ${protocol.meetingDate}\n\n`;
 
@@ -371,63 +432,67 @@ export function protocolToMarkdown(protocol: Protocol): string {
     md += `Тема договора: ${cleanProtocolText(protocol.contractSubject)}\n\n`;
   }
 
-  md += '---\n\n';
+  md += "---\n\n";
 
   // 1. Дата собрания
-  md += formatProtocolSectionHeading(1, `Дата собрания: ${protocol.meetingDate}`);
+  md += formatProtocolSectionHeading(
+    1,
+    `Дата собрания: ${protocol.meetingDate}`,
+  );
 
   // 2. Повестка
-  md += formatProtocolSectionHeading(2, 'Повестка:');
+  md += formatProtocolSectionHeading(2, "Повестка:");
   if (protocol.agenda.items.length > 0) {
     protocol.agenda.items.forEach((item, i) => {
       md += `${i + 1}) ${cleanProtocolText(item)};\n`;
     });
   }
-  md += '\n\n';
+  md += "\n\n";
 
   // 3. Участники
-  md += formatProtocolSectionHeading(3, 'Участники:');
+  md += formatProtocolSectionHeading(3, "Участники:");
 
   const custOrg = protocol.participants.customer.organizationName.trim();
-  md += `**Заказчик${isValidOrgDisplayName(custOrg) ? ` — ${custOrg}` : ''}**\n\n`;
-  md += '| ФИО | Должность |\n';
-  md += '| --- | --- |\n';
+  md += `**Заказчик${isValidOrgDisplayName(custOrg) ? ` — ${custOrg}` : ""}**\n\n`;
+  md += "| ФИО | Должность |\n";
+  md += "| --- | --- |\n";
   protocol.participants.customer.people
     .filter((p) => isValidParticipantRow(p.fullName, p.position))
     .forEach((p) => {
       md += `| ${escapeMarkdownTableCell(p.fullName)} | ${escapeMarkdownTableCell(p.position)} |\n`;
     });
 
-  md += '\n\n';
+  md += "\n\n";
 
   const execOrg = protocol.participants.executor.organizationName.trim();
-  md += `**Исполнитель${isValidOrgDisplayName(execOrg) ? ` — ${execOrg}` : ''}**\n\n`;
-  md += '| ФИО | Должность |\n';
-  md += '| --- | --- |\n';
+  md += `**Исполнитель${isValidOrgDisplayName(execOrg) ? ` — ${execOrg}` : ""}**\n\n`;
+  md += "| ФИО | Должность |\n";
+  md += "| --- | --- |\n";
   protocol.participants.executor.people
     .filter((p) => isValidParticipantRow(p.fullName, p.position))
     .forEach((p) => {
       md += `| ${escapeMarkdownTableCell(p.fullName)} | ${escapeMarkdownTableCell(p.position)} |\n`;
     });
 
-  md += '\n\n';
+  md += "\n\n";
 
   // 4. Содержание встречи
-  md += formatProtocolSectionHeading(4, 'Содержание встречи:');
+  md += formatProtocolSectionHeading(4, "Содержание встречи:");
   protocol.meetingContent.topics.forEach((topic, i) => {
     md += `**${i + 1}) ${cleanProtocolText(topic.title)}**\n\n`;
     const listened = cleanProtocolText(topic.listened);
     const discussed = cleanProtocolText(topic.discussed);
     const decided = cleanProtocolText(topic.decided);
     if (listened) md += `**Слушали:** ${listened}\n\n`;
-    if (discussed) md += `**Обсудили:**\n\n${formatMultilineField(discussed)}\n\n`;
+    if (discussed)
+      md += `**Обсудили:**\n\n${formatMultilineField(discussed)}\n\n`;
     if (decided) md += `**Решили:**\n\n${formatMultilineField(decided)}\n\n`;
   });
 
   if (protocol.meetingContent.summary.length > 0) {
-    md += '**Резюме:**\n\n';
-    md += '| **Обсуждаемые вопросы** | **Принятые решения** |\n';
-    md += '| --- | --- |\n';
+    md += "**Резюме:**\n\n";
+    md += "| **Обсуждаемые вопросы** | **Принятые решения** |\n";
+    md += "| --- | --- |\n";
     protocol.meetingContent.summary.forEach((row) => {
       const q = cleanProtocolText(row.question);
       const d = formatSummaryDecisionForMarkdown(row.decision);
@@ -435,13 +500,13 @@ export function protocolToMarkdown(protocol: Protocol): string {
         md += `| ${escapeMarkdownTableCell(q)} | ${escapeMarkdownTableCell(d)} |\n`;
       }
     });
-    md += '\n';
+    md += "\n";
   }
 
-  md += '\n\n';
+  md += "\n\n";
 
   // 5. Согласовано — двухколоночная таблица
-  md += formatProtocolSectionHeading(5, 'Согласовано:');
+  md += formatProtocolSectionHeading(5, "Согласовано:");
 
   const approval = resolveApprovalForDocument(protocol);
 
@@ -454,11 +519,15 @@ export function protocolToMarkdown(protocol: Protocol): string {
   md += `| ${formatApprovalOrgLine(approval.customer.organization)} | ${formatApprovalOrgLine(approval.executor.organization)} |\n`;
 
   for (let i = 0; i < sigLen; i++) {
-    const cust = custSigs[i] ? `${custSigs[i].trim()} /______________` : '______________________';
-    const exec = execSigs[i] ? `${execSigs[i].trim()} /______________` : '______________________';
+    const cust = custSigs[i]
+      ? `${custSigs[i].trim()} /______________`
+      : "______________________";
+    const exec = execSigs[i]
+      ? `${execSigs[i].trim()} /______________`
+      : "______________________";
     md += `| ${cust} | ${exec} |\n`;
   }
-  md += '\n';
+  md += "\n";
 
   return md;
 }
