@@ -49,6 +49,7 @@ import {
   unifyUnresolvedMarkers,
   dedupeListened,
   dedupeParticipants,
+  enforceSideNaming,
 } from '@/lib/protocol-guards';
 import {
   buildDateContextBlock,
@@ -534,6 +535,7 @@ export async function generateFinalDocument(
     validated = normalizeProtocolNumbers(validated);
     validated = unifyUnresolvedMarkers(validated);
     validated = dedupeListened(validated);
+    validated = enforceSideNaming(validated);
     const numberGuard = ensureProtocolNumber(validated);
     validated = numberGuard.protocol;
     const participantsGuard = dedupeParticipants(validated);
@@ -981,6 +983,7 @@ async function tryPatchExistingProtocol(options: {
     p = normalizeProtocolNumbers(p);
     p = unifyUnresolvedMarkers(p);
     p = dedupeListened(p);
+    p = enforceSideNaming(p);
 
     applied.protocol = p;
   }
