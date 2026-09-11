@@ -631,7 +631,7 @@ export function unifyUnresolvedMarkers(p: Protocol): Protocol {
  *
  * Поле — простой перечень ФИО через запятую, и модель регулярно называет одного
  * человека дважды, если он в расшифровке высказывался несколько раз:
- *   «Слушали: Горбунова С.И. (Заказчик), Горбунова С.И. (Заказчик)»
+ *   «Слушали: Горбунова С.И., Горбунова С.И.»
  * Промптом это лечится ненадёжно, а список уникальных значений — задача на три
  * строки кода. Порядок сохраняем: первое упоминание остаётся на своём месте.
  */
@@ -790,6 +790,16 @@ function replaceLeadingPronouns(text: string): string {
   });
 }
 
+/** «Слушали»: только ФИО. Снимает приписку стороны «(Заказчик)» / «(Исполнитель)» после имени. */
+export function stripSideFromListened(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(/\s*\((?:Заказчик|Исполнитель)\)/g, '')
+    .replace(/\s*,\s*/g, ', ')
+    .replace(/,\s*$/, '')
+    .trim();
+}
+
 /**
  * Заказчик просит обозначать участников только стороной и без местоимений —
  * везде, включая метку «Ответственный: …»: «Ответственный: Заказчик.», а не
@@ -797,8 +807,8 @@ function replaceLeadingPronouns(text: string): string {
  * соблюдает нестабильно.
  *
  * Обрабатываются только повествовательные поля: discussed, decided и
- * summary[].decision. Поле listened не трогается — по регламенту это
- * перечень ФИО со стороной.
+ * summary[].decision. Поле listened обрабатывается отдельно функцией
+ * stripSideFromListened — там политика противоположная (только ФИО, без стороны).
  */
 export function enforceSideNamingInText(text: string): string {
   if (!text) return text;
@@ -816,13 +826,16 @@ export function enforceSideNamingInText(text: string): string {
 }
 
 /**
- * Применяет enforceSideNamingInText к повествовательным полям протокола:
- * discussed/decided каждой темы и decision резюме. Поля listened, title,
- * участники и шапка не трогаются — там ФИО в скобках обязательны по регламенту.
+ * Единая политика именования сторон/ФИО в протоколе — разная для разных полей:
+ * в повествовательных полях (discussed/decided/summary[].decision) — только
+ * сторона, без ФИО и местоимений (enforceSideNamingInText); в «Слушали» —
+ * наоборот, только перечень ФИО, без приписки стороны (stripSideFromListened).
+ * Поля title, участники и шапка не трогаются.
  */
 export function enforceSideNaming(p: Protocol): Protocol {
   const topics = p.meetingContent.topics.map((t) => ({
     ...t,
+    listened: stripSideFromListened(t.listened),
     discussed: enforceSideNamingInText(t.discussed),
     decided: enforceSideNamingInText(t.decided),
   }));
