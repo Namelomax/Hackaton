@@ -717,6 +717,108 @@ export function dedupeParticipants(p: Protocol): { protocol: Protocol; notes: st
   return { protocol: { ...p, participants }, notes: [...new Set(notes)] };
 }
 
+// --- Только сторона, без ФИО в скобках и без местоимений (просьба заказчика) ---
+
+/** Сторона в любом падеже: «Заказчик», «Заказчику», «Исполнитель», «Исполнителю», «Исполнителем» и т.п. */
+const SIDE_ANY_RX = '(?:Заказчик[ауоме]?|Исполнител[ьяюем]+)';
+/** ФИО из 1-3 слов с заглавной буквы: «Иванов И.И.», «Стрыгину Константину», «Савинкин Михаил Евгеньевич». */
+const NAME_RX = '[А-ЯЁ][а-яё]+(?:\\s+[А-ЯЁ](?:[а-яё]+|\\.)(?:\\s?[А-ЯЁ]\\.)?){0,2}';
+/** «Заказчик (Иванов И.И.)» -> «Заказчик». Сторона в любом падеже. */
+const SIDE_WITH_NAME_RX = new RegExp(`(${SIDE_ANY_RX})\\s*\\(${NAME_RX}\\)`, 'g');
+/** Женское окончание глагола сразу после стороны в именительном падеже: «уточнила», «согласилась». */
+const SIDE_VERB_FEMININE_RX = /(Заказчик|Исполнитель)\s+([а-яё]{3,}?)(ла|лась)(?=[\s,.;:!?)]|$)/g;
+/** Местоимение в начале предложения: «Он», «Она», «Они» с продолжением фразы. */
+const SENTENCE_START_PRONOUN_RX = /(^|[.!?;]\s+|\n\s*)(Он|Она|Они)(\s+[а-яё])/g;
+/** Метка «Ответственный: …» / «Ответственные: …» — сегмент до конца предложения защищаем от правок. */
+const RESPONSIBLE_LABEL_RX = /Ответственн[а-яё]*\s*:[^.\n]*/g;
+/** Плейсхолдер для защищённого сегмента «Ответственный: …» — без пробелов, чтобы не зависеть от их сохранности. */
+const RESP_PLACEHOLDER_RX = /@@RESP(\d+)@@/g;
+
+/** Приводит женское окончание глагола рядом со стороной к мужскому: «уточнила» -> «уточнил». */
+function fixSideVerbGender(text: string): string {
+  return text.replace(
+    SIDE_VERB_FEMININE_RX,
+    (_whole, side, stem, tail) => `${side} ${stem}${tail === 'лась' ? 'лся' : 'л'}`,
+  );
+}
+
+/**
+ * Заменяет местоимение «Он/Она/Они» в начале предложения на последнюю
+ * упомянутую до этого места сторону. Антецедент ищем по `lastIndexOf`
+ * «Заказчик»/«Исполнител» СРЕДИ ТЕКСТА ДО совпадения — так «Она» после
+ * «Заказчик уточнил…» превращается в «Заказчик», а не угадывается наугад.
+ * Если до этого места ни одна сторона не встречалась — местоимение не трогаем
+ * (лучше оставить как есть, чем подставить неверную сторону).
+ */
+function replaceLeadingPronouns(text: string): string {
+  return text.replace(SENTENCE_START_PRONOUN_RX, (whole, lead, pronoun, tail, offset) => {
+    const before = text.slice(0, offset);
+    const lastCustomer = before.toLowerCase().lastIndexOf('заказчик');
+    const lastExecutor = before.toLowerCase().lastIndexOf('исполнител');
+    if (lastCustomer < 0 && lastExecutor < 0) return whole; // антецедента нет — не трогаем
+
+    if (pronoun === 'Они') {
+      const side = lastCustomer >= 0 && lastExecutor >= 0 ? 'Стороны' : lastCustomer >= 0 ? 'Заказчик' : 'Исполнитель';
+      return lead + side + tail;
+    }
+    const side = lastExecutor > lastCustomer ? 'Исполнитель' : 'Заказчик';
+    return lead + side + tail;
+  });
+}
+
+/**
+ * Заказчик просит обозначать участников только стороной и без местоимений:
+ * «Исполнитель сообщил, что…», а не «Исполнитель (Иванова А.) сообщила, что…»
+ * и не «Он ответил, что…». Промпт это просит, но модель соблюдает нестабильно.
+ *
+ * Обрабатываются только повествовательные поля: discussed, decided и
+ * summary[].decision. Метка «Ответственный: …» защищена от изменений —
+ * там ФИО по шаблону заказчика уместно.
+ */
+export function enforceSideNamingInText(text: string): string {
+  if (!text) return text;
+
+  // 1. Защищаем «Ответственный: …» до конца предложения — плейсхолдерами.
+  const protectedSegments: string[] = [];
+  const withPlaceholders = text.replace(RESPONSIBLE_LABEL_RX, (whole) => {
+    const token = `@@RESP${protectedSegments.length}@@`;
+    protectedSegments.push(whole);
+    return token;
+  });
+
+  // 2. Снимаем ФИО в скобках после стороны.
+  let next = withPlaceholders.replace(SIDE_WITH_NAME_RX, '$1');
+  // 3. Согласуем род глагола (женский -> мужской) сразу после стороны.
+  next = fixSideVerbGender(next);
+  // 4. Заменяем местоимение в начале предложения на последнюю упомянутую сторону.
+  next = replaceLeadingPronouns(next);
+  // 5. После подстановки стороны вместо «Она» глагол мог остаться в женском роде.
+  next = fixSideVerbGender(next);
+
+  // 6. Возвращаем защищённые сегменты «Ответственный: …» на место.
+  next = next.replace(RESP_PLACEHOLDER_RX, (_m, i) => protectedSegments[Number(i)]);
+
+  return next;
+}
+
+/**
+ * Применяет enforceSideNamingInText к повествовательным полям протокола:
+ * discussed/decided каждой темы и decision резюме. Поля listened, title,
+ * участники и шапка не трогаются — там ФИО в скобках обязательны по регламенту.
+ */
+export function enforceSideNaming(p: Protocol): Protocol {
+  const topics = p.meetingContent.topics.map((t) => ({
+    ...t,
+    discussed: enforceSideNamingInText(t.discussed),
+    decided: enforceSideNamingInText(t.decided),
+  }));
+  const summary = p.meetingContent.summary.map((r) => ({
+    ...r,
+    decision: enforceSideNamingInText(r.decision),
+  }));
+  return { ...p, meetingContent: { topics, summary } };
+}
+
 /** Помечает относительные даты в содержательных полях протокола. */
 export function flagRelativeDates(p: Protocol): { protocol: Protocol; flags: string[] } {
   const flags: string[] = [];
