@@ -4,6 +4,7 @@ import {
   fillHeaderFromDialogue,
   enforceSideNaming,
   enforceSideNamingInText,
+  stripSideFromListened,
 } from '@/lib/protocol-guards';
 import { extractUserAnswerTexts, extractLatestUserCorrections } from '@/lib/protocol-chat-extract';
 import { normalizeCyrillicHomoglyphs } from '@/lib/prompts/glossary';
@@ -189,6 +190,28 @@ describe('dedupeListened', () => {
   });
 });
 
+describe('stripSideFromListened', () => {
+  it('снимает приписку стороны у нескольких ФИО через запятую', () => {
+    expect(stripSideFromListened('Иванов И.И. (Заказчик), Петров П.П. (Исполнитель)')).toBe(
+      'Иванов И.И., Петров П.П.',
+    );
+  });
+
+  it('не трогает тайм-код, снимает только сторону', () => {
+    expect(stripSideFromListened('Горбунова С.И. (Заказчик) [ТС: 00:05:12]')).toBe(
+      'Горбунова С.И. [ТС: 00:05:12]',
+    );
+  });
+
+  it('идемпотентна: строку без стороны не меняет', () => {
+    expect(stripSideFromListened('Иванов И.И., Петров П.П.')).toBe('Иванов И.И., Петров П.П.');
+  });
+
+  it('пустую строку не трогает', () => {
+    expect(stripSideFromListened('')).toBe('');
+  });
+});
+
 describe('fillHeaderFromDialogue', () => {
   // \b после кириллицы в JS не работает (\w — только ASCII), поэтому
   // /\bнеобходимо\b/ не матчила НИКОГДА — кандидат в название с этим словом
@@ -296,7 +319,7 @@ describe('enforceSideNamingInText', () => {
 });
 
 describe('enforceSideNaming', () => {
-  it('обрабатывает discussed/decided и summary[].decision, не трогая listened', () => {
+  it('обрабатывает discussed/decided и summary[].decision, а в listened снимает сторону', () => {
     const p = makeProtocol({
       meetingContent: {
         topics: [
@@ -320,10 +343,33 @@ describe('enforceSideNaming', () => {
     const topic = result.meetingContent.topics[0];
     expect(topic.discussed).toBe('Заказчик сообщил, что работы завершены.');
     expect(topic.decided).toBe('Исполнитель подготовит регламент. Исполнитель направит его на согласование.');
-    // «Слушали» — ФИО в скобках обязательны по регламенту, SIDE_ANY их не трогает.
-    expect(topic.listened).toBe('Иванов И.И. (Заказчик), Петров П.П. (Исполнитель)');
+    // «Слушали» — только ФИО, приписка стороны снимается.
+    expect(topic.listened).toBe('Иванов И.И., Петров П.П.');
     expect(result.meetingContent.summary[0].decision).toBe(
       'Исполнитель подготовит регламент. Ответственный: Исполнитель.',
     );
+  });
+});
+
+describe('enforceSideNaming + dedupeListened (порядок вызовов)', () => {
+  const { dedupeListened } = require('../protocol-guards');
+
+  it('после снятия стороны один и тот же человек с разными сторонами схлопывается в одно имя', () => {
+    const p = makeProtocol({
+      meetingContent: {
+        topics: [
+          {
+            title: 'т',
+            listened: 'Иванов И.И. (Заказчик), Иванов И.И. (Исполнитель)',
+            discussed: '',
+            decided: '',
+          },
+        ],
+        summary: [],
+      },
+    });
+
+    const result = dedupeListened(enforceSideNaming(p));
+    expect(result.meetingContent.topics[0].listened).toBe('Иванов И.И.');
   });
 });

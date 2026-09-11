@@ -534,8 +534,8 @@ export async function generateFinalDocument(
     // дубли участников в разных падежах.
     validated = normalizeProtocolNumbers(validated);
     validated = unifyUnresolvedMarkers(validated);
-    validated = dedupeListened(validated);
     validated = enforceSideNaming(validated);
+    validated = dedupeListened(validated);
     const numberGuard = ensureProtocolNumber(validated);
     validated = numberGuard.protocol;
     const participantsGuard = dedupeParticipants(validated);
@@ -982,8 +982,8 @@ async function tryPatchExistingProtocol(options: {
     patchGuardNotes.push(...flags.flags);
     p = normalizeProtocolNumbers(p);
     p = unifyUnresolvedMarkers(p);
-    p = dedupeListened(p);
     p = enforceSideNaming(p);
+    p = dedupeListened(p);
 
     applied.protocol = p;
   }
