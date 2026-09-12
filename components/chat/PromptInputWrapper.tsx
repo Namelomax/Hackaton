@@ -213,6 +213,9 @@ type PromptInputWrapperProps = {
   onOpenAuthDialog?: () => void;
   chatBody?: ChatTransportBodyExtras;
   anonymizeMode?: boolean;
+  /** Фоновая автогенерация названия чата после первого сообщения.
+   *  Вызывается ВСЕГДА; решение «надо ли» принимает сама страница. */
+  onAutoTitle?: (args: { conversationId: string; text: string; files: FileUIPart[] }) => void;
   /** Показывать диалог подтверждения перед отправкой в облако. Анонимизация
    * происходит ВСЕГДА (на сервере) независимо от этого флага; выключение
    * убирает только окно предпросмотра. По умолчанию включено. */
@@ -246,6 +249,7 @@ export const PromptInputWrapper = ({
   onOpenAuthDialog,
   chatBody,
   anonymizeMode = false,
+  onAutoTitle,
   anonymizeConfirm = true,
   onAnonymizationReady,
 }: PromptInputWrapperProps) => {
@@ -597,6 +601,16 @@ export const PromptInputWrapper = ({
           },
         }
       );
+
+      // Название чата генерируется фоном, параллельно ответу агента: ждать
+      // его здесь нельзя — форма должна очиститься немедленно.
+      if (ensuredConversationId) {
+        onAutoTitle?.({
+          conversationId: ensuredConversationId,
+          text: textWithQuote,
+          files: finalFiles,
+        });
+      }
 
       setInput('');
       setQuoteText?.('');
