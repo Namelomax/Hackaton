@@ -11,6 +11,7 @@ import { ConversationArea } from '@/components/chat/ConversationArea';
 import { PromptInputWrapper } from '@/components/chat/PromptInputWrapper';
 import { Loader } from '@/components/ai-elements/loader';
 import { DEFAULT_CLOUD_CHAT_MODEL, FIXED_CHAT_MODEL } from '@/lib/chat-models';
+import { isGenericChatTitle } from '@/lib/chat-display';
 import { copyTextToClipboard } from '@/lib/copyToClipboard';
 import { toast } from 'sonner';
 import { resolveMessagesFromRecord } from '@/lib/conversationMessages';
@@ -183,6 +184,8 @@ export default function ChatPage() {
   // Custom fetch to inject userId and conversationId into every chat request body
   const [conversationsList, setConversationsList] = useState<any[]>([]);
   const conversationsListRef = useRef<any[]>([]);
+  /** Диалоги, для которых запрос названия уже в полёте — чтобы не слать дважды. */
+  const autoTitleInFlightRef = useRef<Set<string>>(new Set());
   const [conversationId, setConversationId] = useState<string | null>(null);
   // Chat that user is currently viewing in the UI.
   const [viewConversationId, setViewConversationId] = useState<string | null>(null);
@@ -1026,6 +1029,56 @@ export default function ChatPage() {
     }
   };
 
+  /**
+   * Фоновая автогенерация названия чата после первого сообщения.
+   *
+   * Проверки здесь — оптимизация, а не гарантия: последнее слово всё равно за
+   * сервером, который сам перечитывает заголовок перед записью. Ошибки гасим
+   * в консоль: это фоновое удобство, и ругаться на него тостом неуместно.
+   */
+  const handleAutoTitle = useCallback(
+    ({ conversationId: convId, text, files }: { conversationId: string; text: string; files: any[] }) => {
+      if (!convId || String(convId).startsWith('local-')) return;
+      if (autoTitleInFlightRef.current.has(convId)) return;
+
+      const conv = (conversationsListRef.current || []).find((c) => c?.id === convId);
+      // Диалога ещё нет в списке — он только что создан, заголовок дефолтный.
+      if (conv && !isGenericChatTitle(conv.title)) return;
+
+      autoTitleInFlightRef.current.add(convId);
+      void (async () => {
+        try {
+          const resp = await fetch('/api/conversations/title', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              conversationId: convId,
+              text,
+              files: (files || []).map((f: any) => ({
+                id: f?.id,
+                filename: f?.filename,
+                url: f?.url,
+                mediaType: f?.mediaType,
+              })),
+              userId: authUser?.id,
+            }),
+          });
+          const json = await resp.json();
+          if (json?.success && typeof json.title === 'string' && json.title.trim()) {
+            setConversationsList((prev) =>
+              prev.map((c) => (c.id === convId ? { ...c, title: json.title } : c)),
+            );
+          }
+        } catch (e) {
+          console.warn('[autoTitle] не удалось сгенерировать название чата', e);
+        } finally {
+          autoTitleInFlightRef.current.delete(convId);
+        }
+      })();
+    },
+    [authUser?.id],
+  );
+
   const handleRenameConversation = async (conv: any) => {
     let newTitle = prompt('Введите новое название чата', conv.title || 'Чат');
     if (newTitle === null) return;
@@ -1366,6 +1419,7 @@ export default function ChatPage() {
                 onUserMessageQueued={undefined}
                 chatBody={chatBody}
                 anonymizeMode={anonymizeMode}
+                onAutoTitle={handleAutoTitle}
                 anonymizeConfirm={confirmAnonymize}
                 onAnonymizationReady={handleAnonymizationReady}
                 onOpenAuthDialog={() => {
