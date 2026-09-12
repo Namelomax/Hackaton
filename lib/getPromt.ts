@@ -828,6 +828,24 @@ export async function renameConversation(convId: string, title: string): Promise
   };
 }
 
+/**
+ * Текущий заголовок диалога, либо null если записи нет.
+ *
+ * Ошибку чтения ПРОБРАСЫВАЕМ, а не превращаем в null: вызывающий роут по null
+ * решает «заголовок дефолтный, можно перезаписать», и проглоченный сбой БД
+ * означал бы затирание названия, которое пользователь задал руками.
+ */
+export async function getConversationTitle(convId: string): Promise<string | null> {
+  await connectDB();
+  const clean = convId.replace(/^conversations:/, '');
+  const recordObj = new RecordId('conversations', clean);
+  const raw = await db.select(recordObj);
+  const convData = Array.isArray(raw) ? raw[0] : raw;
+  if (!convData) return null;
+  const title = (convData as any).title;
+  return typeof title === 'string' ? title : null;
+}
+
 export async function deleteConversation(convId: string, userId?: string): Promise<void> {
   await connectDB();
   const cleanConvId = convId.replace(/^conversations:/, '');

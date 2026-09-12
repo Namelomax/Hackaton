@@ -4,6 +4,7 @@ import {
   sanitizeGeneratedTitle,
   TITLE_MAX_LENGTH,
 } from '../chat-title';
+import { SGR_CHAT_TITLE_PROMPT } from '../prompts/sgr-prompts';
 
 describe('sanitizeGeneratedTitle', () => {
   it('вырезает <think>…</think> и берёт то, что после', () => {
@@ -111,5 +112,11 @@ describe('fallbackTitleFromSource', () => {
       'Совещание по вопросам организации приёмки оборудования системы охлаждения главного корпуса';
     const result = fallbackTitleFromSource(source)!;
     expect(result.length).toBeLessThanOrEqual(TITLE_MAX_LENGTH);
+  });
+});
+
+describe('SGR_CHAT_TITLE_PROMPT', () => {
+  it('содержит плейсхолдер {{SOURCE}} — иначе исходник не подставится', () => {
+    expect(SGR_CHAT_TITLE_PROMPT).toContain('{{SOURCE}}');
   });
 });
