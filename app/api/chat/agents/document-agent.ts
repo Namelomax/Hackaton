@@ -23,7 +23,8 @@ import { generateProtocolDocx } from '@/lib/docx-generator';
 import { verifyProtocolSections } from '@/lib/protocol-verify';
 import { SGR_DOCUMENT_AGENT_PROMPT } from '@/lib/prompts/sgr-prompts';
 import { PROTOCOL_REGULATION } from '@/lib/prompts/regulation';
-import { ollamaProtocolMaxOutputTokens, cloudProtocolMaxOutputTokens } from '@/lib/ollama-limits';
+import { ollamaProtocolMaxOutputTokens, cloudProtocolMaxOutputTokens, llmMaxModelLen } from '@/lib/ollama-limits';
+import { extractGenerationFailureInfo, buildGenerationFailureMessage } from '@/lib/protocol-generation-errors';
 import { consumePartialObjectStream } from './partial-object-stream';
 import {
   buildProtocolDraftFromChat,
@@ -460,8 +461,7 @@ export async function generateFinalDocument(
           const raw = String((objErr as any)?.message ?? objErr ?? '');
           if (/no object generated|unexpected end of json input/i.test(raw)) {
             throw new Error(
-              'Модель дважды вернула пустой ответ при сборке протокола (перегрузка или лимит бесплатного слага). ' +
-                'Повторите генерацию или переключитесь на локальную модель.',
+              buildGenerationFailureMessage(extractGenerationFailureInfo(objErr), llmMaxModelLen()),
             );
           }
           throw objErr;
@@ -695,14 +695,15 @@ export async function generateFinalDocument(
 function logGenerationFailure(err: unknown): void {
   const e = err as any;
   const usage = e?.usage ?? {};
+  const { finishReason, inputTokens } = extractGenerationFailureInfo(err);
   console.error(
     '[generateFinalDocument] модель не вернула объект:',
     JSON.stringify({
       message: String(e?.message ?? err).slice(0, 200),
-      finishReason: e?.finishReason,
+      finishReason,
       textLength: typeof e?.text === 'string' ? e.text.length : null,
       textPreview: typeof e?.text === 'string' ? e.text.slice(0, 200) : null,
-      inputTokens: usage?.inputTokens ?? usage?.promptTokens,
+      inputTokens,
       outputTokens: usage?.outputTokens ?? usage?.completionTokens,
       reasoningTokens: usage?.reasoningTokens,
       totalTokens: usage?.totalTokens,
