@@ -31,13 +31,6 @@ type HeaderProps = {
   toggleAuthMode: () => void;
   brandLabel?: string;
   showAuthHint?: boolean;
-  anonymizeMode?: boolean;
-  /** false — закрытый контур (CLOUD_MODE=off): переключателя облака нет. */
-  cloudModeAvailable?: boolean;
-  onToggleAnonymize?: (next: boolean) => void;
-  /** Показывать окно подтверждения перед отправкой в облако (анонимизация идёт всегда). */
-  anonymizeConfirm?: boolean;
-  onToggleAnonymizeConfirm?: (next: boolean) => void;
 };
 
 export const Header = ({
@@ -56,11 +49,6 @@ export const Header = ({
   toggleAuthMode,
   brandLabel = 'Протоколёр',
   showAuthHint = false,
-  anonymizeMode = false,
-  cloudModeAvailable = true,
-  onToggleAnonymize,
-  anonymizeConfirm = true,
-  onToggleAnonymizeConfirm,
 }: HeaderProps) => {
   const [passwordOpen, setPasswordOpen] = useState(false);
   // Повтор пароля нужен только при придумывании — живёт здесь, а не в page.
@@ -120,65 +108,6 @@ export const Header = ({
           </div>
           <div className="text-sm text-foreground font-semibold">{brandLabel}</div>
         </div>
-
-        {/* Переключатель режима работы LLM */}
-        {!cloudModeAvailable && (
-          <div
-            className="rounded-lg border bg-background px-3 py-1.5 text-xs text-muted-foreground"
-            title="Облачный режим отключён на этом сервере: все данные обрабатываются локальной моделью внутри контура."
-          >
-            🖥️ Локальная LLM
-          </div>
-        )}
-        {cloudModeAvailable && (
-        <div
-          className="flex items-center rounded-lg border bg-background p-0.5 text-xs shadow-sm"
-          role="group"
-          aria-label="Режим работы модели"
-        >
-          <button
-            type="button"
-            onClick={() => onToggleAnonymize?.(false)}
-            title="Локальная LLM на сервере (данные не покидают контур). Качество ниже."
-            className={`px-3 py-1.5 rounded-md transition-colors ${
-              !anonymizeMode
-                ? 'bg-primary text-black font-medium'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            🖥️ Локальная LLM
-          </button>
-          <button
-            type="button"
-            onClick={() => onToggleAnonymize?.(true)}
-            title="Облачная LLM. Документ и сообщения анонимизируются перед отправкой — без ПДн (152-ФЗ)."
-            className={`px-3 py-1.5 rounded-md transition-colors ${
-              anonymizeMode
-                ? 'bg-primary text-black font-medium'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            ☁️ Облако + анонимизация
-          </button>
-        </div>
-        )}
-
-        {/* Подтверждение анонимизации: скрывает окно предпросмотра. Сама
-            анонимизация выполняется всегда — этот флаг на неё не влияет. */}
-        {cloudModeAvailable && anonymizeMode && (
-          <label
-            className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground select-none"
-            title="Показывать окно с анонимизированной версией перед отправкой в облако. Анонимизация выполняется всегда, независимо от этой галочки."
-          >
-            <input
-              type="checkbox"
-              className="size-3.5 accent-primary"
-              checked={anonymizeConfirm}
-              onChange={(e) => onToggleAnonymizeConfirm?.(e.target.checked)}
-            />
-            Подтверждать перед отправкой
-          </label>
-        )}
 
         <div>
           {authUser ? (

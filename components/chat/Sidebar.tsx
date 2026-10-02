@@ -236,13 +236,16 @@ export const Sidebar = ({
               active={folderFilter === 'all'}
               onClick={() => onFolderFilterChange?.('all')}
             />
-            <FolderRow
-              icon={<Inbox className="w-3.5 h-3.5" />}
-              label="Без папки"
-              count={counts.none}
-              active={folderFilter === 'none'}
-              onClick={() => onFolderFilterChange?.('none')}
-            />
+            {/* Пока ни один чат не лежит в папке, «Без папки» = «Все чаты» — не дублируем. */}
+            {(counts.none < conversations.length || folderFilter === 'none') && (
+              <FolderRow
+                icon={<Inbox className="w-3.5 h-3.5" />}
+                label="Без папки"
+                count={counts.none}
+                active={folderFilter === 'none'}
+                onClick={() => onFolderFilterChange?.('none')}
+              />
+            )}
           </ul>
 
           <SectionLabel onAdd={onOpenCatalog} addLabel="Папки проектов: вступить или выйти">

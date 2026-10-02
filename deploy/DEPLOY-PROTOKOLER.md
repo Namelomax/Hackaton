@@ -58,7 +58,7 @@ cd ~ && git clone <repo-url> protokoler   # или git pull
 cd protokoler
 ~/node-v22.20.0-linux-x64/bin/npm ci
 cp deploy/protokoler.env.example .env
-nano .env                                 # перевыпущенные ключи; ANONYMIZER_URL=http://127.0.0.1:8011
+nano .env                                 # SESSION_SECRET, ADMIN_USERNAMES, ключ модели, БД
 ~/node-v22.20.0-linux-x64/bin/npm run build
 ```
 

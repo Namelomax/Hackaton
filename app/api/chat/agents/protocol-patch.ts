@@ -20,7 +20,7 @@ import {
   parseLooseJsonObject,
   type Protocol,
 } from '@/lib/schemas/protocol-schema';
-import { documentReasoningOptions, formatUsage } from '@/lib/reasoning-options';
+import { formatUsage } from '@/lib/reasoning-options';
 import { buildDateContextBlock, parseRuDate, resolveRelativeDatesInText } from '@/lib/date-context';
 
 export type ProtocolEdit = { find: string; replace: string };
@@ -129,7 +129,6 @@ export async function planProtocolPatch(options: {
       // Планировщик замен — самая короткая задача во всём пайплайне; раньше он
       // единственный шёл БЕЗ отключения размышлений и поэтому мог думать
       // дольше, чем длится сама генерация протокола.
-      providerOptions: documentReasoningOptions(),
       ...(abortSignal ? { abortSignal } : {}),
     });
     console.log(`[protocol-patch] план получен, ${formatUsage((result as any).usage)}`);
@@ -157,14 +156,12 @@ export async function planProtocolPatch(options: {
     // поле `tools` (см. chat-agent). Тогда планировщик молча возвращал
     // canPatch=false, и точечные правки НИКОГДА не срабатывали, а по логам это
     // выглядело как «модель решила, что патчить нельзя».
-    // Тот же приём уже применён в lib/anonymization/verify-inflected.ts.
     try {
       const { text } = await generateText({
         model,
         prompt: prompt + '\n\nОтветь ТОЛЬКО JSON-объектом, без пояснений и без ```.',
         temperature: 0,
         maxOutputTokens: 2048,
-        providerOptions: documentReasoningOptions(),
         ...(abortSignal ? { abortSignal } : {}),
       });
       const obj = parseLooseJsonObject(String(text ?? ''));
@@ -571,7 +568,3 @@ export function applyEditsToProtocol(
   return { ok: true, protocol: current, applied, warnings: [...new Set(warnings)] };
 }
 
-/** Анонимизация всех строковых полей протокола (для отправки в облако). */
-export function mapProtocolStrings(protocol: Protocol, fn: (s: string) => string): Protocol {
-  return mapStrings(protocol, fn);
-}

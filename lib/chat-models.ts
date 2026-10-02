@@ -16,9 +16,7 @@
  *
  * Почему так: администраторы шлюза меняют выложенную модель молча, и до
  * появления авто-обнаружения каждая замена роняла ВСЁ до ручной правки этой
- * строки — и локальный режим, и LLM-слой анонимизатора (он ходит по тому же
- * OLLAMA_BASE_URL), то есть облачный режим тоже, потому что он не доживал до
- * OpenRouter. Хроника: gemma-4-31b → qwen3.5-35b (14.08.2026) →
+ * строки. Хроника: gemma-4-31b → qwen3.5-35b (14.08.2026) →
  * qwen3.8-27B (26.08.2026) → Qwen3.8-27b-U (08.09.2026).
  *
  * Держать значение в актуальном состоянии по-прежнему полезно — тогда даже
@@ -47,45 +45,6 @@ export const DEFAULT_LOCAL_CHAT_MODELS = ['Qwen3.8-27b-U'] as const;
 export const LOCAL_MODEL_LABELS: Record<string, string> = {
   'Qwen3.8-27b-U': 'Qwen3.8 27B',
 };
-
-/**
- * Облачная модель по умолчанию (режим «Облако + анонимизация»).
- * Сервер может переопределить через ANONYMIZER_CLOUD_MODEL / OPENROUTER_MODEL_DEFAULT.
- *
- * ДИАГНОСТИКА бесплатных тарифов (`:free`): при исчерпании лимита OpenRouter
- * запрос отваливается за ~2 с с `finishReason=other`, `tokens=NaN`, `outChars=0`,
- * и пользователь видит «Ответ не удалось сформировать». Это признак ТАРИФА, а не
- * промпта или модели (ловили на nemotron-...:free при входе ~44k токенов
- * 07.08.2026). Увидишь такую сигнатуру — переводи на платный слаг.
- */
-export const DEFAULT_CLOUD_CHAT_MODEL = 'poolside/laguna-s-2.1:free';
-
-/**
- * Отключённые/мёртвые слаги OpenRouter (404 «No endpoints found»). Могут
- * прилетать из устаревшего env на деплое или из старого клиентского бандла
- * (незакрытая вкладка) — молча заменяем на DEFAULT_CLOUD_CHAT_MODEL.
- */
-const DEAD_CLOUD_MODELS = new Set(['openrouter/owl-alpha']);
-
-/** Нормализует слаг облачной модели: пустой или мёртвый → дефолтный. */
-export function normalizeCloudModel(id?: string | null): string {
-  const slug = (id ?? '').trim();
-  if (!slug || DEAD_CLOUD_MODELS.has(slug)) return DEFAULT_CLOUD_CHAT_MODEL;
-  return slug;
-}
-
-/**
- * Облачные модели OpenRouter (админ-UI / env). У `:free` — лимиты тарифа,
- * см. сигнатуру отказа в комментарии к DEFAULT_CLOUD_CHAT_MODEL.
- */
-export const OPENROUTER_MODELS: { id: string; label: string }[] = [
-  { id: 'poolside/laguna-s-2.1:free', label: 'Laguna S 2.1 (free)' },
-  { id: 'anthropic/claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
-  { id: 'google/gemini-2.5-pro-preview', label: 'Gemini 2.5 Pro' },
-  { id: 'openai/gpt-4.1', label: 'GPT-4.1' },
-  { id: 'nvidia/nemotron-3-ultra-550b-a55b:free', label: 'Nemotron Ultra 550B (free, лимиты)' },
-  { id: 'nvidia/nemotron-3-super-120b-a12b:free', label: 'Nemotron 120B (free, лимиты)' },
-];
 
 export function parseModelsFromEnv(jsonEnv?: string): string[] {
   const raw = jsonEnv?.trim();

@@ -223,13 +223,6 @@ Qwen3.5:9b (128K ctx, 36 слоёв, fp16):
 curl http://localhost:11434/api/ps
 ```
 
-### OpenRouter (вместо Ollama)
-```bash
-OPENROUTER_API_KEY=sk-or-...
-OPENROUTER_MODEL_DEFAULT=nvidia/nemotron-3-super-120b-a12b:free
-ALLOWED_OPENROUTER_MODELS=model/a,model/b   # опционально
-```
-
 ### RAG-сервис
 ```bash
 RAG_API_URL=http://rag-api:8000

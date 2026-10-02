@@ -50,7 +50,6 @@ export function createPublishInvestigationProtocolTool(
         context.conversationId ?? null,
         0.1,
         context.abortSignal ?? undefined,
-        { anonymize: context.anonymize, mapping: context.anonymizeMapping },
       );
       sink.markdown = md;
       return {

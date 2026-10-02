@@ -50,7 +50,7 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    # Всё из .env попадает в контейнер как есть (ключи моделей, анонимизатор,
+    # Всё из .env попадает в контейнер как есть (ключ модели,
     # SESSION_SECRET, ADMIN_USERNAMES …). Ниже — только то, что внутри compose
     # обязано отличаться от запуска на хосте.
     env_file:
@@ -93,7 +93,7 @@ services:
         # интернета: иначе MinerU тянет их с HuggingFace при первом PDF).
         PRELOAD_MINERU_MODELS: ${PRELOAD_MINERU_MODELS:-1}
     restart: unless-stopped
-    # Без env_file: индексации не нужны ключи OpenRouter, SESSION_SECRET и
+    # Без env_file: индексации не нужны SESSION_SECRET, ключи модели чата и
     # прочее из .env приложения — передаём только своё.
     environment:
       # OpenAI-совместимый сервер эмбеддингов и LLM для индексации.

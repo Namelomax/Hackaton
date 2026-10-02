@@ -116,10 +116,8 @@ resolveSystemPrompt(userId, selectedPromptId)
 
 **Resolver:** `lib/resolve-chat-model.ts`
 
-| Условие | Провайдер |
-|---------|-----------|
-| `OPENROUTER_API_KEY` задан | OpenRouter |
-| Иначе | Ollama (локальный) |
+Провайдер один — локальный OpenAI-совместимый шлюз (Ollama/vLLM). Облачный
+режим (OpenRouter + анонимизация) удалён 02.10.2026.
 
 **Ollama (по умолчанию):**
 - URL: `OLLAMA_BASE_URL` (default: `http://127.0.0.1:11434/v1`)

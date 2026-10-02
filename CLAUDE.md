@@ -17,7 +17,7 @@ npm run inspect:surreal  # Отладка БД
 | Слой | Технология |
 |------|-----------|
 | Framework | Next.js 15 App Router, React 19 |
-| AI | Vercel AI SDK v5 + Ollama (Qwen3) / OpenRouter |
+| AI | Vercel AI SDK v5 + локальная модель (OpenAI-совместимый шлюз: Ollama/vLLM) |
 | Database | SurrealDB (NoSQL, WebSocket) |
 | Styling | Tailwind CSS 4 + shadcn/ui |
 | RAG | FastAPI-сервис (внешний, `RAG_API_URL`) |
@@ -48,7 +48,7 @@ lib/
   protocol-chat-extract.ts  ← извлечение подтверждённых блоков из чата
   protocol-markdown-format.ts ← форматирование для markdown и DOCX
   docx-generator.ts     ← генерация .docx файла
-  resolve-chat-model.ts ← выбор провайдера Ollama/OpenRouter
+  resolve-chat-model.ts ← модель чата (только локальная)
 ```
 
 ## Детальная документация
@@ -88,7 +88,7 @@ lib/
 
 - Облачный прод: systemd + `npm start`, БД Surreal Cloud → `deploy/DEPLOY-PROTOKOLER.md`
 - Контур компании (Docker, локальная SurrealDB, перенос данных) → `deploy/contour/README.md`, скрипты `scripts/contour/`
-- `CLOUD_MODE=off` выключает OpenRouter целиком (`lib/deployment-mode.ts`, проверка в `resolveChatLanguageModel`)
+- Облачного режима и анонимизации нет (убраны 02.10.2026 по решению заказчика) — всё работает на локальной модели. От них осталась только подстановка имён в старые протоколы: `lib/legacy-placeholders.ts`
 
 ## Переменные окружения (минимум)
 

@@ -184,19 +184,78 @@ DEFINE FIELD updated ON anonymization_mappings TYPE datetime VALUE time::now();
       DEFINE FIELD IF NOT EXISTS members ON folders TYPE option<array<record<users>>>;
       DEFINE INDEX IF NOT EXISTS idx_conversations_user ON conversations FIELDS user;
       DEFINE FIELD IF NOT EXISTS updated ON conversations TYPE datetime VALUE time::now();
-    `);
-    await db.query(`
-      UPDATE users SET role = role ?? 'user', blocked = blocked ?? false
-      WHERE role IS NONE OR blocked IS NONE;
+      -- Папка чата. На живой базе conversations объявлена SCHEMAFULL, и без
+      -- этого определения SurrealDB МОЛЧА отбрасывала поле: чат «переносился»
+      -- в папку, а после перезагрузки снова оказывался «без папки».
+      DEFINE FIELD IF NOT EXISTS folder ON conversations TYPE option<record<folders>>;
     `);
   } catch (error: any) {
     console.error('Error defining access schema:', error?.message ?? error);
   }
 
+  await backfillLegacyUsers();
+
   if (!surrealState.adminChecked) {
     surrealState.adminChecked = true;
     void warnIfNoAdmins();
   }
+}
+
+/**
+ * Достроить старые записи users. На живой базе у 22 из 28 пользователей не
+ * было usernameLower (поле обязательное), а значит ЛЮБОЙ UPDATE такой записи
+ * падал: админ не мог её заблокировать, сменить роль или сбросить пароль.
+ * Массовый UPDATE не годится — одна запись с конфликтом откатывает все
+ * (так и было: логины «test» и «Test» дают одинаковый ключ уникального
+ * индекса). Поэтому по одной, а дублю регистра — ключ с суффиксом id.
+ */
+async function backfillLegacyUsers(): Promise<void> {
+  let rows: Record<string, unknown>[] = [];
+  try {
+    rows = surrealQueryRows(
+      await db.query(
+        'SELECT id, username, usernameLower FROM users WHERE usernameLower IS NONE OR role IS NONE OR blocked IS NONE;',
+      ),
+    );
+  } catch (e) {
+    console.warn('[users] не удалось найти записи для бэкфилла:', (e as Error)?.message);
+    return;
+  }
+  if (rows.length === 0) return;
+
+  let fixed = 0;
+  for (const row of rows) {
+    const id = row.id as RecordId;
+    const key = usernameLookupKey(String(row.username ?? ''));
+    const update = (lower: string | null) =>
+      db.query(
+        `UPDATE $id SET usernameLower = usernameLower ?? $lower, role = role ?? 'user', blocked = blocked ?? false RETURN NONE;`,
+        { id, lower },
+      );
+    try {
+      await update(row.usernameLower ? null : key);
+      fixed++;
+    } catch (e) {
+      const message = String((e as Error)?.message ?? e);
+      if (!message.includes('idx_users_username_lower')) {
+        console.warn(`[users] бэкфилл ${String(id)} не удался:`, message);
+        continue;
+      }
+      // Такой ключ уже занят другим логином, отличающимся регистром.
+      const unique = `${key}~${String(id).replace(/^users:/, '')}`;
+      try {
+        await update(unique);
+        fixed++;
+        console.warn(
+          `[users] логин «${String(row.username)}» совпадает с другим без учёта регистра — ` +
+            `ключ поиска «${unique}». Удалите лишнюю учётку на /admin.`,
+        );
+      } catch (e2) {
+        console.warn(`[users] бэкфилл ${String(id)} не удался:`, (e2 as Error)?.message);
+      }
+    }
+  }
+  console.log(`[users] бэкфилл старых записей: ${fixed}/${rows.length}`);
 }
 
 /**
@@ -994,7 +1053,7 @@ export class OwnershipCheckUnavailableError extends Error {
  * ЕДИНЫЙ гард изоляции диалогов. Бросает ForbiddenError, если диалог существует
  * и принадлежит ДРУГОМУ пользователю (или запрос анонимный, а диалог — с
  * владельцем). Применяется во ВСЕХ эндпоинтах с conversationId (/api/chat,
- * /api/anonymize, /api/conversations), чтобы сообщения/mapping одного
+ * /api/conversations), чтобы сообщения одного
  * пользователя НИКОГДА не попадали в чужой диалог. Незаписанные (local-...) и
  * несуществующие id пропускаются — красть в них нечего.
  */
@@ -1320,31 +1379,13 @@ export async function updatePrompt(content: string): Promise<void> {
 
 // ===== Анонимизация: канонический mapping диалога (placeholder -> оригинал) =====
 
-export type StoredConversationMapping = {
-  mapping: Record<string, string>;
-  counters: Record<string, number>;
-  /**
-   * Склонённые/сокращённые формы известных значений: «Ирины Соколовой» →
-   * [PERSON_1]. Живут рядом с mapping, потому что после склейки падежей само
-   * значение из mapping исчезает, а подставлять его по-прежнему надо.
-   */
-  aliases?: Array<{ value: string; placeholder: string }>;
-};
+/**
+ * Соответствия «плейсхолдер → оригинал» диалога, оставшиеся от удалённого
+ * облачного режима. Нужны только чтобы восстановить имена в старых протоколах
+ * (lib/legacy-placeholders.ts). Новых записей не появляется.
+ */
+export type StoredConversationMapping = { mapping: Record<string, string> };
 
-/** Нормализация массива алиасов из БД: мусорные записи молча выбрасываем. */
-function parseAliases(raw: unknown): Array<{ value: string; placeholder: string }> {
-  if (!Array.isArray(raw)) return [];
-  const out: Array<{ value: string; placeholder: string }> = [];
-  for (const item of raw) {
-    const value = typeof (item as any)?.value === 'string' ? (item as any).value.trim() : '';
-    const placeholder =
-      typeof (item as any)?.placeholder === 'string' ? (item as any).placeholder.trim() : '';
-    if (value && placeholder) out.push({ value, placeholder });
-  }
-  return out;
-}
-
-/** Прочитать сохранённый mapping диалога. Пустой, если ещё нет. */
 export async function getConversationMapping(
   conversationId: string,
 ): Promise<StoredConversationMapping> {
@@ -1353,17 +1394,11 @@ export async function getConversationMapping(
   try {
     const rec = await db.select(new RecordId('anonymization_mappings', clean));
     const row: any = Array.isArray(rec) ? rec[0] : rec;
-    if (row && typeof row === 'object') {
-      return {
-        mapping: (row.mapping && typeof row.mapping === 'object') ? row.mapping : {},
-        counters: (row.counters && typeof row.counters === 'object') ? row.counters : {},
-        aliases: parseAliases(row.aliases),
-      };
-    }
+    if (row?.mapping && typeof row.mapping === 'object') return { mapping: row.mapping };
   } catch (e) {
     console.warn('getConversationMapping failed:', (e as Error)?.message);
   }
-  return { mapping: {}, counters: {}, aliases: [] };
+  return { mapping: {} };
 }
 
 /**
@@ -1418,97 +1453,6 @@ export async function getConversationProtocolJson(
     console.warn('getConversationProtocolJson failed:', (e as Error)?.message);
   }
   return null;
-}
-
-/** Сохранить анонимизированную preview-версию документа (для показа в UI). */
-export async function saveConversationPreview(
-  conversationId: string,
-  previewText: string,
-): Promise<void> {
-  await connectDB();
-  const clean = String(conversationId).replace(/^anonymization_mappings:/, '').replace(/^conversations:/, '');
-  const rid = new RecordId('anonymization_mappings', clean);
-  try {
-    await db.merge(rid, { previewText } as any);
-  } catch (e) {
-    try {
-      await db.upsert(rid, { previewText } as any);
-    } catch (ee) {
-      console.error('saveConversationPreview failed:', (ee as Error)?.message);
-    }
-  }
-}
-
-/** Прочитать анонимизированную preview-версию документа. */
-export async function getConversationPreview(conversationId: string): Promise<string> {
-  await connectDB();
-  const clean = String(conversationId).replace(/^anonymization_mappings:/, '').replace(/^conversations:/, '');
-  try {
-    const rec = await db.select(new RecordId('anonymization_mappings', clean));
-    const row: any = Array.isArray(rec) ? rec[0] : rec;
-    if (row && typeof row.previewText === 'string') return row.previewText;
-  } catch (e) {
-    console.warn('getConversationPreview failed:', (e as Error)?.message);
-  }
-  return '';
-}
-
-/**
- * Сохранить (перезаписать) mapping диалога.
- *
- * ВАЖНО про способ записи. `db.upsert`/`db.update` ЗАМЕНЯЮТ запись целиком —
- * а в этой же записи лежат `document_json` и `previewText`, и они бы стирались
- * при каждом сохранении mapping (после склейки падежей это происходит прямо
- * посреди диалога, и точечные правки протокола теряли базовый JSON).
- * `db.merge` не подходит с другой стороны: MERGE сливает вложенные объекты, и
- * УДАЛЁННЫЙ при склейке плейсхолдер вернулся бы из базы обратно.
- *
- * Поэтому пишем через `UPDATE ... SET`: перечисленные поля заменяются целиком
- * (удалённые ключи mapping реально уходят), остальные поля записи не трогаются.
- *
- * ВТОРАЯ ТОНКОСТЬ: в SurrealDB 2.x `UPDATE` по несуществующему id НИЧЕГО не
- * создаёт и молча возвращает пустой результат (в 1.x создавал). Для нового
- * диалога записи ещё нет — поэтому смотрим на число затронутых строк и, если
- * их ноль, создаём запись через upsert. Без этой проверки маппинг нового
- * диалога терялся целиком: анонимизация работала внутри запроса и обнулялась
- * к следующему сообщению.
- */
-export async function saveConversationMapping(
-  conversationId: string,
-  data: StoredConversationMapping,
-): Promise<void> {
-  await connectDB();
-  const clean = String(conversationId).replace(/^anonymization_mappings:/, '').replace(/^conversations:/, '');
-  const rid = new RecordId('anonymization_mappings', clean);
-  const payload = {
-    mapping: data.mapping ?? {},
-    counters: data.counters ?? {},
-    aliases: parseAliases(data.aliases),
-  };
-
-  let updated = 0;
-  try {
-    const res = await db.query(
-      'UPDATE $rid SET mapping = $mapping, counters = $counters, aliases = $aliases RETURN id;',
-      { rid, ...payload },
-    );
-    updated = surrealQueryRows(res).length;
-  } catch (e) {
-    console.warn('saveConversationMapping via query failed:', (e as Error)?.message);
-  }
-  if (updated > 0) return;
-
-  // Записи ещё не было (или запрос не прошёл) — создаём. upsert заменяет
-  // содержимое целиком, но для новой записи терять нечего.
-  try {
-    await db.upsert(rid, payload);
-  } catch (e) {
-    try {
-      await db.merge(rid, payload as any);
-    } catch (ee) {
-      console.error('saveConversationMapping failed:', (ee as Error)?.message);
-    }
-  }
 }
 
 // ===== Администрирование пользователей и папки =====
@@ -1703,12 +1647,13 @@ export async function createFolder(input: {
   ownerId?: string | null;
   /** Первые участники общей папки — обычно создавший её админ. */
   memberIds?: string[];
+  instructions?: string;
 }): Promise<Folder> {
   await connectDB();
   const created = await db.create('folders', {
     name: input.name,
     kind: input.kind,
-    instructions: '',
+    instructions: input.instructions ?? '',
     ...(input.kind === 'personal' && input.ownerId ? { owner: userRecord(input.ownerId) } : {}),
     ...(input.kind === 'shared' ? { members: (input.memberIds ?? []).map(userRecord) } : {}),
   } as any);

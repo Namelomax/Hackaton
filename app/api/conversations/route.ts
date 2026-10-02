@@ -1,18 +1,14 @@
 import { createConversation, deleteConversation, getConversations, renameConversation, saveConversation, updateConversation, getConversationMapping, assertConversationOwnership, ForbiddenError, setConversationFolder } from '@/lib/getPromt';
-import { deanonymize } from '@/lib/anonymization';
+import { LEGACY_PLACEHOLDER_RX, restorePlaceholders } from '@/lib/legacy-placeholders';
 import { requireUser } from '@/lib/auth-guard';
 import { visibleFolderOrResponse } from '@/lib/folder-guard';
 
-const PLACEHOLDER_RX = /\[(?:PERSON|ORG|DATE|SENSITIVE|FILE|EMAIL|PHONE)_\d+\]/;
+const PLACEHOLDER_RX = LEGACY_PLACEHOLDER_RX;
 
 /**
- * Страховка: в сохранённом документе плейсхолдеров быть не должно.
- *
- * Панель получает текст через SSE, и если хоть один тип события пройдёт мимо
- * деанонимизатора (так было с новыми data-documentSet/data-documentEdits),
- * клиент сохранит в БД текст с `[PERSON_3]`, и пользователь увидит его снова
- * после перезагрузки. Подстановка тут детерминированная, по сохранённому
- * mapping диалога — без всякой модели.
+ * Старые протоколы времён облачного режима могли сохраниться с `[PERSON_3]`
+ * вместо имён — подставляем оригиналы из сохранённого mapping (см.
+ * lib/legacy-placeholders.ts). Новых таких документов уже не бывает.
  */
 async function restoreRealData(conversationId: string, text: string): Promise<string> {
   if (!text || !PLACEHOLDER_RX.test(text)) return text;
@@ -20,7 +16,7 @@ async function restoreRealData(conversationId: string, text: string): Promise<st
     const stored = await getConversationMapping(conversationId);
     const mapping = stored?.mapping ?? {};
     if (Object.keys(mapping).length === 0) return text;
-    const restored = deanonymize(text, mapping);
+    const restored = restorePlaceholders(text, mapping);
     console.warn(
       `[conversations] в документе диалога ${conversationId} были плейсхолдеры — подставлены оригиналы`,
     );
