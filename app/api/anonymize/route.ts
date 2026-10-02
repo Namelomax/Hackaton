@@ -11,7 +11,8 @@
  * анонимизированный preview-текст (для восстановления при перезагрузке).
  */
 import { extractAttachmentTextCached } from '@/lib/attachment-extract';
-import { resolveRequestUserId } from '@/lib/auth-session';
+import { activeUserIdOrResponse } from '@/lib/auth-guard';
+import { isCloudModeEnabled } from '@/lib/deployment-mode';
 import {
   AnonymizerUnavailableError,
   completeAnonymizeJob,
@@ -63,6 +64,14 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 export async function POST(req: Request) {
+  // Анонимизация нужна только для отправки в облако; в закрытом контуре
+  // облака нет, и сервиса анонимизатора там может не быть вовсе.
+  if (!isCloudModeEnabled()) {
+    return Response.json(
+      { ok: false, disabled: true, error: 'Облачный режим отключён (CLOUD_MODE=off)' },
+      { status: 403 },
+    );
+  }
   let body: any = {};
   try {
     body = await req.json();
@@ -74,8 +83,10 @@ export async function POST(req: Request) {
     typeof body.conversationId === 'string' ? body.conversationId : null;
   const claimedUserId: string | null =
     typeof body.userId === 'string' ? body.userId : new URL(req.url).searchParams.get('userId');
-  // Личность — из подписанной сессии; присланное клиентом лишь запасной путь.
-  const userId = resolveRequestUserId(req, claimedUserId);
+  // Личность — из подписанной сессии; заблокированный получает отказ сразу.
+  const auth = await activeUserIdOrResponse(req, claimedUserId);
+  if (auth instanceof Response) return auth;
+  const userId = auth.userId;
   const forbidden = await ownershipGuard(conversationId, userId);
   if (forbidden) return forbidden;
   const files: any[] = Array.isArray(body.files) ? body.files : [];
@@ -159,7 +170,9 @@ function errorResponse(e: unknown): Response {
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const conversationId = url.searchParams.get('conversationId');
-  const userId = resolveRequestUserId(req, url.searchParams.get('userId'));
+  const auth = await activeUserIdOrResponse(req, url.searchParams.get('userId'));
+  if (auth instanceof Response) return auth;
+  const userId = auth.userId;
   // ИЗОЛЯЦИЯ: и опрос job'а, и чтение preview/mapping относятся к диалогу —
   // проверяем владение до любого доступа к его данным.
   const forbidden = await ownershipGuard(conversationId, userId);

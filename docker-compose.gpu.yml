@@ -1,0 +1,12 @@
+# GPU для Ollama (NVIDIA). Подключать вторым файлом:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile ollama up -d
+# На хосте нужен NVIDIA Driver + NVIDIA Container Toolkit.
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

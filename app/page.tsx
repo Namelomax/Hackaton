@@ -5,8 +5,11 @@ import { DefaultChatTransport } from 'ai';
 import { DocumentPanel } from '@/components/document/DocumentPanel';
 import type { DocumentState } from '@/lib/document/types';
 import { applyDocumentPatches, type DocumentPatch } from '@/lib/documentPatches';
-import { Header } from '@/components/chat/Header';
+import { type AuthMode, Header } from '@/components/chat/Header';
 import { Sidebar } from '@/components/chat/Sidebar';
+import { FolderCatalogDialog } from '@/components/folders/FolderCatalogDialog';
+import { FolderSettingsDialog } from '@/components/folders/FolderSettingsDialog';
+import { type ClientFolder, type FolderFilter, folderIdForNewChat } from '@/components/folders/types';
 import { ConversationArea } from '@/components/chat/ConversationArea';
 import { PromptInputWrapper } from '@/components/chat/PromptInputWrapper';
 import { Loader } from '@/components/ai-elements/loader';
@@ -47,6 +50,23 @@ export default function ChatPage() {
       const saved = localStorage.getItem('anonymizeMode');
       if (saved === '1') setAnonymizeMode(true);
     } catch {}
+  }, []);
+  /**
+   * Облачный режим разрешён на этом развёртывании. В закрытом контуре
+   * (CLOUD_MODE=off) переключатель скрыт, а сохранённый выбор «облако»
+   * сбрасывается — сервер всё равно ответил бы локальной моделью.
+   */
+  const [cloudModeAvailable, setCloudModeAvailable] = useState(true);
+  useEffect(() => {
+    fetch('/api/config')
+      .then((r) => r.json())
+      .then((cfg) => {
+        if (cfg?.cloudMode === false) {
+          setCloudModeAvailable(false);
+          setAnonymizeMode(false);
+        }
+      })
+      .catch(() => {});
   }, []);
   const handleToggleAnonymize = useCallback((next: boolean) => {
     setAnonymizeMode(next);
@@ -90,10 +110,10 @@ export default function ChatPage() {
 
   const [input, setInput] = useState('');
   const [quoteText, setQuoteText] = useState('');
-  const [authUser, setAuthUser] = useState<{ id: string; username: string } | null>(null);
+  const [authUser, setAuthUser] = useState<{ id: string; username: string; role?: 'admin' | 'user' } | null>(null);
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authMode, setAuthMode] = useState<AuthMode>('login');
   const [authOpen, setAuthOpen] = useState(false);
   /**
    * Идёт запрос входа/регистрации. Вход упирается в сеть и в БД и может занять
@@ -184,6 +204,18 @@ export default function ChatPage() {
   // Custom fetch to inject userId and conversationId into every chat request body
   const [conversationsList, setConversationsList] = useState<any[]>([]);
   const conversationsListRef = useRef<any[]>([]);
+  /** Папки, видимые пользователю: общие + его личные. */
+  const [folders, setFolders] = useState<ClientFolder[]>([]);
+  /** Фильтр сайдбара; новый чат создаётся в выбранной папке. */
+  const [folderFilter, setFolderFilterState] = useState<FolderFilter>('all');
+  const [openFolder, setOpenFolder] = useState<ClientFolder | null>(null);
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  const setFolderFilter = useCallback((next: FolderFilter) => {
+    setFolderFilterState(next);
+    try {
+      localStorage.setItem('folderFilter', next);
+    } catch {}
+  }, []);
   /** Диалоги, для которых запрос названия уже в полёте — чтобы не слать дважды. */
   const autoTitleInFlightRef = useRef<Set<string>>(new Set());
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -599,6 +631,8 @@ export default function ChatPage() {
       created: new Date().toISOString(),
       messages: [],
       local: true,
+      // Запись в БД появится при первом сообщении — тогда папка и уйдёт на сервер.
+      folderId: folderIdForNewChat(folderFilter),
     } as any;
     setConversationsList((prev) => [localConv, ...prev]);
     setViewConversationId(localId);
@@ -613,7 +647,7 @@ export default function ChatPage() {
     setViewDocument({ title: '', content: '', isStreaming: false });
     localStorage.setItem('activeConversationId', localId);
     return localId;
-  }, [authUser?.id, status, setMessages]);
+  }, [authUser?.id, status, setMessages, folderFilter]);
 
   const displayMessages = useMemo(() => {
     if (!viewConversationId || viewConversationId === conversationId) return messages;
@@ -770,6 +804,83 @@ export default function ChatPage() {
     }
   }, [authChecked, authUser]);
 
+  /**
+   * Выход по инициативе сервера: сессии нет, учётку удалили или заблокировали.
+   * Локальный вход из localStorage больше не действителен.
+   */
+  const dropLocalSession = useCallback((reason: 'expired' | 'blocked') => {
+    setAuthUser(null);
+    localStorage.removeItem('authUser');
+    setConversationsList([]);
+    setFolders([]);
+    setConversationsLoaded(true);
+    if (reason === 'blocked') {
+      toast.error('Доступ заблокирован', { description: 'Администратор закрыл вам доступ к протоколеру.' });
+      return;
+    }
+    setAuthMode('login');
+    setAuthOpen(true);
+    toast.info('Нужно войти заново', { description: 'Сессия истекла — введите логин и пароль.' });
+  }, []);
+
+  // Роль могла смениться, а учётку — заблокировать, пока вкладка была закрыта:
+  // localStorage этого не знает, спрашиваем сервер.
+  useEffect(() => {
+    if (!authChecked || !authUser?.id) return;
+    (async () => {
+      try {
+        const resp = await fetch('/api/auth');
+        if (resp.status === 401 || resp.status === 403) {
+          const j = await resp.json().catch(() => ({}));
+          dropLocalSession(j?.blocked ? 'blocked' : 'expired');
+          return;
+        }
+        const j = await resp.json().catch(() => null);
+        if (j?.success && j.user) {
+          setAuthUser((prev) => {
+            if (prev && prev.id === j.user.id && prev.role === j.user.role && prev.username === j.user.username) {
+              return prev;
+            }
+            localStorage.setItem('authUser', JSON.stringify(j.user));
+            return j.user;
+          });
+        }
+      } catch {
+        /* сеть — не повод разлогинивать */
+      }
+    })();
+  }, [authChecked, authUser?.id, dropLocalSession]);
+
+  const loadFolders = useCallback(async () => {
+    try {
+      const resp = await fetch('/api/folders');
+      const j = await resp.json().catch(() => null);
+      if (!j?.success) return;
+      const list: ClientFolder[] = j.folders ?? [];
+      setFolders(list);
+      // Сохранённый фильтр мог указывать на удалённую папку.
+      let saved: string | null = null;
+      try {
+        saved = localStorage.getItem('folderFilter');
+      } catch {}
+      if (saved && (saved === 'all' || saved === 'none' || list.some((f) => f.id === saved))) {
+        setFolderFilterState(saved);
+      } else {
+        setFolderFilterState('all');
+      }
+    } catch (e) {
+      console.warn('Failed to load folders', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!authChecked || !authUser?.id) {
+      setFolders([]);
+      return;
+    }
+    void loadFolders();
+  }, [authChecked, authUser?.id, loadFolders]);
+
   // When authUser is present, fetch conversations
   useEffect(() => {
     if (!authChecked) return;
@@ -784,17 +895,10 @@ export default function ChatPage() {
         // остался старый localStorage). Молча показывать пустой список нельзя:
         // в шапке при этом написано «Вы вошли как …», и человек решит, что
         // потерялись диалоги. Сбрасываем локальный вход и просим войти заново.
-        if (resp.status === 401) {
-          console.warn('[auth] серверная сессия отсутствует — требуется повторный вход');
-          setAuthUser(null);
-          localStorage.removeItem('authUser');
-          setConversationsList([]);
-          setConversationsLoaded(true);
-          setAuthMode('login');
-          setAuthOpen(true);
-          toast.info('Нужно войти заново', {
-            description: 'Сессия истекла — введите логин и пароль.',
-          });
+        if (resp.status === 401 || resp.status === 403) {
+          const body = await resp.json().catch(() => ({}));
+          console.warn('[auth] серверная сессия недействительна — требуется повторный вход');
+          dropLocalSession(body?.blocked ? 'blocked' : 'expired');
           return;
         }
         const j = await resp.json();
@@ -861,7 +965,9 @@ export default function ChatPage() {
   }, [authChecked, authUser?.id]);
 
   const handleAuth = async () => {
-    if (!authUsername || !authPassword) return;
+    // Пустой пароль допустим только при входе: так приглашённый пользователь
+    // узнаёт, что ему нужно придумать пароль.
+    if (!authUsername || (!authPassword && authMode !== 'login')) return;
     // Защита от повторной отправки: пока запрос в полёте, второй клик (или
     // Enter в поле) не должен заводить ещё один вход.
     if (authPending) return;
@@ -870,13 +976,25 @@ export default function ChatPage() {
       const res = await fetch('/api/auth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: authMode, username: authUsername, password: authPassword }),
+        body: JSON.stringify(
+          authMode === 'setup'
+            ? { action: 'set-initial-password', username: authUsername, newPassword: authPassword }
+            : { action: authMode, username: authUsername, password: authPassword },
+        ),
       });
       const json = await res.json();
+      // Приглашённый пользователь: пароля ещё нет — переключаем форму на «придумайте».
+      if (json?.needsPassword) {
+        if (json.username) setAuthUsername(json.username);
+        setAuthPassword('');
+        setAuthMode('setup');
+        return;
+      }
       if (json?.success && json.user) {
         setAuthUser(json.user);
         localStorage.setItem('authUser', JSON.stringify(json.user));
         setAuthPassword('');
+        setAuthMode('login');
         // Don't block the initial loading overlay after explicit auth.
         setConversationsLoaded(true);
         // Load last conversation
@@ -955,6 +1073,9 @@ export default function ChatPage() {
     setViewDocument({ title: '', content: '', isStreaming: false });
     setInput('');
     setLastSavedAssistantId(null);
+    setFolders([]);
+    setFolderFilterState('all');
+    setOpenFolder(null);
     // Don't block the initial loading overlay after logout.
     setConversationsLoaded(true);
   };
@@ -1213,6 +1334,94 @@ export default function ChatPage() {
     createLocalConversation();
   };
 
+  const handleCreateFolder = async (kind: 'shared' | 'personal') => {
+    const name = prompt(kind === 'shared' ? 'Название общей папки проекта' : 'Название личной папки');
+    if (!name?.trim()) return;
+    try {
+      const resp = await fetch('/api/folders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, kind }),
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok || !j?.success) throw new Error(j?.message || 'Не удалось создать папку');
+      setFolders((prev) => [...prev, j.folder].sort((a, b) => a.name.localeCompare(b.name, 'ru')));
+      setFolderFilter(j.folder.id);
+      if (kind === 'shared') {
+        // Сразу к источникам и инструкциям — ради них папку и заводят.
+        setOpenFolder(j.folder);
+      }
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
+  };
+
+  const handleMoveConversation = async (conv: any, folderId: string | null) => {
+    const prevFolderId = conv.folderId ?? null;
+    setConversationsList((prev) => prev.map((c) => (c.id === conv.id ? { ...c, folderId } : c)));
+    // Несохранённый чат: папка уйдёт на сервер вместе с созданием записи.
+    if (String(conv.id).startsWith('local-')) return;
+    try {
+      const resp = await fetch('/api/conversations', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversationId: conv.id, folderId }),
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok || !j?.success) throw new Error(j?.message || 'move failed');
+      const target = folders.find((f) => f.id === folderId);
+      toast.success(target ? `Чат перемещён в «${target.name}»` : 'Чат убран из папки');
+    } catch (e) {
+      console.error('Failed to move conversation', e);
+      setConversationsList((prev) => prev.map((c) => (c.id === conv.id ? { ...c, folderId: prevFolderId } : c)));
+      toast.error('Не удалось переместить чат');
+    }
+  };
+
+  const handleFolderSaved = (folder: ClientFolder) => {
+    setFolders((prev) =>
+      prev.map((f) => (f.id === folder.id ? folder : f)).sort((a, b) => a.name.localeCompare(b.name, 'ru')),
+    );
+    setOpenFolder(folder);
+  };
+
+  const sortFolders = (list: ClientFolder[]) => [...list].sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+
+  /**
+   * Пользователь больше не в общей папке (вышел сам или его убрал админ).
+   * Сервер уже перенёс его чаты из неё в «Без папки» — повторяем это в состоянии.
+   */
+  const handleFolderLeft = (folderId: string) => {
+    setFolders((prev) => prev.filter((f) => f.id !== folderId));
+    setConversationsList((prev) => prev.map((c) => (c.folderId === folderId ? { ...c, folderId: null } : c)));
+    if (folderFilter === folderId) setFolderFilter('all');
+    setOpenFolder((prev) => (prev?.id === folderId ? null : prev));
+  };
+
+  const handleMembershipChanged = (folder: ClientFolder, joined: boolean) => {
+    if (joined) {
+      setFolders((prev) => sortFolders([...prev.filter((f) => f.id !== folder.id), folder]));
+    } else {
+      handleFolderLeft(folder.id);
+    }
+  };
+
+  const handleFolderMembersChanged = (folderId: string, memberIds: string[]) => {
+    const me = authUser?.id;
+    if (!me) return;
+    const inFolder = memberIds.includes(me);
+    const inSidebar = folders.some((f) => f.id === folderId);
+    if (!inFolder && inSidebar) handleFolderLeft(folderId);
+    else if (inFolder && !inSidebar) void loadFolders();
+  };
+
+  const handleFolderDeleted = (folderId: string) => {
+    setFolders((prev) => prev.filter((f) => f.id !== folderId));
+    setConversationsList((prev) => prev.map((c) => (c.folderId === folderId ? { ...c, folderId: null } : c)));
+    if (folderFilter === folderId) setFolderFilter('all');
+    setOpenFolder(null);
+  };
+
   const handleSelectConversation = (conversation: any) => {
     if (!conversation?.id) return;
 
@@ -1357,6 +1566,7 @@ export default function ChatPage() {
         toggleAuthMode={toggleAuthMode}
         showAuthHint={authHintFromPrompt}
         anonymizeMode={anonymizeMode}
+        cloudModeAvailable={cloudModeAvailable}
         onToggleAnonymize={handleToggleAnonymize}
         anonymizeConfirm={confirmAnonymize}
         onToggleAnonymizeConfirm={handleToggleConfirmAnonymize}
@@ -1373,6 +1583,35 @@ export default function ChatPage() {
           onDelete={handleDeleteConversation}
           collapsed={!isChatsPanelVisible}
           onToggleCollapsed={() => setIsChatsPanelVisible((v) => !v)}
+          folders={authUser ? folders : undefined}
+          folderFilter={folderFilter}
+          onFolderFilterChange={authUser ? setFolderFilter : undefined}
+          onCreateFolder={handleCreateFolder}
+          onOpenFolder={setOpenFolder}
+          onMoveConversation={handleMoveConversation}
+          onOpenCatalog={() => setCatalogOpen(true)}
+        />
+        <FolderCatalogDialog
+          open={catalogOpen}
+          onClose={() => setCatalogOpen(false)}
+          isAdmin={authUser?.role === 'admin'}
+          onMembershipChanged={handleMembershipChanged}
+          onOpenSettings={(folder) => {
+            setCatalogOpen(false);
+            setOpenFolder(folder);
+          }}
+          onCreateShared={() => {
+            setCatalogOpen(false);
+            void handleCreateFolder('shared');
+          }}
+        />
+        <FolderSettingsDialog
+          folder={openFolder}
+          onClose={() => setOpenFolder(null)}
+          onSaved={handleFolderSaved}
+          onDeleted={handleFolderDeleted}
+          onLeft={handleFolderLeft}
+          onMembersChanged={handleFolderMembersChanged}
         />
         {/* Центральная часть — чат (расширяется, когда панель протокола свёрнута) */}
         <div
@@ -1408,6 +1647,9 @@ export default function ChatPage() {
                 status={status}
                 authUser={authUser}
                 conversationId={conversationId}
+                newChatFolderId={
+                  conversationsList.find((c) => c.id === conversationId)?.folderId ?? null
+                }
                 setConversationId={setConversationIdAndView}
                 setConversationsList={setConversationsList}
                 setMessages={setMessages}

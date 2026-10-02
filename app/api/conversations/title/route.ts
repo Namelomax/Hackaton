@@ -12,7 +12,7 @@
  */
 import { generateText } from 'ai';
 import { extractAttachmentTextCached } from '@/lib/attachment-extract';
-import { resolveRequestUserId } from '@/lib/auth-session';
+import { activeUserIdOrResponse } from '@/lib/auth-guard';
 import { isGenericChatTitle } from '@/lib/chat-display';
 import { buildTitleSource, fallbackTitleFromSource, sanitizeGeneratedTitle } from '@/lib/chat-title';
 import {
@@ -42,7 +42,9 @@ export async function POST(req: Request) {
       return fail('conversationId required', 400);
     }
 
-    const userId = resolveRequestUserId(req, body.userId as string | undefined);
+    const auth = await activeUserIdOrResponse(req, body.userId as string | undefined);
+    if (auth instanceof Response) return auth;
+    const userId = auth.userId;
 
     // Изоляция диалогов: тот же гард, что в /api/conversations и /api/chat.
     try {

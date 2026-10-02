@@ -158,7 +158,8 @@ const ensureConversationCreated = async (
   conversationId: string | null,
   setConversationsList: Dispatch<SetStateAction<any[]>>,
   setConversationId: Dispatch<SetStateAction<string | null>>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  folderId?: string | null,
 ) => {
   if (!authUser || (conversationId && !String(conversationId).startsWith('local-'))) {
     return conversationId;
@@ -172,6 +173,8 @@ const ensureConversationCreated = async (
       body: JSON.stringify({
         userId: authUser.id,
         title: 'Чат',
+        // Папка выбранного в сайдбаре фильтра; сервер проверит, что она видна.
+        ...(folderId ? { folderId } : {}),
       }),
     });
 
@@ -200,6 +203,8 @@ type PromptInputWrapperProps = {
   status: string;
   authUser: { id: string; username: string } | null;
   conversationId: string | null;
+  /** Папка, в которой создаётся запись диалога при первом сообщении. */
+  newChatFolderId?: string | null;
   setConversationId: Dispatch<SetStateAction<string | null>>;
   setConversationsList: Dispatch<SetStateAction<any[]>>;
   setMessages: (messages: any[]) => void;
@@ -236,6 +241,7 @@ export const PromptInputWrapper = ({
   status,
   authUser,
   conversationId,
+  newChatFolderId,
   setConversationId,
   setConversationsList,
   setMessages,
@@ -520,7 +526,8 @@ export const PromptInputWrapper = ({
         baseConversationId,
         setConversationsList,
         setConversationId,
-        abort.signal
+        abort.signal,
+        newChatFolderId,
       );
 
       if (cancelRequestedRef.current || abort.signal.aborted) return;

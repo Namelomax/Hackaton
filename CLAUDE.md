@@ -71,7 +71,8 @@ lib/
 
 ### База данных (SurrealDB)
 - Схема и подключение живут в `lib/getPromt.ts` (`connectDB`)
-- Таблицы: users, prompts, protocol_examples, protocol_instructions, conversations, anonymization_mappings
+- Таблицы: users (role, blocked), prompts, protocol_examples, protocol_instructions, conversations (folder), folders, anonymization_mappings
+- Доступ: `lib/access.ts` (правила), `lib/auth-guard.ts` (`requireUser`/`requireAdmin` — сессия + проверка блокировки по БД), `lib/folder-guard.ts`
 - Подключение — WebSocket-синглтон, переподключается при обрыве
 
 ### Контекстное окно
@@ -83,6 +84,12 @@ lib/
 - Два параллельных потока: текст чата + обновления документа (правая панель)
 - Document updates: `data-title`, `data-documentDelta`, `data-clear`, `data-docx`, `data-finish`
 
+## Деплой
+
+- Облачный прод: systemd + `npm start`, БД Surreal Cloud → `deploy/DEPLOY-PROTOKOLER.md`
+- Контур компании (Docker, локальная SurrealDB, перенос данных) → `deploy/contour/README.md`, скрипты `scripts/contour/`
+- `CLOUD_MODE=off` выключает OpenRouter целиком (`lib/deployment-mode.ts`, проверка в `resolveChatLanguageModel`)
+
 ## Переменные окружения (минимум)
 
 ```bash
@@ -93,6 +100,7 @@ SURREALDB_USER=root
 SURREALDB_PASSWORD=root
 OLLAMA_BASE_URL=http://localhost:11434/v1
 OLLAMA_API_KEY=ollama
+ADMIN_USERNAMES=jacob   # администраторы; регистрации нет — пользователей создаёт админ на /admin
 ```
 
 Полный список → [.claude/data.md](.claude/data.md#переменные-окружения)

@@ -9,6 +9,7 @@ import {
   llmMaxModelLen,
 } from '@/lib/ollama-limits';
 import { insecureFetch } from '@/lib/insecure-fetch';
+import { isCloudModeEnabled } from '@/lib/deployment-mode';
 import { discoverGatewayModel, getCachedGatewayModel } from '@/lib/gateway-model';
 
 /**
@@ -87,10 +88,17 @@ function resolveOpenRouterSlug(requestedRaw: string): string {
 /** Та же логика выбора модели, что и в /api/chat — Ollama или OpenRouter. */
 export function resolveChatLanguageModel(options: ResolveChatModelOptions = {}) {
   const envDefault = (process.env.CHAT_PROVIDER_DEFAULT?.trim() || 'ollama') as ChatProviderId;
-  const provider: ChatProviderId =
+  let provider: ChatProviderId =
     options.chatProvider === 'openrouter' || options.chatProvider === 'ollama'
       ? (options.chatProvider as ChatProviderId)
       : envDefault;
+
+  // Закрытый контур (CLOUD_MODE=off): единая точка, через которую проходят
+  // все вызовы модели, — облако здесь недоступно, кто бы его ни попросил.
+  if (provider === 'openrouter' && !isCloudModeEnabled()) {
+    console.warn('[model] CLOUD_MODE=off — запрошен openrouter, использую локальную модель');
+    provider = 'ollama';
+  }
 
   if (provider === 'ollama') {
     const allowed = parseAllowedOllamaModelsFromServerEnv(process.env.ALLOWED_OLLAMA_MODELS);

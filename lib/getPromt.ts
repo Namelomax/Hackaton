@@ -14,6 +14,17 @@ import {
 import { surrealConnectionFingerprint } from '@/lib/surreal-connection-info';
 import { surrealQueryFirst, surrealQueryRows } from '@/lib/surreal-query';
 import { normalizeUsername, usernameLookupKey } from '@/lib/surreal-users';
+import {
+  accountState,
+  type AccountState,
+  effectiveRole,
+  envAdminUsernames,
+  inviteExpiresAt,
+  isWellFormedConversationId,
+  normalizeUserRef,
+  type FolderKind,
+  type Role,
+} from '@/lib/access';
 
 const db = new Surreal();
 const surrealState = (globalThis as any).__surrealState || ((globalThis as any).__surrealState = {
@@ -146,6 +157,65 @@ DEFINE FIELD updated ON anonymization_mappings TYPE datetime VALUE time::now();
   } catch {
     /* optional backfill */
   }
+
+  // Роли, блокировка, папки. Отдельным запросом и с IF NOT EXISTS: основной
+  // DDL выше на живой базе отвечает «already exists», и смешивать с ним новые
+  // определения — значит гадать, какие из них применились.
+  try {
+    await db.query(`
+      -- option<…>: у существующих записей полей нет, и строгий TYPE ронял бы
+      -- любой merge по ним (смена хеша пароля, lastLogin). NONE = 'user' / не
+      -- заблокирован — так их и читает userFromRecord.
+      DEFINE FIELD IF NOT EXISTS role ON users TYPE option<string> ASSERT $value = NONE OR $value IN ['admin', 'user'];
+      DEFINE FIELD IF NOT EXISTS blocked ON users TYPE option<bool>;
+
+      DEFINE TABLE IF NOT EXISTS folders SCHEMAFULL;
+      DEFINE FIELD IF NOT EXISTS name ON folders TYPE string;
+      DEFINE FIELD IF NOT EXISTS kind ON folders TYPE string ASSERT $value IN ['shared', 'personal'];
+      DEFINE FIELD IF NOT EXISTS owner ON folders TYPE option<record<users>>;
+      DEFINE FIELD IF NOT EXISTS instructions ON folders TYPE string DEFAULT '';
+      DEFINE FIELD IF NOT EXISTS created ON folders TYPE datetime DEFAULT time::now() READONLY;
+      DEFINE FIELD IF NOT EXISTS updated ON folders TYPE datetime VALUE time::now();
+      DEFINE INDEX IF NOT EXISTS idx_folders_owner ON folders FIELDS owner;
+      DEFINE FIELD IF NOT EXISTS lastLogin ON users TYPE option<datetime>;
+      -- Приглашение: пароль пуст, пока пользователь не придумает его при первом входе.
+      DEFINE FIELD IF NOT EXISTS invitedAt ON users TYPE option<datetime>;
+      -- Участники общей папки.
+      DEFINE FIELD IF NOT EXISTS members ON folders TYPE option<array<record<users>>>;
+      DEFINE INDEX IF NOT EXISTS idx_conversations_user ON conversations FIELDS user;
+      DEFINE FIELD IF NOT EXISTS updated ON conversations TYPE datetime VALUE time::now();
+    `);
+    await db.query(`
+      UPDATE users SET role = role ?? 'user', blocked = blocked ?? false
+      WHERE role IS NONE OR blocked IS NONE;
+    `);
+  } catch (error: any) {
+    console.error('Error defining access schema:', error?.message ?? error);
+  }
+
+  if (!surrealState.adminChecked) {
+    surrealState.adminChecked = true;
+    void warnIfNoAdmins();
+  }
+}
+
+/**
+ * Пользователей создаёт только администратор. Если нет ни логинов в
+ * ADMIN_USERNAMES, ни админов в БД — создать учётку некому, и это надо видеть
+ * в логе сразу, а не после жалобы «не могу зарегистрироваться».
+ */
+async function warnIfNoAdmins(): Promise<void> {
+  if (envAdminUsernames().size > 0) return;
+  try {
+    const rows = surrealQueryRows(await db.query(`SELECT id FROM users WHERE role = 'admin' LIMIT 1;`));
+    if (rows.length === 0) {
+      console.warn(
+        '[auth] нет ни одного администратора: задайте ADMIN_USERNAMES в .env — иначе создавать пользователей некому.',
+      );
+    }
+  } catch {
+    /* только диагностика */
+  }
 }
 
 /** Для /api/health/db — гарантирует подключение и схему. */
@@ -236,6 +306,13 @@ export type User = {
   id: string;
   username: string;
   created: string;
+  /** Эффективная роль: с учётом ADMIN_USERNAMES (см. lib/access.ts). */
+  role: Role;
+  blocked: boolean;
+  /** active — пароль задан; pending — ждёт первого входа; expired — приглашение истекло. */
+  state: AccountState;
+  /** До какого момента можно придумать пароль (только для pending/expired). */
+  inviteExpiresAt: string | null;
 };
 
 export type Conversation = {
@@ -246,6 +323,8 @@ export type Conversation = {
   title?: string;
   messages_raw?: string;
   document_content?: string;
+  /** `folders:…` или null — «Без папки». */
+  folderId?: string | null;
 };
 
 export type ProtocolExample = {
@@ -398,11 +477,20 @@ function userFromRecord(rec: Record<string, unknown>): User {
     id: typeof id?.toString === 'function' ? id.toString() : String(rec.id),
     username: String(rec.username ?? ''),
     created: String(rec.created ?? ''),
+    role: effectiveRole(String(rec.username ?? ''), rec.role),
+    blocked: rec.blocked === true,
+    state: accountState(rec.passwordHash, rec.invitedAt),
+    inviteExpiresAt:
+      typeof rec.passwordHash === 'string' && rec.passwordHash.trim() ? null : inviteExpiresAt(rec.invitedAt),
   };
 }
 
 // Create a new user
-export async function createUser(username: string, passwordHash: string): Promise<User> {
+export async function createUser(
+  username: string,
+  passwordHash: string,
+  role: Role = 'user',
+): Promise<User> {
   await connectDB();
   const displayName = normalizeUsername(username);
   const usernameLower = usernameLookupKey(username);
@@ -414,6 +502,8 @@ export async function createUser(username: string, passwordHash: string): Promis
     username: displayName,
     usernameLower,
     passwordHash,
+    role,
+    blocked: false,
   });
   const user = Array.isArray(created) ? created[0] : created;
   if (!user) {
@@ -463,8 +553,10 @@ export async function findUserForLogin(
   );
   const rec = surrealQueryFirst(result);
   if (!rec) return null;
+  // Пустой хеш — приглашённый пользователь, ещё не придумавший пароль. Его
+  // тоже возвращаем: решает роут по user.state, а verifyPassword на пустом
+  // хеше всегда даёт отказ.
   const passwordHash = String((rec as Record<string, unknown>).passwordHash ?? '');
-  if (!passwordHash) return null;
   return { user: userFromRecord(rec), passwordHash };
 }
 
@@ -517,7 +609,12 @@ export async function getUserPrompts(userId: string): Promise<Prompt[]> {
 }
 
 // Save conversation
-export async function saveConversation(userId: string, messages: any, documentContent?: string): Promise<Conversation> {
+export async function saveConversation(
+  userId: string,
+  messages: any,
+  documentContent?: string,
+  folderId?: string | null,
+): Promise<Conversation> {
   await connectDB();
   const userRef = userId.startsWith('users:') ? userId : `users:${userId}`;
   // create conversation with user reference
@@ -548,7 +645,8 @@ export async function saveConversation(userId: string, messages: any, documentCo
     messages: sanitizedClean, 
     title: "Чат",
     messages_raw: JSON.stringify(sanitizedClean),
-    document_content: documentContent || ""
+    document_content: documentContent || "",
+    ...(folderId ? { folder: folderRecord(folderId) } : {}),
   };
 
   const [conv] = await db.create('conversations', createPayload);
@@ -686,6 +784,7 @@ export async function saveConversation(userId: string, messages: any, documentCo
     messages_raw: String((storedConv as any).messages_raw ?? JSON.stringify(sanitizedClean)),
     created: String((storedConv as any).created),
     title: String((storedConv as any).title ?? 'Чат'),
+    folderId: folderIdOf(storedConv),
     document_content:
       typeof (storedConv as any).document_content === 'string'
         ? (storedConv as any).document_content
@@ -789,6 +888,7 @@ export async function updateConversation(conversationId: string, messages: any, 
     messages_raw: String((convData as any).messages_raw ?? JSON.stringify(sanitizedClean)),
     created: String((convData as any).created ?? new Date().toISOString()),
     title: String((convData as any).title ?? 'Чат'),
+    folderId: folderIdOf(convData),
     document_content:
       typeof (convData as any).document_content === 'string' ? (convData as any).document_content : '',
   };
@@ -823,6 +923,7 @@ export async function renameConversation(convId: string, title: string): Promise
     messages_raw: String((convData as any).messages_raw ?? ''),
     created: String((convData as any).created ?? new Date().toISOString()),
     title: trimmedTitle,
+    folderId: folderIdOf(convData),
     document_content:
       typeof (convData as any).document_content === 'string' ? (convData as any).document_content : '',
   };
@@ -901,7 +1002,13 @@ export async function assertConversationOwnership(
   conversationId?: string | null,
   userId?: string | null,
 ): Promise<void> {
-  if (!conversationId || conversationId.startsWith('local-')) return;
+  if (!conversationId) return;
+  // Форма id — ДО любых ранних выходов. RAG-сервис берёт часть после
+  // последнего «:», а несуществующую запись гард ниже пропускает. Без этой
+  // проверки `x:<чужой id>` или `local-1:<чужой id>` проходил гард и открывал
+  // чужой RAG-индекс; `folder_…` — индекс папки в обход её прав.
+  if (!isWellFormedConversationId(conversationId)) throw new ForbiddenError();
+  if (conversationId.startsWith('local-')) return;
   await connectDB();
   const cleanConvId = conversationId.replace(/^conversations:/, '');
   const convRecord = new RecordId('conversations', cleanConvId);
@@ -930,7 +1037,11 @@ export async function assertConversationOwnership(
 }
 
 // Create a new empty conversation for a user (returns created conversation)
-export async function createConversation(userId: string, title?: string): Promise<Conversation> {
+export async function createConversation(
+  userId: string,
+  title?: string,
+  folderId?: string | null,
+): Promise<Conversation> {
   await connectDB();
   const userRef = userId.startsWith('users:') ? userId.replace(/^users:/, '') : userId;
   const userRecord = new RecordId('users', userRef);
@@ -939,7 +1050,8 @@ export async function createConversation(userId: string, title?: string): Promis
     messages: [], 
     messages_raw: JSON.stringify([]), 
     title: title ?? 'Чат',
-    document_content: "" 
+    document_content: "",
+    ...(folderId ? { folder: folderRecord(folderId) } : {}),
   });
   return {
     id: conv.id.toString(),
@@ -948,6 +1060,7 @@ export async function createConversation(userId: string, title?: string): Promis
     messages_raw: String((conv as any).messages_raw ?? JSON.stringify([])),
     created: String((conv as any).created),
     title: String((conv as any).title ?? title ?? 'Чат'),
+    folderId: folderIdOf(conv),
     document_content:
       typeof (conv as any).document_content === 'string' ? (conv as any).document_content : '',
   };
@@ -972,6 +1085,7 @@ export async function getConversations(userId: string): Promise<Conversation[]> 
       messages_raw: typeof r.messages_raw === 'string' ? r.messages_raw : String(r.messages_raw ?? ''),
       created: String(r.created),
       title: typeof r.title === 'string' && r.title.trim() ? r.title : 'Чат',
+      folderId: folderIdOf(r),
       document_content: typeof r.document_content === 'string' ? r.document_content : '',
     };
   });
@@ -1395,4 +1509,341 @@ export async function saveConversationMapping(
       console.error('saveConversationMapping failed:', (ee as Error)?.message);
     }
   }
+}
+
+// ===== Администрирование пользователей и папки =====
+// Спека: docs/superpowers/specs/2026-10-02-admin-and-folders-design.md
+
+function cleanId(id: string, table: string): string {
+  return String(id ?? '').trim().replace(new RegExp(`^${table}:`), '');
+}
+
+function userRecord(userId: string): RecordId {
+  return new RecordId('users', cleanId(userId, 'users'));
+}
+
+function folderRecord(folderId: string): RecordId {
+  return new RecordId('folders', cleanId(folderId, 'folders'));
+}
+
+function folderIdOf(rec: unknown): string | null {
+  const f = (rec as { folder?: unknown } | null | undefined)?.folder;
+  if (!f) return null;
+  return toRecordString(f);
+}
+
+/** Пользователь по id — для проверки сессии на каждом запросе. */
+export async function getUserById(userId: string): Promise<User | null> {
+  await connectDB();
+  if (!cleanId(userId, 'users')) return null;
+  const raw = await db.select(userRecord(userId));
+  const rec = Array.isArray(raw) ? raw[0] : raw;
+  if (!rec) return null;
+  return userFromRecord(rec as Record<string, unknown>);
+}
+
+export async function touchUserLastLogin(userId: string): Promise<void> {
+  await connectDB();
+  try {
+    await db.query('UPDATE $u SET lastLogin = time::now();', { u: userRecord(userId) });
+  } catch (e) {
+    console.warn('touchUserLastLogin failed:', (e as Error)?.message);
+  }
+}
+
+export type AdminUserRow = User & {
+  /** Роль задана ADMIN_USERNAMES — в интерфейсе её не изменить. */
+  roleFromEnv: boolean;
+  conversationsCount: number;
+  lastLogin: string | null;
+  lastChatActivity: string | null;
+};
+
+export async function listUsersForAdmin(): Promise<AdminUserRow[]> {
+  await connectDB();
+  const users = surrealQueryRows(await db.query('SELECT * FROM users ORDER BY created ASC;'));
+  // Агрегируем в коде: тянем только три поля, без сообщений и документов.
+  const convRows = surrealQueryRows(await db.query('SELECT user, created, updated FROM conversations;'));
+  const byUser = new Map<string, { n: number; last: string | null; lastMs: number }>();
+  for (const row of convRows) {
+    const key = toRecordString((row as any).user);
+    if (!key) continue;
+    const stamp = (row as any).updated ?? (row as any).created;
+    const ms = stamp ? new Date(String(stamp)).getTime() : Number.NaN;
+    const prev = byUser.get(key) ?? { n: 0, last: null, lastMs: -Infinity };
+    prev.n += 1;
+    if (Number.isFinite(ms) && ms > prev.lastMs) {
+      prev.lastMs = ms;
+      prev.last = new Date(ms).toISOString();
+    }
+    byUser.set(key, prev);
+  }
+  const envAdmins = envAdminUsernames();
+  return users.map((rec) => {
+    const user = userFromRecord(rec);
+    const st = byUser.get(user.id);
+    return {
+      ...user,
+      roleFromEnv: envAdmins.has(usernameLookupKey(user.username)),
+      conversationsCount: st?.n ?? 0,
+      lastLogin: (rec as any).lastLogin ? String((rec as any).lastLogin) : null,
+      lastChatActivity: st?.last ?? null,
+    };
+  });
+}
+
+export async function updateUserByAdmin(
+  userId: string,
+  patch: { role?: Role; blocked?: boolean; passwordHash?: string },
+): Promise<User | null> {
+  await connectDB();
+  const data: Record<string, unknown> = {};
+  if (patch.role) data.role = patch.role;
+  if (typeof patch.blocked === 'boolean') data.blocked = patch.blocked;
+  if (patch.passwordHash) data.passwordHash = patch.passwordHash;
+  if (Object.keys(data).length > 0) {
+    await db.merge(userRecord(userId), data as any);
+  }
+  return getUserById(userId);
+}
+
+/**
+ * Удалить пользователя вместе со всем, что ему принадлежит. Чаты содержат
+ * расшифровки с ПДн, mapping анонимизации — настоящие ФИО: оставлять их
+ * «сиротами» после удаления учётки нельзя.
+ */
+export async function deleteUserCascade(userId: string): Promise<void> {
+  await connectDB();
+  const u = userRecord(userId);
+  const convIds = surrealQueryRows(await db.query('SELECT id FROM conversations WHERE user = $u;', { u }))
+    .map((row) => toRecordString((row as any).id))
+    .filter((id): id is string => Boolean(id));
+
+  // mapping анонимизации хранится под тем же id, что и диалог.
+  for (const convId of convIds) {
+    await db.delete(new RecordId('anonymization_mappings', cleanId(convId, 'conversations')));
+  }
+  if (convIds.length > 0) {
+    await db.query('DELETE protocol_instructions WHERE conversation IN $convs;', {
+      convs: convIds.map((id) => new RecordId('conversations', cleanId(id, 'conversations'))),
+    });
+  }
+  await db.query(
+    `DELETE conversations WHERE user = $u;
+     DELETE prompts WHERE owner = $u;
+     DELETE folders WHERE kind = 'personal' AND owner = $u;`,
+    { u },
+  );
+  // Убираем из участников общих папок, иначе там останутся ссылки в никуда.
+  const me = normalizeUserRef(userId);
+  const shared = surrealQueryRows(await db.query("SELECT * FROM folders WHERE kind = 'shared';"))
+    .map(folderFromRecord)
+    .filter((f) => f.memberIds.some((m) => normalizeUserRef(m) === me));
+  for (const f of shared) {
+    await writeFolderMembers(f.id, f.memberIds.filter((m) => normalizeUserRef(m) !== me));
+  }
+  await db.delete(u);
+}
+
+export type Folder = {
+  id: string;
+  name: string;
+  kind: FolderKind;
+  ownerId: string | null;
+  /** Участники общей папки (`users:…`). */
+  memberIds: string[];
+  instructions: string;
+  created: string;
+  updated: string;
+};
+
+function folderFromRecord(rec: Record<string, unknown>): Folder {
+  const members = Array.isArray(rec.members) ? rec.members : [];
+  return {
+    id: toRecordString(rec.id) ?? String(rec.id),
+    name: String(rec.name ?? ''),
+    kind: rec.kind === 'personal' ? 'personal' : 'shared',
+    ownerId: toRecordString(rec.owner),
+    memberIds: members.map((m) => toRecordString(m)).filter((m): m is string => Boolean(m)),
+    instructions: typeof rec.instructions === 'string' ? rec.instructions : '',
+    created: String(rec.created ?? ''),
+    updated: String(rec.updated ?? ''),
+  };
+}
+
+export async function getFolder(folderId: string): Promise<Folder | null> {
+  await connectDB();
+  if (!cleanId(folderId, 'folders')) return null;
+  const raw = await db.select(folderRecord(folderId));
+  const rec = Array.isArray(raw) ? raw[0] : raw;
+  return rec ? folderFromRecord(rec as Record<string, unknown>) : null;
+}
+
+/**
+ * Все общие папки + личные папки пользователя. Кому что показывать (участник
+ * или нет) решает вызывающий через lib/access.ts — общих папок немного, а
+ * фильтр в коде не зависит от того, как SurrealDB сравнивает массив с NONE.
+ */
+export async function listFoldersForUser(userId: string): Promise<Folder[]> {
+  await connectDB();
+  const rows = surrealQueryRows(
+    await db.query(
+      `SELECT * FROM folders
+       WHERE kind = 'shared' OR (kind = 'personal' AND owner = $u)
+       ORDER BY name ASC;`,
+      { u: userRecord(userId) },
+    ),
+  );
+  return rows.map(folderFromRecord);
+}
+
+export async function createFolder(input: {
+  name: string;
+  kind: FolderKind;
+  ownerId?: string | null;
+  /** Первые участники общей папки — обычно создавший её админ. */
+  memberIds?: string[];
+}): Promise<Folder> {
+  await connectDB();
+  const created = await db.create('folders', {
+    name: input.name,
+    kind: input.kind,
+    instructions: '',
+    ...(input.kind === 'personal' && input.ownerId ? { owner: userRecord(input.ownerId) } : {}),
+    ...(input.kind === 'shared' ? { members: (input.memberIds ?? []).map(userRecord) } : {}),
+  } as any);
+  const rec = Array.isArray(created) ? created[0] : created;
+  return folderFromRecord(rec as Record<string, unknown>);
+}
+
+export async function updateFolder(
+  folderId: string,
+  patch: { name?: string; instructions?: string },
+): Promise<Folder | null> {
+  await connectDB();
+  const data: Record<string, unknown> = {};
+  if (typeof patch.name === 'string') data.name = patch.name;
+  if (typeof patch.instructions === 'string') data.instructions = patch.instructions;
+  if (Object.keys(data).length > 0) {
+    await db.merge(folderRecord(folderId), data as any);
+  }
+  return getFolder(folderId);
+}
+
+/** Удалить папку. Чаты не трогаем — они уходят в «Без папки». */
+export async function deleteFolder(folderId: string): Promise<void> {
+  await connectDB();
+  const f = folderRecord(folderId);
+  await db.query('UPDATE conversations UNSET folder WHERE folder = $f; DELETE $f;', { f });
+}
+
+export async function getConversationFolderId(conversationId: string): Promise<string | null> {
+  if (!conversationId || conversationId.startsWith('local-')) return null;
+  await connectDB();
+  const raw = await db.select(new RecordId('conversations', cleanId(conversationId, 'conversations')));
+  const rec = Array.isArray(raw) ? raw[0] : raw;
+  return folderIdOf(rec);
+}
+
+export async function setConversationFolder(conversationId: string, folderId: string | null): Promise<void> {
+  await connectDB();
+  const c = new RecordId('conversations', cleanId(conversationId, 'conversations'));
+  if (folderId) {
+    await db.query('UPDATE $c SET folder = $f;', { c, f: folderRecord(folderId) });
+  } else {
+    await db.query('UPDATE $c UNSET folder;', { c });
+  }
+}
+
+async function writeFolderMembers(folderId: string, memberIds: string[]): Promise<void> {
+  // Без дублей, в виде record id — поле типизировано как array<record<users>>.
+  const unique = [...new Set(memberIds.map(normalizeUserRef))];
+  await db.merge(folderRecord(folderId), { members: unique.map(userRecord) } as any);
+}
+
+/** Добавить участника общей папки. Повторное добавление ничего не меняет. */
+export async function addFolderMember(folderId: string, userId: string): Promise<Folder | null> {
+  await connectDB();
+  const folder = await getFolder(folderId);
+  if (!folder) return null;
+  if (!folder.memberIds.some((m) => normalizeUserRef(m) === normalizeUserRef(userId))) {
+    await writeFolderMembers(folder.id, [...folder.memberIds, userId]);
+  }
+  return getFolder(folderId);
+}
+
+/**
+ * Убрать участника. Его чаты из этой папки переезжают в «Без папки»: доступа к
+ * папке у него больше нет, а прятать собственные чаты человека нельзя.
+ */
+export async function removeFolderMember(folderId: string, userId: string): Promise<Folder | null> {
+  await connectDB();
+  const folder = await getFolder(folderId);
+  if (!folder) return null;
+  const me = normalizeUserRef(userId);
+  await writeFolderMembers(
+    folder.id,
+    folder.memberIds.filter((m) => normalizeUserRef(m) !== me),
+  );
+  await db.query('UPDATE conversations UNSET folder WHERE folder = $f AND user = $u;', {
+    f: folderRecord(folder.id),
+    u: userRecord(userId),
+  });
+  return getFolder(folderId);
+}
+
+/** Участники папки: id и логин. Нет записи пользователя — пропускаем. */
+export async function listFolderMembers(folderId: string): Promise<Array<{ id: string; username: string }>> {
+  await connectDB();
+  const folder = await getFolder(folderId);
+  if (!folder) return [];
+  const out: Array<{ id: string; username: string }> = [];
+  for (const id of folder.memberIds) {
+    const user = await getUserById(id);
+    if (user) out.push({ id: user.id, username: user.username });
+  }
+  return out.sort((a, b) => a.username.localeCompare(b.username, 'ru'));
+}
+
+/** Завести приглашённого пользователя: только логин, пароль он придумает сам. */
+export async function createInvitedUser(username: string, role: Role = 'user'): Promise<User> {
+  await connectDB();
+  const displayName = normalizeUsername(username);
+  const usernameLower = usernameLookupKey(username);
+  if (!displayName || !usernameLower) throw new Error('username required');
+  const rows = surrealQueryRows(
+    await db.query(
+      `CREATE users SET username = $username, usernameLower = $usernameLower,
+         passwordHash = '', role = $role, blocked = false, invitedAt = time::now();`,
+      { username: displayName, usernameLower, role },
+    ),
+  );
+  if (!rows[0]) throw new Error('Failed to create user record');
+  const user = userFromRecord(rows[0]);
+  console.log(`[auth] приглашён пользователь ${user.username} (${user.role})`);
+  return user;
+}
+
+/**
+ * Первый вход: сохранить придуманный пароль. Условие `passwordHash = ''` в
+ * самом UPDATE делает это атомарным — если двое придумывают пароль
+ * одновременно, выиграет один, второй получит false.
+ */
+export async function claimInvitedUser(userId: string, passwordHash: string): Promise<boolean> {
+  await connectDB();
+  const rows = surrealQueryRows(
+    await db.query(
+      `UPDATE $u SET passwordHash = $hash, invitedAt = NONE
+       WHERE (passwordHash = '' OR passwordHash IS NONE) AND blocked != true;`,
+      { u: userRecord(userId), hash: passwordHash },
+    ),
+  );
+  return rows.length > 0;
+}
+
+/** Сброс пароля админом: пользователь снова придумает его при входе. */
+export async function resetUserPassword(userId: string): Promise<User | null> {
+  await connectDB();
+  await db.query("UPDATE $u SET passwordHash = '', invitedAt = time::now();", { u: userRecord(userId) });
+  return getUserById(userId);
 }

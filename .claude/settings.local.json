@@ -106,7 +106,20 @@
       "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(m['name'],'vram=%.2fGB'%\\(m['size_vram']/1e9\\),'ctx=',m.get\\('context_length'\\)\\) for m in d.get\\('models',[]\\)] or print\\('НИЧЕГО НЕ ЗАГРУЖЕНО'\\)\")",
       "Bash(node anon_inspect.mjs)",
       "Bash(python anon_e2e.py gen)",
-      "Bash(node -e \"console.log\\(typeof Response, typeof ReadableStream, typeof TextEncoder\\)\")"
+      "Bash(node -e \"console.log\\(typeof Response, typeof ReadableStream, typeof TextEncoder\\)\")",
+      "Bash(grep -n \"anonymize'\\\\|/anonymize\\\\`\\\\|jobs/anonymize\\\\|/extract\" lib/anonymization/remote-client.ts)",
+      "Bash(git rm *)",
+      "Bash(git checkout *)",
+      "Bash(git cherry-pick *)",
+      "Bash(GIT_EDITOR=true git cherry-pick --continue)",
+      "Bash(grep -rnE \"sk-or-v1-|sk-or-|AIza[0-9A-Za-z_-]{20,}|OPENROUTER_API_KEY *= *['\\\\\"]sk\" app lib .env.example)",
+      "Bash(git grep *)",
+      "Bash(grep -nE \"sk-or-v1-[A-Za-z0-9]{15,}|AIza[0-9A-Za-z_-]{25,}|SERPAPI|surreal.cloud\")",
+      "Bash(git push *)",
+      "Bash(sed -i 's|# systemd user-сервис для Протоколера \\(Next.js\\), порт 3000.|# systemd user-сервис для Протоколера \\(Next.js\\), порт 8012.|; s|# Порт 3000: 8010/8011 заняты анонимизатором, 8000 — чужой uvicorn, 5678 — n8n.|# Порт 8012: 8010/8011 заняты анонимизатором, 8000 и 3000 — ЧУЖИЕ процессы \\(проверено ss\\).|' deploy/protokoler.user.service)",
+      "Bash(sed -i 's|# Порт Next.js. У протоколера свободен именно 3000 \\(8010/8011 заняты|# Порт Next.js = 8012. Заняты: 8010/8011 \\(анонимизатор\\), 8000 и 3000 \\(чужие|; s|# анонимизатором, 8000 — чужой uvicorn\\). nginx protocol.cpcore.ru → 127.0.0.1:8012.|# процессы, проверено ss\\). nginx protocol.cpcore.ru → 127.0.0.1:8012.|' deploy/protokoler.env.example)",
+      "Bash(git fetch *)",
+      "Bash(bash -n deploy/protokoler-start.sh)"
     ],
     "additionalDirectories": [
       "d:\\Jacob\\Hakaton\\.claude"

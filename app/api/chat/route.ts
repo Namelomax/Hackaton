@@ -2,7 +2,7 @@ import {
   convertToModelMessages,
 } from 'ai';
 import crypto from 'crypto';
-import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation, assertConversationOwnership, ForbiddenError } from '@/lib/getPromt';
+import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation, assertConversationOwnership, ForbiddenError, getConversationFolderId, getFolder, type User } from '@/lib/getPromt';
 import { resolveChatLanguageModel } from '@/lib/resolve-chat-model';
 import { normalizeCloudModel } from '@/lib/chat-models';
 import { buildDateContextBlock } from '@/lib/date-context';
@@ -56,7 +56,10 @@ import { ANONYMIZE_MODE_SYSTEM_APPENDIX, buildGenderHintsBlock } from '@/lib/ano
 // поддерживаемым типам и по работе с кодировками, и расхождение стоило утечки
 // ПДн (см. комментарий у decodeTextBuffer).
 import { guessFileExt, extractAttachmentTextCached } from '@/lib/attachment-extract';
-import { resolveRequestUserId } from '@/lib/auth-session';
+import { activeUserIdOrResponse } from '@/lib/auth-guard';
+import { isCloudModeEnabled } from '@/lib/deployment-mode';
+import { canSeeFolder, folderRagScope } from '@/lib/access';
+import { buildFolderContextBlock, folderRagQuery } from '@/lib/folder-context';
 
 // Должно быть ≥ таймаута прокси/Ollama для длинных ответов (300s совпадало с 5m и обрывом стрима).
 export const maxDuration = 300;
@@ -252,11 +255,52 @@ function effectiveOllamaContextTokens(modelId: string): number {
 
 // === MAIN HANDLER ===
 
+/**
+ * Блок «Контекст проекта» для диалога, лежащего в папке: инструкции папки и
+ * фрагменты её источников по последней реплике пользователя. '' — если папки
+ * нет, она недоступна или пуста. Сбой RAG/БД здесь не роняет чат: без контекста
+ * папки протокол всё равно составляется.
+ */
+async function loadFolderContext(
+  user: User | null,
+  conversationId: string | null,
+  messages: any[],
+): Promise<string> {
+  if (!user || !conversationId) return '';
+  try {
+    const folderId = await getConversationFolderId(conversationId);
+    if (!folderId) return '';
+    const folder = await getFolder(folderId);
+    if (!folder || !canSeeFolder(user, folder)) return '';
+
+    const lastUser = [...messages].reverse().find((m) => m?.role === 'user');
+    const query = folderRagQuery(typeof lastUser?.content === 'string' ? lastUser.content : '');
+    const excerpt =
+      query && process.env.RAG_API_URL?.trim()
+        ? await fetchRagSnippet(query, 'hybrid', folderRagScope(folder.id))
+        : '';
+
+    const block = buildFolderContextBlock({
+      name: folder.name,
+      instructions: folder.instructions,
+      sourcesExcerpt: excerpt,
+    });
+    console.log(
+      `📁 folder: ${folder.id} instructions=${folder.instructions.length}c excerpt=${excerpt.length}c block=${block.length}c`,
+    );
+    return block;
+  } catch (e) {
+    console.warn('📁 folder context failed:', (e as Error)?.message);
+    return '';
+  }
+}
+
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   let { messages, newSystemPrompt, userId, selectedPromptId, documentContent, useRagContext, ragMode } =
     body as any;
-  const anonymizeMode = Boolean((body as any)?.anonymize);
+  // CLOUD_MODE=off (закрытый контур) — облачного режима нет, запрос клиента игнорируем.
+  const anonymizeMode = Boolean((body as any)?.anonymize) && isCloudModeEnabled();
   let conversationId: string | null = null;
 
   try {
@@ -268,9 +312,11 @@ export async function POST(req: Request) {
   } catch {}
 
   // Личность запроса берём из подписанной сессии, а не из того, что прислал
-  // клиент. Значение из тела/query остаётся запасным путём на время перехода
-  // (см. resolveRequestUserId) — иначе деплой разлогинил бы всех разом.
-  userId = resolveRequestUserId(req, userId) ?? undefined;
+  // клиент; заблокированный администратором получает отказ сразу.
+  const requestAuth = await activeUserIdOrResponse(req, userId);
+  if (requestAuth instanceof Response) return requestAuth;
+  userId = requestAuth.userId ?? undefined;
+  const requestUser: User | null = requestAuth.user;
 
   if (!Array.isArray(messages)) {
     console.log('⚠️ Messages is not an array, defaulting to empty:', typeof messages);
@@ -638,10 +684,22 @@ export async function POST(req: Request) {
    *
    * Документы ВСЕГДА остаются в user-сообщениях — никогда не вырезаются при тримминге.
    */
+  // ===== Контекст проектной папки =====
+  // Папку берём из записи диалога в БД, а не из тела запроса: клиент не
+  // должен иметь возможность подмешать в промпт чужую папку. Грузим ДО
+  // расчёта бюджета истории — блок до ~5 000 токенов, его надо вычесть.
+  const folderContextRaw = await loadFolderContext(requestUser, conversationId, messagesWithHidden);
+  let folderContext = folderContextRaw;
+  const folderTokensEstimate = Math.ceil(folderContextRaw.length / CHARS_PER_TOKEN);
+
   const CONTEXT_TOKENS_LIMIT = contextTokensLimit;
   const docTokensEstimate = Math.ceil(hiddenDocsContext.length / CHARS_PER_TOKEN);
   const availableForHistoryTokens =
-    CONTEXT_TOKENS_LIMIT - RESERVE_RESPONSE_TOKENS - RESERVE_SYSTEM_BASE_TOKENS - docTokensEstimate;
+    CONTEXT_TOKENS_LIMIT -
+    RESERVE_RESPONSE_TOKENS -
+    RESERVE_SYSTEM_BASE_TOKENS -
+    docTokensEstimate -
+    folderTokensEstimate;
   const availableForHistoryChars = Math.max(availableForHistoryTokens * CHARS_PER_TOKEN, 8000);
 
   function msgChars(m: any): number {
@@ -730,6 +788,16 @@ export async function POST(req: Request) {
         inflectionAliases = r2.aliases;
       }
 
+      // Инструкции и источники папки уходят в облако вместе с промптом — тот же
+      // серверный NER, что и для реплики пользователя. Найденные ФИО попадают
+      // в mapping диалога и обратно подставляются в ответ.
+      if (folderContext.trim()) {
+        const r3 = await anonymizeNewText(folderContext, conversationId);
+        mapping = r3.mapping;
+        inflectionAliases = r3.aliases;
+        folderContext = r3.anonymizedText;
+      }
+
       // Склейка плейсхолдеров, разошедшихся из-за падежей. Анонимизатор
       // обрабатывает каждое сообщение отдельно и не знает, что «Ирины
       // Соколовой» из правки — это [PERSON_1] «Ирина Соколова» из расшифровки;
@@ -792,6 +860,16 @@ export async function POST(req: Request) {
         // модель видела реальные даты (сроки!) и нормальный текст.
         anonymizedDocsContext = restoreNonSensitivePlaceholders(so.text, conv.mapping).text;
       }
+      if (folderContext.trim()) {
+        const sc = scrubStructured(
+          anonymizeWithMapping(folderContext, conv.mapping, inflectionAliases),
+          conv,
+        );
+        conv = sc.conversation;
+        const so = scrubSensitiveOrgs(sc.text, conv);
+        conv = so.conversation;
+        folderContext = restoreNonSensitivePlaceholders(so.text, conv.mapping).text;
+      }
       finalMessages = finalMessages.map((m) => {
         if (typeof m?.content !== 'string') return m;
         // Канонические значения и склонённые формы подставляются ОДНИМ
@@ -827,6 +905,9 @@ export async function POST(req: Request) {
         anonymizationActive = false;
         anonymizeMapping = {};
         anonymizedDocsContext = hiddenDocsContext;
+        // Блок папки мог быть уже частично заменён — берём исходный: дальше
+        // работает локальная модель, ей ПДн можно.
+        folderContext = folderContextRaw;
         effectiveProvider = 'ollama';
         effectiveModel = undefined;
         anonymizationNotice =
@@ -855,6 +936,15 @@ export async function POST(req: Request) {
     typeof ragMode === 'string' && ['hybrid', 'local', 'global'].includes(ragMode)
       ? ragMode
       : 'hybrid';
+
+  // В облако — только то, что прошло анонимизацию. Раньше провайдер брался из
+  // тела как есть, и запрос с chatProvider=openrouter без anonymize (старая
+  // вкладка, ручной запрос) отправлял расшифровку с ПДн в OpenRouter сырой.
+  if (effectiveProvider === 'openrouter' && !anonymizationActive) {
+    console.warn('🔒 chat: openrouter без активной анонимизации — переключаю на локальную модель');
+    effectiveProvider = 'ollama';
+    effectiveModel = undefined;
+  }
 
   let languageModel;
   try {
@@ -921,6 +1011,10 @@ export async function POST(req: Request) {
     ragAutoContext?.trim() ? ragAutoContext : undefined,
     ragOmitsAttachmentBodies,
   );
+
+  if (folderContext) {
+    systemPrompt += folderContext;
+  }
 
   const lastTurn =
     finalMessages.length > 0 ? finalMessages[finalMessages.length - 1] : null;
