@@ -1,8 +1,26 @@
 node_modules
 .next
 .git
-rag-api/output
-rag-api/rag_storage
-**/__pycache__
 .env
 .env.*
+!.env.example
+
+# rag-api собирается отдельным образом из своей папки
+rag-api
+
+# Рабочие и тестовые файлы в корне — в образ не нужны. Шаблон протокола
+# (lib/docx-template/assets/*.docx) НЕ попадает под эти шаблоны: в
+# .dockerignore `*.docx` означает только корень контекста.
+*.docx
+*.xlsx
+*.txt
+*.log
+*.md
+!README.md
+outputs
+backups
+test
+plans
+docs
+coverage
+**/__pycache__

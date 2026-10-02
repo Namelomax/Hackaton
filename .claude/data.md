@@ -61,7 +61,7 @@ Protocol {
 
 ## SurrealDB — таблицы
 
-**Файл схемы:** `lib/db/schema.ts`
+**Файл схемы:** `lib/getPromt.ts` (`connectDB`)
 
 ### Таблица `prompt`
 ```sql
@@ -79,21 +79,42 @@ DEFINE TABLE prompt SCHEMAFULL;
 ```sql
 DEFINE TABLE users SCHEMAFULL;
   id           (auto)
-  username     STRING REQUIRED -- уникальный, lowercase, индексирован
-  passwordHash STRING REQUIRED -- bcrypt
+  username     STRING          -- как ввели
+  usernameLower STRING UNIQUE  -- ключ поиска
+  passwordHash STRING          -- scrypt (старые sha256 пересчитываются при входе)
+  role         OPTION<STRING>  -- 'admin' | 'user'; NONE = user
+  invitedAt    OPTION<DATETIME> -- приглашение: passwordHash = '' до первого входа (14 дней)
+  blocked      OPTION<BOOL>    -- NONE = не заблокирован
+  lastLogin    OPTION<DATETIME>
   created      DATETIME
 ```
+Эффективная роль = `admin`, если логин в `ADMIN_USERNAMES`, иначе `role`
+(`lib/access.ts`). Блокировка проверяется по БД на каждом запросе
+(`lib/auth-guard.ts`), а не только подписью cookie.
 
-### Таблица `conversations`
+### Таблица `conversations` (SCHEMALESS)
 ```sql
-DEFINE TABLE conversations SCHEMAFULL;
-  id               UUID (auto)
-  user_id          record<users>
+  user             record<users>
+  folder           OPTION<record<folders>>  -- нет = «Без папки»
   messages         ARRAY   -- нормализованные UIMessage[]
   document_content STRING  -- последняя версия протокола (markdown)
   created          DATETIME
-  updated          DATETIME
+  updated          DATETIME  -- VALUE time::now()
 ```
+Чат видит только владелец, в какой бы папке он ни лежал.
+
+### Таблица `folders`
+```sql
+DEFINE TABLE folders SCHEMAFULL;
+  name         STRING
+  kind         STRING                 -- 'shared' (ведёт админ) | 'personal' (только владельцу)
+  owner        OPTION<record<users>>  -- для personal
+  members      OPTION<ARRAY<record<users>>>  -- участники shared; вступают сами или добавляет админ
+  instructions STRING                 -- «Инструкции проекта», подмешиваются в промпт чатов папки
+  created, updated DATETIME
+```
+Источники папки — RAG-индекс со scope `folder_<id>`. Спека:
+`docs/superpowers/specs/2026-10-02-admin-and-folders-design.md`.
 
 ### Таблица `user_selected_prompt`
 ```sql
@@ -147,6 +168,8 @@ SURREALDB_USER=root
 SURREALDB_PASSWORD=root
 OLLAMA_BASE_URL=http://localhost:11434/v1
 OLLAMA_API_KEY=ollama
+SESSION_SECRET=...                    # подпись cookie сессии
+ADMIN_USERNAMES=jacob                 # администраторы (через запятую)
 ```
 
 ### Ollama (тонкая настройка)

@@ -1,5 +1,13 @@
 # Запуск через Docker Compose
 
+> **Актуальная инструкция по Docker и переезду в контур компании:
+> [deploy/contour/README.md](deploy/contour/README.md).** Текущий облачный прод
+> (systemd, без Docker): [deploy/DEPLOY-PROTOKOLER.md](deploy/DEPLOY-PROTOKOLER.md).
+>
+> Разделы ниже про `ollama` в составе compose устарели: теперь Ollama и rag-api —
+> опциональные профили (`--profile ollama`, `--profile rag`), GPU подключается
+> через `docker-compose.gpu.yml`. Разделы про SurrealDB по-прежнему верны.
+
 Предполагается установленный Docker и Docker Compose v2.
 
 1. Скопируйте `.env.example` в `.env` и заполните секреты (`OPENROUTER_API_KEY`, при необходимости `GOOGLE_GENERATIVE_AI_API_KEY`).

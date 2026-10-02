@@ -5,7 +5,7 @@ import {
   loadConversationMapping,
 } from '@/lib/anonymization';
 import { assertConversationOwnership, ForbiddenError } from '@/lib/getPromt';
-import { resolveRequestUserId } from '@/lib/auth-session';
+import { activeUserIdOrResponse } from '@/lib/auth-guard';
 
 export const maxDuration = 90;
 export const runtime = 'nodejs';
@@ -32,9 +32,11 @@ export async function POST(req: Request) {
   // ИЗОЛЯЦИЯ: ниже читается mapping диалога, а он содержит пары
   // «плейсхолдер → настоящие ПДн». Без проверки владения любой мог бы получить
   // расшифровку чужих персональных данных, подставив чужой conversationId.
+  const auth = await activeUserIdOrResponse(req, userId);
+  if (auth instanceof Response) return auth;
   try {
     // Личность — из подписанной сессии; тело запроса лишь запасной путь.
-    await assertConversationOwnership(conversationId, resolveRequestUserId(req, userId));
+    await assertConversationOwnership(conversationId, auth.userId);
   } catch (e) {
     if (e instanceof ForbiddenError) {
       return Response.json({ error: 'Доступ к этому диалогу запрещён' }, { status: 403 });
@@ -48,18 +50,24 @@ export async function POST(req: Request) {
   }
 
   try {
-    const isCloud = chatProvider === 'openrouter';
+    const wantsCloud = chatProvider === 'openrouter';
 
     // Облако: документ правой панели содержит реальные ПДн — зачищаем по
     // mapping диалога перед отправкой; результат (цитаты в замечаниях)
     // возвращаем с реальными данными. Локальная модель получает документ как есть.
     let mapping: Record<string, string> = {};
     let contentForReview = content;
-    if (isCloud && typeof conversationId === 'string' && conversationId) {
+    if (wantsCloud && typeof conversationId === 'string' && conversationId) {
       mapping = await loadConversationMapping(conversationId);
       if (Object.keys(mapping).length > 0) {
         contentForReview = anonymizeWithMapping(content, mapping);
       }
+    }
+    // Нечем зачистить (mapping пуст или нет диалога) — в облако документ не
+    // отправляем: раньше он уходил туда с настоящими ФИО.
+    const isCloud = wantsCloud && Object.keys(mapping).length > 0;
+    if (wantsCloud && !isCloud) {
+      console.warn('[review-document] облако без mapping анонимизации — проверяю локальной моделью');
     }
 
     let review = await runDocumentReview(contentForReview, {

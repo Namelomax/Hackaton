@@ -1,11 +1,24 @@
-# Имя проекта задаёт префикс томов (<name>_surreal-data). Для общей БД с другим деплоем:
-# COMPOSE_PROJECT_NAME=forus в .env или: docker compose -p forus up -d
+# Протоколер в Docker: веб-приложение + локальная SurrealDB (+ опционально RAG и Ollama).
+#
+# Быстрый старт (контур компании): deploy/contour/README.md
+#   cp deploy/contour/env.contour.example .env   # заполнить
+#   docker compose up -d                          # web + surrealdb
+#   docker compose --profile rag up -d            # + rag-api (источники папок, RAG)
+#   docker compose --profile ollama up -d         # + свой Ollama, если LLM-сервера в контуре нет
+#
+# Текущий прод (systemd + npm start, облачная БД) этот файл НЕ использует.
+#
+# Имя проекта задаёт префикс томов (<name>_surreal-data). Не меняйте его на
+# живой установке: новое имя = новые пустые тома.
 name: ${COMPOSE_PROJECT_NAME:-forus-chatbot}
 
 services:
   surrealdb:
-    # surrealdb npm ^1.x supports engine versions < 3.0.0 — do not use :latest (SurrealDB 3.x) until the JS SDK is upgraded.
+    # Та же версия, что у облачной БД (проверено: surrealdb-2.6.5) — экспорт из
+    # облака импортируется без конвертации. npm-клиент surrealdb 1.x не
+    # поддерживает движок 3.x: не ставьте :latest.
     image: ${SURREALDB_IMAGE:-surrealdb/surrealdb:v2.6.5}
+    restart: unless-stopped
     # Образ по умолчанию может работать не от root — без этого RocksDB в named volume часто даёт EACCES (код 13).
     user: "0:0"
     command:
@@ -17,45 +30,110 @@ services:
       - --user
       - root
       - --pass
-      - ${SURREAL_ROOT_PASSWORD:-${SURREALDB_PASSWORD:-root}}
+      - ${SURREALDB_PASSWORD:?Задайте SURREALDB_PASSWORD в .env — пароль root локальной БД}
       - rocksdb:/data/database.db
     volumes:
       - surreal-data:/data
+    # Только петля: БД с ПДн не должна торчать в сеть. Для доступа с другой
+    # машины используйте SSH-туннель, а не 0.0.0.0.
     ports:
-      - "${SURREAL_PORT:-8000}:8000"
+      - "${SURREAL_PORT:-127.0.0.1:8000}:8000"
+    healthcheck:
+      test: ["CMD", "/surreal", "isready", "--endpoint", "http://127.0.0.1:8000"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   web:
+    image: ${WEB_IMAGE:-protokoler-web:latest}
     build:
       context: .
       dockerfile: Dockerfile
+    restart: unless-stopped
+    # Всё из .env попадает в контейнер как есть (ключи моделей, анонимизатор,
+    # SESSION_SECRET, ADMIN_USERNAMES …). Ниже — только то, что внутри compose
+    # обязано отличаться от запуска на хосте.
     env_file:
       - path: .env
         required: false
-    depends_on:
-      surrealdb:
-        condition: service_started
     environment:
+      # Локальная БД из этого же compose. Чтобы временно работать с облачной —
+      # задайте SURREALDB_URL=wss://…/rpc и остальные SURREALDB_* в .env.
+      # SURREALDB_* приоритетнее SURREAL_* (lib/surreal-env.ts), поэтому
+      # облачные SURREAL_URL/SURREAL_PASS из старого .env сюда не протекут.
       SURREALDB_URL: ${SURREALDB_URL:-ws://surrealdb:8000/rpc}
       SURREALDB_NAMESPACE: ${SURREALDB_NAMESPACE:-chatbot}
       SURREALDB_DATABASE: ${SURREALDB_DATABASE:-main}
       SURREALDB_USER: ${SURREALDB_USER:-root}
-      SURREALDB_PASSWORD: ${SURREALDB_PASSWORD:-root}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
-      OPENROUTER_MODEL_DEFAULT: ${OPENROUTER_MODEL_DEFAULT:-arcee-ai/trinity-large-preview:free}
-      NEXT_PUBLIC_LOCAL_MODELS: ${NEXT_PUBLIC_LOCAL_MODELS:-}
-      GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY:-}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
-      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-ollama}
-      ALLOWED_OLLAMA_MODELS: ${ALLOWED_OLLAMA_MODELS:-}
-      CHAT_PROVIDER_DEFAULT: ${CHAT_PROVIDER_DEFAULT:-ollama}
-      LLM_FORCE_NONSTREAM: ${LLM_FORCE_NONSTREAM:-true}
-      RAG_OLLAMA_BASE_URL: ${RAG_OLLAMA_BASE_URL:-}
-      RAG_LOCAL_OPENAI_BASE_URL: ${RAG_LOCAL_OPENAI_BASE_URL:-}
-      OLLAMA_MAX_OUTPUT_TOKENS: ${OLLAMA_MAX_OUTPUT_TOKENS:-4096}
-      OLLAMA_PROTOCOL_MAX_OUTPUT_TOKENS: ${OLLAMA_PROTOCOL_MAX_OUTPUT_TOKENS:-8192}
+      SURREALDB_PASSWORD: ${SURREALDB_PASSWORD:?Задайте SURREALDB_PASSWORD в .env}
+      # Без постоянного секрета каждый перезапуск контейнера разлогинивает всех.
+      SESSION_SECRET: ${SESSION_SECRET:?Задайте SESSION_SECRET в .env (openssl rand -hex 32)}
+      # Пусто = RAG выключен. С профилем rag: http://rag-api:8000
+      RAG_API_URL: ${RAG_API_URL:-}
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+    depends_on:
+      surrealdb:
+        condition: service_healthy
+    # По умолчанию только петля: снаружи ходят через reverse-proxy с TLS
+    # (nginx и т.п.). WEB_PORT=0.0.0.0:3000 — если прокси на другой машине.
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      - "${WEB_PORT:-127.0.0.1:3000}:3000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  rag-api:
+    profiles: ["rag"]
+    image: ${RAG_IMAGE:-protokoler-rag:latest}
+    build:
+      context: ./rag-api
+      dockerfile: Dockerfile
+      args:
+        # 1 = скачать модели MinerU в образ при сборке (нужно для контура без
+        # интернета: иначе MinerU тянет их с HuggingFace при первом PDF).
+        PRELOAD_MINERU_MODELS: ${PRELOAD_MINERU_MODELS:-1}
+    restart: unless-stopped
+    # Без env_file: индексации не нужны ключи OpenRouter, SESSION_SECRET и
+    # прочее из .env приложения — передаём только своё.
+    environment:
+      # OpenAI-совместимый сервер эмбеддингов и LLM для индексации.
+      LOCAL_OPENAI_BASE_URL: ${RAG_LOCAL_OPENAI_BASE_URL:-http://ollama:11434/v1}
+      LOCAL_OPENAI_API_KEY: ${RAG_LOCAL_OPENAI_API_KEY:-ollama}
+      LOCAL_OPENAI_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-nomic-embed-text}
+      RAG_OLLAMA_BASE_URL: ${RAG_OLLAMA_BASE_URL:-http://ollama:11434/v1}
+      RAG_OLLAMA_LLM_MODEL: ${RAG_OLLAMA_LLM_MODEL:-qwen3:14b}
+      RAG_CORS_ORIGINS: ${RAG_CORS_ORIGINS:-http://localhost:3000}
+    volumes:
+      - rag-storage:/app/rag_storage
+      - rag-uploads:/app/uploads
+      - rag-output:/app/output
+    ports:
+      - "${RAG_API_PORT:-127.0.0.1:8001}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 5
+
+  ollama:
+    # Только если в контуре нет своего LLM-сервера. GPU подключается через
+    # docker-compose.gpu.yml (см. deploy/contour/README.md).
+    profiles: ["ollama"]
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    restart: unless-stopped
+    environment:
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-32768}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "${OLLAMA_PORT:-127.0.0.1:11434}:11434"
+
 volumes:
   surreal-data:
+  rag-storage:
+  rag-uploads:
+  rag-output:
+  ollama-data:
