@@ -2,7 +2,6 @@
 
 import { generateText } from 'ai';
 import { resolveChatLanguageModel, type ResolveChatModelOptions } from '@/lib/resolve-chat-model';
-import { documentReasoningOptions } from '@/lib/reasoning-options';
 
 export interface ReviewIssue {
   level: 'error' | 'warning' | 'info';
@@ -262,13 +261,11 @@ INFO (информация — не требует исправления):
 ================================================================================`;
 
   try {
-    const model = resolveChatLanguageModel(modelOptions ?? { chatProvider: 'ollama' });
-    const modelLabel =
-      modelOptions?.chatModel?.trim() ||
-      (modelOptions?.chatProvider === 'openrouter' ? 'openrouter' : 'ollama');
+    const model = resolveChatLanguageModel(modelOptions ?? {});
+    const modelLabel = modelOptions?.chatModel?.trim() || 'локальная';
 
     console.log('[review-agent] === НАЧАЛО ПРОВЕРКИ ДОКУМЕНТА ===');
-    console.log('[review-agent] Модель:', modelLabel, 'provider:', modelOptions?.chatProvider ?? 'ollama');
+    console.log('[review-agent] Модель:', modelLabel);
     console.log('[review-agent] Длина документа:', normalizedDoc.length, 'символов');
     const startTime = Date.now();
 
@@ -279,7 +276,6 @@ INFO (информация — не требует исправления):
       seed: 42, // Фиксированный seed для воспроизводимости
       // Проверка документа — тоже работа с документом: размышления выключены
       // безусловно (единый набор опций из lib/reasoning-options).
-      providerOptions: documentReasoningOptions(),
     });
 
     const elapsedTime = Date.now() - startTime;
@@ -346,10 +342,8 @@ INFO (информация — не требует исправления):
   } catch (error) {
     console.error('[review-agent] ❌ КРИТИЧЕСКАЯ ОШИБКА:', error);
     const raw = error instanceof Error ? error.message : String(error);
-    if (/ECONNREFUSED|Cannot connect|OPENROUTER_API_KEY|fetch failed/i.test(raw)) {
-      throw new Error(
-        'Не удалось связаться с выбранной моделью (Ollama/OpenRouter). Обновите страницу и повторите проверку с той же моделью, что в чате.',
-      );
+    if (/ECONNREFUSED|Cannot connect|fetch failed/i.test(raw)) {
+      throw new Error('Не удалось связаться с моделью. Обновите страницу и повторите проверку.');
     }
     throw new Error(`Ошибка при проверке документа: ${raw}`);
   }

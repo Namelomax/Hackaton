@@ -16,100 +16,13 @@ import {
   usePromptInputAttachments,
 } from '@/components/ai-elements/prompt-input';
 import { isTextExtractable } from '@/lib/utils';
-import { buildAnonymizePayload, MAX_REQUEST_BODY_BYTES } from '@/lib/attachment-extract-client';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 export type ChatTransportBodyExtras = {
-  chatProvider: 'openrouter' | 'ollama';
   chatModel: string;
   useRagContext: boolean;
   ragMode: string;
   useThinking?: boolean;
-  anonymize?: boolean;
 };
-
-/**
- * Опрос фоновой задачи анонимизации: GET /api/anonymize?jobId=... пока не
- * вернётся {done:true}.
- *
- * Потолка по времени здесь СОЗНАТЕЛЬНО нет. Раньше ожидание сидело внутри
- * серверной инвокации, и её предел (maxDuration) становился пределом
- * анонимизации: на 270-й секунде мы обрывали живую задачу. Теперь ждёт
- * браузер, а он никем не ограничен — задача считается ровно столько, сколько
- * нужно. Цикл заканчивается только по готовности, по ошибке сервера или по
- * отмене пользователем (signal).
- *
- * Возвращает финальный JSON, либо null — если нужно уйти в fallback.
- */
-async function pollAnonymizeJob(
-  jobId: string,
-  convId: string | null,
-  signal: AbortSignal | undefined,
-  onTick: (elapsedSec: number) => void,
-  /** Нужен серверу для проверки владения диалогом: без него опрос получит 403. */
-  userId?: string | null,
-): Promise<any | null> {
-  const startedAt = Date.now();
-  // Короткие тексты успевают за секунду; на длинных разряжаем опрос, чтобы не
-  // молотить релей сотнями запросов.
-  let delayMs = 1000;
-  let networkFailures = 0;
-
-  for (;;) {
-    await new Promise((r) => setTimeout(r, delayMs));
-    delayMs = Math.min(delayMs * 1.4, 5000);
-    if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
-    onTick(Math.round((Date.now() - startedAt) / 1000));
-
-    let res: Response;
-    try {
-      const qs = new URLSearchParams({ jobId });
-      if (convId) qs.set('conversationId', convId);
-      if (userId) qs.set('userId', userId);
-      res = await fetch(`/api/anonymize?${qs}`, { signal, cache: 'no-store' });
-    } catch (err) {
-      if ((err as any)?.name === 'AbortError' || signal?.aborted) throw err;
-      // Вкладка ушла в фон, сеть моргнула — задача на сервере от этого не
-      // умирает. Сдаёмся только после серии подряд неудачных опросов.
-      if (++networkFailures > 10) {
-        toast.error('Связь с анонимизатором потеряна', {
-          description: 'Отправляю через локальную модель (данные не уходят в облако).',
-        });
-        return null;
-      }
-      continue;
-    }
-    networkFailures = 0;
-
-    if (res.status === 503) {
-      let info: any = null;
-      try {
-        info = JSON.parse(await res.text());
-      } catch {}
-      toast.warning('Анонимизатор недоступен', {
-        description: info?.error
-          ? `${info.error} Отправляю через локальную модель.`
-          : 'Документ будет обработан локальной моделью (данные не уходят в облако).',
-      });
-      return null;
-    }
-
-    let json: any = null;
-    try {
-      json = JSON.parse(await res.text());
-    } catch {
-      continue; // не JSON — считаем сбоем одного опроса, спросим ещё раз
-    }
-
-    if (!res.ok || !json?.ok) {
-      toast.error('Не удалось анонимизировать документ', {
-        description: json?.error || 'Отправляю через локальную модель.',
-      });
-      return null;
-    }
-    if (json.done) return json;
-  }
-}
 
 const AttachmentsSection = () => {
   const attachments = usePromptInputAttachments();
@@ -217,20 +130,9 @@ type PromptInputWrapperProps = {
   onUserMessageQueued?: (message: any) => void;
   onOpenAuthDialog?: () => void;
   chatBody?: ChatTransportBodyExtras;
-  anonymizeMode?: boolean;
   /** Фоновая автогенерация названия чата после первого сообщения.
    *  Вызывается ВСЕГДА; решение «надо ли» принимает сама страница. */
   onAutoTitle?: (args: { conversationId: string; text: string; files: FileUIPart[] }) => void;
-  /** Показывать диалог подтверждения перед отправкой в облако. Анонимизация
-   * происходит ВСЕГДА (на сервере) независимо от этого флага; выключение
-   * убирает только окно предпросмотра. По умолчанию включено. */
-  anonymizeConfirm?: boolean;
-  onAnonymizationReady?: (data: {
-    anonymizedText: string;
-    mapping: Record<string, string>;
-    /** Диалог, к которому относится артефакт (id уже СЕРВЕРНЫЙ после ensureConversationCreated). */
-    conversationId?: string | null;
-  }) => void;
 };
 
 export const PromptInputWrapper = ({
@@ -254,197 +156,12 @@ export const PromptInputWrapper = ({
   onUserMessageQueued,
   onOpenAuthDialog,
   chatBody,
-  anonymizeMode = false,
   onAutoTitle,
-  anonymizeConfirm = true,
-  onAnonymizationReady,
 }: PromptInputWrapperProps) => {
   const submitLockRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [authWarningOpen, setAuthWarningOpen] = useState(false);
 
-  // ── Preview анонимизации документа перед отправкой в облако ──
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  // Секунды с момента постановки задачи — чтобы ожидание в 3-4 минуты не
-  // выглядело зависанием.
-  const [previewElapsed, setPreviewElapsed] = useState(0);
-  const [previewText, setPreviewText] = useState('');
-  const [previewSummary, setPreviewSummary] = useState<Record<string, number>>({});
-  const [previewMapping, setPreviewMapping] = useState<Record<string, string>>({});
-  const previewResolverRef = useRef<((decision: 'confirm' | 'cancel') => void) | null>(null);
-
-  const resolvePreview = useCallback((decision: 'confirm' | 'cancel') => {
-    setPreviewOpen(false);
-    const resolve = previewResolverRef.current;
-    previewResolverRef.current = null;
-    resolve?.(decision);
-  }, []);
-
-  /**
-   * Прогоняет вложения через /api/anonymize, показывает preview и ждёт решения.
-   * Возвращает: 'confirm' — отправлять в облако; 'cancel' — отменить;
-   * 'fallback' — анонимизатор недоступен/ошибка, отправляем как есть (сервер
-   * сам уведомит и уйдёт на локальную модель).
-   */
-  const requestAnonymizationPreview = useCallback(
-    async (
-      files: FileUIPart[],
-      text: string,
-      convId: string | null,
-      signal?: AbortSignal,
-    ): Promise<'confirm' | 'cancel' | 'fallback'> => {
-      setPreviewLoading(true);
-      setPreviewElapsed(0);
-      setPreviewText('');
-      setPreviewSummary({});
-      setPreviewMapping({});
-      setPreviewOpen(true);
-      try {
-        // Извлекаем текст вложений ЗДЕСЬ, в браузере: у серверless-функции
-        // жёсткий лимит на размер тела (~4.5 МБ), и base64 стостраничного
-        // документа в него не влезал — платформа отвечала 413 «Request Entity
-        // Too Large» ещё до вызова функции. Текст того же документа примерно
-        // на порядок меньше. Форматы, которые браузер не осилил (PDF, XLSX),
-        // уходят файлом, как раньше — их разберёт сервер.
-        const prepared = await buildAnonymizePayload(files, text);
-        const payloadFiles = prepared.files;
-        const payloadText = prepared.text;
-        if (prepared.extractedCount > 0) {
-          console.log(
-            `[anonymize-preview] извлечено в браузере: ${prepared.extractedCount} вложение(й), ` +
-              `тело запроса ${(prepared.bytes / 1024 / 1024).toFixed(2)} МБ`,
-          );
-        }
-        if (prepared.bytes > MAX_REQUEST_BODY_BYTES) {
-          setPreviewOpen(false);
-          toast.error('Документ слишком большой', {
-            description:
-              `Вложение весит ${(prepared.bytes / 1024 / 1024).toFixed(1)} МБ, а сервер принимает до ` +
-              `${(MAX_REQUEST_BODY_BYTES / 1024 / 1024).toFixed(1)} МБ. Сохраните расшифровку в .txt или .docx ` +
-              '(из них текст извлекается прямо в браузере) либо разбейте на части.',
-          });
-          return 'fallback';
-        }
-        // Сетевой обрыв (например, браузер приостановил фоновую вкладку и убил
-        // соединение) — не повод отключать анонимизацию: повторяем запрос.
-        // Повторный вызов дёшев для уже известных значений (mapping-кеш диалога).
-        const MAX_ATTEMPTS = 3;
-        let res: Response | null = null;
-        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-          try {
-            res = await fetch('/api/anonymize', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              signal,
-              body: JSON.stringify({
-                conversationId: convId,
-                ...(authUser?.id ? { userId: authUser.id } : {}),
-                files: payloadFiles,
-                ...(payloadText ? { text: payloadText } : {}),
-              }),
-            });
-            break;
-          } catch (fetchErr) {
-            if ((fetchErr as any)?.name === 'AbortError' || signal?.aborted) throw fetchErr;
-            if (attempt === MAX_ATTEMPTS) throw fetchErr;
-            console.warn(
-              `[anonymize-preview] попытка ${attempt} оборвалась (${String(fetchErr)}), повторяю…`,
-            );
-            await new Promise((r) => setTimeout(r, 1500 * attempt));
-          }
-        }
-        if (!res) throw new Error('нет ответа от /api/anonymize');
-        if (res.status === 413) {
-          // Платформа режет запрос ДО вызова функции и отвечает не-JSON
-          // («Request Entity Too Large»). Раньше это доезжало до пользователя
-          // сырым SyntaxError про «Unexpected token 'R'».
-          setPreviewOpen(false);
-          toast.error('Документ слишком большой', {
-            description:
-              'Сервер отклонил запрос по размеру. Сохраните расшифровку в .txt или .docx — ' +
-              'из них текст извлекается прямо в браузере и запрос становится в разы легче.',
-          });
-          return 'fallback';
-        }
-        if (res.status === 503) {
-          setPreviewOpen(false);
-          // Сервер различает «не отвечает» и «не успел за бюджет»: во втором
-          // случае анонимизатор жив, и писать «недоступен» — обманывать.
-          let info: any = null;
-          try {
-            info = JSON.parse(await res.clone().text());
-          } catch {}
-          if (info?.timeout) {
-            toast.warning('Анонимизация не успела', {
-              description: `Обработка заняла больше ${info.elapsedSec ?? '—'} с. Отправляю через локальную модель (данные не уходят в облако).`,
-            });
-          } else {
-            toast.warning('Анонимизатор недоступен', {
-              description: 'Документ будет обработан локальной моделью (данные не уходят в облако).',
-            });
-          }
-          return 'fallback';
-        }
-        // Тело может оказаться НЕ JSON: при таймауте функции Vercel отдаёт
-        // текст «An error occurred…», и res.json() ронял SyntaxError, который
-        // пользователь видел сырым («Unexpected token 'A'»).
-        const rawBody = await res.text();
-        let json: any = null;
-        try {
-          json = rawBody ? JSON.parse(rawBody) : null;
-        } catch {
-          setPreviewOpen(false);
-          toast.error('Анонимизатор не ответил', {
-            description:
-              `Сервис вернул не JSON (код ${res.status}) — вероятно, таймаут. ` +
-              'Отправляю через локальную модель.',
-          });
-          return 'fallback';
-        }
-        if (!res.ok || !json?.ok) {
-          setPreviewOpen(false);
-          toast.error('Не удалось анонимизировать документ', {
-            description: json?.error || 'Отправляю через локальную модель.',
-          });
-          return 'fallback';
-        }
-        // POST только ПОСТАВИЛ задачу (202 {jobId}) — досматриваем её опросом.
-        // Само ожидание живёт здесь, в браузере, поэтому лимит серверной
-        // функции больше не ограничивает длительность анонимизации.
-        if (json.jobId && !json.done) {
-          const finished = await pollAnonymizeJob(json.jobId, convId, signal, setPreviewElapsed, authUser?.id);
-          if (!finished) {
-            setPreviewOpen(false);
-            return 'fallback';
-          }
-          json = finished;
-        }
-        setPreviewText(String(json.anonymizedText || ''));
-        setPreviewSummary(json.summary || {});
-        setPreviewMapping((json.mapping && typeof json.mapping === 'object') ? json.mapping : {});
-        setPreviewLoading(false);
-        onAnonymizationReady?.({
-          anonymizedText: String(json.anonymizedText || ''),
-          mapping: (json.mapping && typeof json.mapping === 'object') ? json.mapping : {},
-          // Передаём id явно: state conversationId в page.tsx в этот момент ещё
-          // старый (local-...), и артефакт терялся — панель искала его по новому id.
-          conversationId: convId,
-        });
-        return await new Promise<'confirm' | 'cancel'>((resolve) => {
-          previewResolverRef.current = resolve;
-        });
-      } catch (err) {
-        setPreviewOpen(false);
-        if ((err as any)?.name === 'AbortError') return 'cancel';
-        toast.error('Ошибка анонимизации', { description: String(err) });
-        return 'fallback';
-      } finally {
-        setPreviewLoading(false);
-      }
-    },
-    [onAnonymizationReady],
-  );
   const cancelRequestedRef = useRef(false);
   const preSendAbortRef = useRef<AbortController | null>(null);
   const authWarningTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -538,27 +255,6 @@ export const PromptInputWrapper = ({
       // Avoid blocking UI on client-side extraction; server performs extraction/injection.
       void finalFiles.map((f) => (f?.mediaType ? isTextExtractable(f.mediaType) : false));
 
-      // Режим «Облако + анонимизация»: перед отправкой в облако показываем preview
-      // анонимизированной версии и ждём подтверждения — как для документа, так и
-      // для обычного текстового сообщения (152-ФЗ: в облако уходит только текст
-      // без ПДн). Само окно можно отключить (anonymizeConfirm=false) — тогда
-      // отправляем без предпросмотра, но анонимизация всё равно выполняется на
-      // сервере в /api/chat (гарантия защиты ПДн не зависит от этого флага).
-      if (anonymizeMode && anonymizeConfirm && (finalFiles.length > 0 || Boolean(textWithQuote))) {
-        const decision = await requestAnonymizationPreview(
-          finalFiles,
-          textWithQuote,
-          ensuredConversationId ?? null,
-          abort.signal,
-        );
-        if (decision === 'cancel') {
-          submitLockRef.current = false;
-          setIsSubmitting(false);
-          return;
-        }
-        if (cancelRequestedRef.current || abort.signal.aborted) return;
-      }
-
       const clientMessageId =
         (typeof crypto !== 'undefined' && (crypto as any).randomUUID)
           ? (crypto as any).randomUUID()
@@ -632,99 +328,6 @@ export const PromptInputWrapper = ({
 
 return (
   <div className={className ? `relative ${className}` : 'relative'}>
-    {/* Preview анонимизации документа перед отправкой в облако */}
-    {/* dismissible={false}: случайный клик мимо панели или Escape не отменяет
-        долгую анонимизацию — закрыть можно только кнопками «Отмена»/«Подтвердить». */}
-    <Dialog open={previewOpen} onOpenChange={(o) => { if (!o) resolvePreview('cancel'); }} panelClassName="max-w-4xl w-full" dismissible={false}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Проверка перед отправкой в облако</DialogTitle>
-        </DialogHeader>
-        <div className="text-xs text-muted-foreground mb-2">
-          В облачную модель уйдёт только этот анонимизированный текст — без персональных данных (152-ФЗ).
-          Вы продолжите видеть реальные данные; обратная подстановка происходит автоматически.
-        </div>
-        {Object.keys(previewSummary).length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mb-2">
-            {Object.entries(previewSummary).map(([label, count]) => (
-              <span
-                key={label}
-                className="rounded-full border bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
-              >
-                {label}: {count}
-              </span>
-            ))}
-          </div>
-        )}
-        <div className="flex flex-col gap-3 md:flex-row">
-          {/* Слева — анонимизированный текст, который уйдёт в облако */}
-          <div className="flex min-w-0 flex-1 flex-col">
-            <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              Уйдёт в облако (без ПДн)
-            </div>
-            <div className="max-h-[45vh] overflow-auto rounded-md border bg-muted/30 p-3">
-              {previewLoading ? (
-                <div className="text-sm text-muted-foreground">
-                  Анонимизация{previewElapsed > 0 ? `… ${previewElapsed} с` : '…'} (короткое сообщение — быстро; для больших расшифровок от 30 секунд до нескольких минут — можно переключиться на другую вкладку, процесс продолжится)
-                </div>
-              ) : (
-                <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed">{previewText}</pre>
-              )}
-            </div>
-          </div>
-          {/* Справа — mapping: как анонимизировано (placeholder → оригинал) */}
-          {!previewLoading && Object.keys(previewMapping).length > 0 && (
-            <div className="flex w-full flex-col md:w-[44%]">
-              <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                Mapping — что скрыто ({Object.keys(previewMapping).length})
-              </div>
-              <div className="max-h-[45vh] overflow-auto rounded-md border">
-                <table className="w-full border-collapse text-xs">
-                  <thead className="sticky top-0 bg-muted/60 backdrop-blur">
-                    <tr className="text-left text-muted-foreground">
-                      <th className="px-2 py-1.5 font-medium">Плейсхолдер</th>
-                      <th className="px-2 py-1.5 font-medium">Оригинал (ПДн)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.entries(previewMapping)
-                      .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
-                      .map(([placeholder, original]) => (
-                        <tr key={placeholder} className="border-t hover:bg-muted/30">
-                          <td className="whitespace-nowrap px-2 py-1 align-top">
-                            <code className="rounded bg-[color:var(--chart-1)]/10 px-1 py-0.5 font-mono text-[color:var(--chart-1)]">
-                              {placeholder}
-                            </code>
-                          </td>
-                          <td className="px-2 py-1 align-top break-words">{String(original)}</td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-        <div className="flex justify-end gap-2 pt-3">
-          <button
-            type="button"
-            onClick={() => resolvePreview('cancel')}
-            className="px-3 py-1.5 text-sm rounded border hover:bg-muted"
-          >
-            Отмена
-          </button>
-          <button
-            type="button"
-            disabled={previewLoading}
-            onClick={() => resolvePreview('confirm')}
-            className="px-4 py-1.5 text-sm rounded bg-primary text-black disabled:opacity-50"
-          >
-            Подтвердить и отправить
-          </button>
-        </div>
-      </DialogContent>
-    </Dialog>
-
     {authWarningOpen && (
       <div className="pointer-events-none absolute -top-10 left-0 right-0 z-10 flex justify-center">
         <div className="rounded-md border border-neutral-200 bg-white px-3 py-1 text-xs text-neutral-700 shadow-sm">

@@ -4,7 +4,7 @@
  * Зовётся с клиента фоном сразу после отправки первого сообщения, параллельно
  * основному ответу агента. Отдельный роут, а не ветка /api/chat: там уже
  * роутинг агентов, RAG, анонимизация и два SSE-потока, и в облачном режиме он
- * работает через OpenRouter — а название генерируем ВСЕГДА локально.
+ * работает локально, как и всё остальное.
  *
  * ПОЧЕМУ ВСЕГДА OLLAMA. Исходник — сырое сообщение пользователя и начало
  * расшифровки, то есть ПДн, которые ещё не проходили анонимизатор. Отправить
@@ -79,7 +79,7 @@ export async function POST(req: Request) {
 
     let title: string | null = null;
     try {
-      const model = resolveChatLanguageModel({ chatProvider: 'ollama', useThinking: false });
+      const model = resolveChatLanguageModel({ useThinking: false });
       const { text: rawOutput } = await generateText({
         model,
         temperature: 0.2,

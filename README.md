@@ -12,7 +12,6 @@ npm install
 
 2) Задать переменные окружения (минимум):
 
-- `OPENROUTER_API_KEY`
 - `SURREALDB`
 
 1) Запуск:

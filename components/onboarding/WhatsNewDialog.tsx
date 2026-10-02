@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Cloud, Shield, Sparkles } from 'lucide-react';
+import { FolderOpen, KeyRound, Shield, Sparkles } from 'lucide-react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 
@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button';
  * Показывается один раз на версию: ключ версии в localStorage. Чтобы анонсировать
  * следующую фичу — поменяй WHATS_NEW_VERSION и содержимое.
  */
-export const WHATS_NEW_VERSION = 'cloud-anonymization-v1';
+export const WHATS_NEW_VERSION = 'folders-admin-v1';
 const STORAGE_KEY = `whatsNewSeen:${WHATS_NEW_VERSION}`;
 
 type WhatsNewDialogProps = {
@@ -49,35 +49,44 @@ export function WhatsNewDialog({ open, onClose }: WhatsNewDialogProps) {
             <span className="text-xs font-medium text-white/80">Новое в Протоколёре</span>
           </div>
           <h2 className="relative mt-3 text-xl font-bold leading-tight">
-            Режим «Облако + анонимизация»
+            Папки проектов
           </h2>
           <p className="relative mt-1 text-sm text-white/85">
-            Более сильная облачная модель — без риска для персональных данных.
+            Чаты по проектам, общие инструкции проекта и собственный пароль.
           </p>
         </div>
 
         {/* Содержимое */}
         <div className="mt-4 space-y-3 text-sm text-neutral-800">
           <div className="flex items-start gap-3">
-            <Cloud className="mt-0.5 size-5 shrink-0 text-indigo-500" />
+            <FolderOpen className="mt-0.5 size-5 shrink-0 text-indigo-500" />
             <div>
-              <div className="font-semibold text-neutral-900">Переключатель в шапке</div>
+              <div className="font-semibold text-neutral-900">Папки проектов</div>
               <p className="text-neutral-700">
-                Выберите «☁️ Облако + анонимизация», чтобы протокол готовила более мощная облачная LLM. Локальный режим тоже остаётся.
+                В боковой панели нажмите «+» у «Общих папок» и вступите в папки своих проектов. Чаты в
+                папке видите только вы, а инструкции проекта протоколер учитывает в каждом её чате. Для
+                себя можно завести личные папки.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-start gap-3">
+            <KeyRound className="mt-0.5 size-5 shrink-0 text-amber-600" />
+            <div>
+              <div className="font-semibold text-neutral-900">Вход и пароль</div>
+              <p className="text-neutral-700">
+                Учётные записи заводит администратор. При первом входе достаточно ввести логин — пароль
+                вы придумаете сами. Сменить его можно кнопкой «Сменить пароль» в шапке.
               </p>
             </div>
           </div>
           <div className="flex items-start gap-3">
             <Shield className="mt-0.5 size-5 shrink-0 text-emerald-600" />
             <div>
-              <div className="font-semibold text-neutral-900">Защита ПДн (152-ФЗ)</div>
+              <div className="font-semibold text-neutral-900">Данные остаются на сервере</div>
               <p className="text-neutral-700">
-                Перед отправкой в облако имена, организации, телефоны и другие данные заменяются на плейсхолдеры. Вы видите реальные данные — подстановка обратно происходит автоматически. Перед отправкой можно посмотреть, что именно уйдёт, и таблицу замен.
+                Протоколы готовит только локальная модель — расшифровки никуда не отправляются.
               </p>
             </div>
-          </div>
-          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-            Окно подтверждения можно отключить галочкой рядом с переключателем — анонимизация при этом продолжает работать всегда.
           </div>
         </div>
 

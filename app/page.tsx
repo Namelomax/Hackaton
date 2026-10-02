@@ -7,13 +7,14 @@ import type { DocumentState } from '@/lib/document/types';
 import { applyDocumentPatches, type DocumentPatch } from '@/lib/documentPatches';
 import { type AuthMode, Header } from '@/components/chat/Header';
 import { Sidebar } from '@/components/chat/Sidebar';
+import { CreateFolderDialog } from '@/components/folders/CreateFolderDialog';
 import { FolderCatalogDialog } from '@/components/folders/FolderCatalogDialog';
 import { FolderSettingsDialog } from '@/components/folders/FolderSettingsDialog';
 import { type ClientFolder, type FolderFilter, folderIdForNewChat } from '@/components/folders/types';
 import { ConversationArea } from '@/components/chat/ConversationArea';
 import { PromptInputWrapper } from '@/components/chat/PromptInputWrapper';
 import { Loader } from '@/components/ai-elements/loader';
-import { DEFAULT_CLOUD_CHAT_MODEL, FIXED_CHAT_MODEL } from '@/lib/chat-models';
+import { FIXED_CHAT_MODEL } from '@/lib/chat-models';
 import { isGenericChatTitle } from '@/lib/chat-display';
 import { copyTextToClipboard } from '@/lib/copyToClipboard';
 import { toast } from 'sonner';
@@ -43,64 +44,29 @@ function buildPersistPutBody(
 }
 
 export default function ChatPage() {
-  // Режим работы модели: false — локальная LLM; true — облачная LLM с анонимизацией.
-  const [anonymizeMode, setAnonymizeMode] = useState(false);
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('anonymizeMode');
-      if (saved === '1') setAnonymizeMode(true);
-    } catch {}
-  }, []);
-  /**
-   * Облачный режим разрешён на этом развёртывании. В закрытом контуре
-   * (CLOUD_MODE=off) переключатель скрыт, а сохранённый выбор «облако»
-   * сбрасывается — сервер всё равно ответил бы локальной моделью.
-   */
-  const [cloudModeAvailable, setCloudModeAvailable] = useState(true);
+  /** Источники папок (поиск по документам) настроены на сервере. */
+  const [folderSourcesEnabled, setFolderSourcesEnabled] = useState(false);
   useEffect(() => {
     fetch('/api/config')
       .then((r) => r.json())
-      .then((cfg) => {
-        if (cfg?.cloudMode === false) {
-          setCloudModeAvailable(false);
-          setAnonymizeMode(false);
-        }
-      })
+      .then((cfg) => setFolderSourcesEnabled(cfg?.folderSources === true))
       .catch(() => {});
-  }, []);
-  const handleToggleAnonymize = useCallback((next: boolean) => {
-    setAnonymizeMode(next);
+    // Остатки удалённого облачного режима в браузере пользователей.
     try {
-      localStorage.setItem('anonymizeMode', next ? '1' : '0');
+      localStorage.removeItem('anonymizeMode');
+      localStorage.removeItem('anonymizeConfirm');
     } catch {}
   }, []);
 
-  // Показывать окно подтверждения перед отправкой в облако. Сама анонимизация
-  // выполняется ВСЕГДА (на сервере) — этот флаг влияет только на предпросмотр.
-  const [confirmAnonymize, setConfirmAnonymize] = useState(true);
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('anonymizeConfirm');
-      if (saved === '0') setConfirmAnonymize(false);
-    } catch {}
-  }, []);
-  const handleToggleConfirmAnonymize = useCallback((next: boolean) => {
-    setConfirmAnonymize(next);
-    try {
-      localStorage.setItem('anonymizeConfirm', next ? '1' : '0');
-    } catch {}
-  }, []);
-
+  // Модель всегда локальная: облачный режим с анонимизацией убран (02.10.2026).
   const chatBody = useMemo(
     () => ({
-      chatProvider: anonymizeMode ? ('openrouter' as const) : ('ollama' as const),
-      chatModel: anonymizeMode ? DEFAULT_CLOUD_CHAT_MODEL : FIXED_CHAT_MODEL,
+      chatModel: FIXED_CHAT_MODEL,
       useRagContext: false,
       ragMode: 'hybrid' as const,
       useThinking: false,
-      anonymize: anonymizeMode,
     }),
-    [anonymizeMode],
+    [],
   );
 
   const [authChecked, setAuthChecked] = useState(false);
@@ -210,6 +176,7 @@ export default function ChatPage() {
   const [folderFilter, setFolderFilterState] = useState<FolderFilter>('all');
   const [openFolder, setOpenFolder] = useState<ClientFolder | null>(null);
   const [catalogOpen, setCatalogOpen] = useState(false);
+  const [createFolderKind, setCreateFolderKind] = useState<'shared' | 'personal' | null>(null);
   const setFolderFilter = useCallback((next: FolderFilter) => {
     setFolderFilterState(next);
     try {
@@ -221,44 +188,6 @@ export default function ChatPage() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   // Chat that user is currently viewing in the UI.
   const [viewConversationId, setViewConversationId] = useState<string | null>(null);
-
-  // Артефакты анонимизации по диалогам: { conversationId: { anonymizedText, mapping } }.
-  // Показываются в списке документов (анонимизированная версия + mapping).
-  type AnonArtifact = { anonymizedText: string; mapping: Record<string, string> };
-  const [anonByConv, setAnonByConv] = useState<Record<string, AnonArtifact>>({});
-  const handleAnonymizationReady = useCallback(
-    (data: AnonArtifact & { conversationId?: string | null }) => {
-      // id из колбэка — актуальный серверный id диалога; state conversationId в
-      // момент preview ещё может быть старым local-... (setState не успел).
-      const key = data.conversationId || conversationId || viewConversationId;
-      if (!key) return;
-      const { conversationId: _cid, ...artifact } = data;
-      setAnonByConv((prev) => ({ ...prev, [key]: artifact }));
-    },
-    [conversationId, viewConversationId],
-  );
-  // Восстановление артефактов при переключении на диалог (после перезагрузки).
-  useEffect(() => {
-    const key = viewConversationId;
-    if (!key || String(key).startsWith('local-')) return;
-    if (anonByConv[key]) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(
-          `/api/anonymize?conversationId=${encodeURIComponent(key)}${authUser?.id ? `&userId=${encodeURIComponent(authUser.id)}` : ''}`,
-        );
-        if (!res.ok) return;
-        const json = await res.json();
-        if (cancelled || !json?.ok) return;
-        const mapping = (json.mapping && typeof json.mapping === 'object') ? json.mapping : {};
-        const anonymizedText = String(json.anonymizedText || '');
-        if (Object.keys(mapping).length === 0 && !anonymizedText) return;
-        setAnonByConv((prev) => (prev[key] ? prev : { ...prev, [key]: { anonymizedText, mapping } }));
-      } catch {}
-    })();
-    return () => { cancelled = true; };
-  }, [viewConversationId]);
 
   // Ensure that when PromptInputWrapper creates a real conversation from a local-* id,
   // both engine + view ids stay in sync.
@@ -429,7 +358,7 @@ export default function ChatPage() {
 
     // Next.js вернул HTML-страницу ошибки (необработанное исключение в /api/chat).
     // Её нельзя разбирать по подстрокам «401»/«api key» — внутри случайная разметка,
-    // из-за которой пользователь получал ложное «проверь OPENROUTER_API_KEY».
+    // из-за которой пользователь получал ложное «ошибка ключа API».
     if (lower.includes('__next_error__') || lower.includes('internal server error')) {
       return (
         'Сервер не смог обработать запрос (500).\n' +
@@ -450,19 +379,7 @@ export default function ChatPage() {
     }
 
     if (lower.includes('401') || lower.includes('unauthorized') || lower.includes('api key')) {
-      return 'Ошибка авторизации к модели (API key). Проверь `OPENROUTER_API_KEY` и перезапусти сервер.';
-    }
-
-    // Суточный лимит бесплатных слагов OpenRouter — ждать бесполезно, он
-    // сбрасывается только на следующий день. Отделяем от обычного rate limit,
-    // иначе совет «подожди немного» вводит в заблуждение.
-    if (lower.includes('free-models-per-day') || lower.includes('free model requests per day')) {
-      return (
-        'Исчерпан дневной лимит бесплатных моделей OpenRouter.\n' +
-        'Варианты: переключиться на «🖥️ Локальная LLM» и продолжить сейчас, ' +
-        'пополнить баланс OpenRouter на $10 (даёт 1000 бесплатных запросов в сутки) ' +
-        'или указать платный слаг в OPENROUTER_MODEL_DEFAULT.'
-      );
+      return 'Ошибка авторизации к модели (API key). Проверьте OLLAMA_API_KEY на сервере.';
     }
 
     if (lower.includes('429') || lower.includes('rate limit')) {
@@ -1334,26 +1251,15 @@ export default function ChatPage() {
     createLocalConversation();
   };
 
-  const handleCreateFolder = async (kind: 'shared' | 'personal') => {
-    const name = prompt(kind === 'shared' ? 'Название общей папки проекта' : 'Название личной папки');
-    if (!name?.trim()) return;
-    try {
-      const resp = await fetch('/api/folders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, kind }),
-      });
-      const j = await resp.json().catch(() => ({}));
-      if (!resp.ok || !j?.success) throw new Error(j?.message || 'Не удалось создать папку');
-      setFolders((prev) => [...prev, j.folder].sort((a, b) => a.name.localeCompare(b.name, 'ru')));
-      setFolderFilter(j.folder.id);
-      if (kind === 'shared') {
-        // Сразу к источникам и инструкциям — ради них папку и заводят.
-        setOpenFolder(j.folder);
-      }
-    } catch (e) {
-      toast.error((e as Error).message);
-    }
+  const handleCreateFolder = (kind: 'shared' | 'personal') => {
+    setCreateFolderKind(kind);
+  };
+
+  const handleFolderCreated = (folder: ClientFolder) => {
+    setCreateFolderKind(null);
+    setFolders((prev) => [...prev, folder].sort((a, b) => a.name.localeCompare(b.name, 'ru')));
+    setFolderFilter(folder.id);
+    toast.success(`Папка «${folder.name}» создана`);
   };
 
   const handleMoveConversation = async (conv: any, folderId: string | null) => {
@@ -1565,11 +1471,6 @@ export default function ChatPage() {
         setAuthMode={setAuthMode}
         toggleAuthMode={toggleAuthMode}
         showAuthHint={authHintFromPrompt}
-        anonymizeMode={anonymizeMode}
-        cloudModeAvailable={cloudModeAvailable}
-        onToggleAnonymize={handleToggleAnonymize}
-        anonymizeConfirm={confirmAnonymize}
-        onToggleAnonymizeConfirm={handleToggleConfirmAnonymize}
       />
 
       {/* Основная область */}
@@ -1602,8 +1503,13 @@ export default function ChatPage() {
           }}
           onCreateShared={() => {
             setCatalogOpen(false);
-            void handleCreateFolder('shared');
+            handleCreateFolder('shared');
           }}
+        />
+        <CreateFolderDialog
+          kind={createFolderKind}
+          onClose={() => setCreateFolderKind(null)}
+          onCreated={handleFolderCreated}
         />
         <FolderSettingsDialog
           folder={openFolder}
@@ -1612,6 +1518,7 @@ export default function ChatPage() {
           onDeleted={handleFolderDeleted}
           onLeft={handleFolderLeft}
           onMembersChanged={handleFolderMembersChanged}
+          sourcesEnabled={folderSourcesEnabled}
         />
         {/* Центральная часть — чат (расширяется, когда панель протокола свёрнута) */}
         <div
@@ -1660,10 +1567,7 @@ export default function ChatPage() {
                 prepareSend={prepareSend}
                 onUserMessageQueued={undefined}
                 chatBody={chatBody}
-                anonymizeMode={anonymizeMode}
                 onAutoTitle={handleAutoTitle}
-                anonymizeConfirm={confirmAnonymize}
-                onAnonymizationReady={handleAnonymizationReady}
                 onOpenAuthDialog={() => {
                   setAuthMode('login');
                   setAuthHintFromPrompt(true);
@@ -1679,7 +1583,6 @@ export default function ChatPage() {
           document={viewDocument}
           onEdit={handleDocumentEdit}
           attachments={attachedFiles}
-          anonymization={(viewConversationId && anonByConv[viewConversationId]) || (conversationId && anonByConv[conversationId]) || undefined}
           onSendReview={(text) => setInput(text)}
           onQuote={(text) => setQuoteText(text)}
           chatReviewBody={chatBody}

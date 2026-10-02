@@ -59,6 +59,8 @@ export async function POST(req: Request) {
       kind,
       ownerId: kind === 'personal' ? user.id : null,
       memberIds: kind === 'shared' ? [user.id] : [],
+      // Инструкции необязательны — пустая строка допустима.
+      instructions: normalizeFolderInstructions(body?.instructions),
     });
     return Response.json({ success: true, folder: folderForClient(user, folder) }, { status: 201 });
   } catch (e) {

@@ -105,6 +105,17 @@ export async function POST(req: Request) {
     if (action === 'login') {
       const found = await findUserForLogin(username);
 
+      // Логин из ADMIN_USERNAMES, которого ещё нет в базе, — первый вход
+      // администратора. Ведём его тем же путём, что и приглашённых: «введите
+      // логин → придумайте пароль». Раньше для этого была отдельная ссылка
+      // «Первый вход администратора», и обычный вход отвечал «неверный логин».
+      if (!found && isEnvAdmin(username)) {
+        return json(
+          { success: false, needsPassword: true, username, message: 'Придумайте пароль' },
+          409,
+        );
+      }
+
       // Приглашённый пользователь: пароля ещё нет, его надо придумать.
       // Пароль из формы не проверяем — сверять не с чем.
       if (found && found.user.state !== 'active') {
@@ -197,6 +208,20 @@ async function setInitialPassword(req: Request, body: Record<string, unknown>): 
 
   try {
     const found = await findUserForLogin(username);
+
+    // Первый вход администратора из ADMIN_USERNAMES: учётки ещё нет —
+    // создаём её с придуманным паролем и сразу пускаем.
+    if (!found && isEnvAdmin(username)) {
+      const user = await createUser(username, await hashPassword(newPassword), 'admin');
+      console.log(`[auth] создан администратор ${user.username} (ADMIN_USERNAMES)`);
+      await touchUserLastLogin(user.id);
+      return json(
+        { success: true, user: publicUser(user), conversations: [] },
+        201,
+        sessionCookieHeader(req, user.id),
+      );
+    }
+
     // Нет учётки или пароль уже задан — один ответ: не подсказываем, какие
     // логины существуют и в каком они состоянии.
     if (!found || found.user.state === 'active') {

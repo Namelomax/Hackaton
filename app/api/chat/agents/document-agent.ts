@@ -9,7 +9,6 @@ import {
 import {
   planProtocolPatch,
   applyEditsToProtocol,
-  mapProtocolStrings,
 } from './protocol-patch';
 import {
   ProtocolSchema,
@@ -23,7 +22,7 @@ import { generateProtocolDocx } from '@/lib/docx-generator';
 import { verifyProtocolSections } from '@/lib/protocol-verify';
 import { SGR_DOCUMENT_AGENT_PROMPT } from '@/lib/prompts/sgr-prompts';
 import { PROTOCOL_REGULATION } from '@/lib/prompts/regulation';
-import { ollamaProtocolMaxOutputTokens, cloudProtocolMaxOutputTokens, llmMaxModelLen } from '@/lib/ollama-limits';
+import { ollamaProtocolMaxOutputTokens, llmMaxModelLen } from '@/lib/ollama-limits';
 import { extractGenerationFailureInfo, buildGenerationFailureMessage } from '@/lib/protocol-generation-errors';
 import { consumePartialObjectStream } from './partial-object-stream';
 import {
@@ -57,7 +56,7 @@ import {
   resolveRelativeDatesInText,
   normalizeSpelledDates,
 } from '@/lib/date-context';
-import { documentReasoningOptions, formatUsage } from '@/lib/reasoning-options';
+import { formatUsage } from '@/lib/reasoning-options';
 import {
   cleanProtocolText,
   formatApprovalOrgLine,
@@ -70,8 +69,6 @@ import {
   resolveApprovalForDocument,
   protocolToMarkdown,
 } from '@/lib/protocol-markdown-format';
-import { applyMappingForward, deanonymize, deepDeanonymize, type Mapping } from '@/lib/anonymization';
-import { ANONYMIZE_MODE_SYSTEM_APPENDIX, buildGenderHintsBlock } from '@/lib/anonymization/prompt';
 
 function extractMessageText(msg: any): string {
   if (!msg) return '';
@@ -105,8 +102,6 @@ function stripTimecodeMarkers(text: string): string {
 export async function runDocumentAgent(context: AgentContext) {
   const { messages, uiMessages, model, userPrompt, documentContent, userId, conversationId, abortSignal } =
     context;
-  const anonymize = Boolean(context.anonymize);
-  const anonymizeMapping: Mapping = context.anonymizeMapping ?? {};
   let generatedDocumentContent = '';
 
   const safeOriginalUIMessages = (() => {
@@ -137,7 +132,6 @@ export async function runDocumentAgent(context: AgentContext) {
           conversationId,
           0,
           abortSignal ?? undefined,
-          { anonymize, mapping: anonymizeMapping },
         );
         const doneId = `done-${Date.now()}`;
         writer.write({ type: 'text-start', id: doneId });
@@ -183,10 +177,7 @@ export async function runDocumentAgent(context: AgentContext) {
     }
   });
 
-  // Поток должен быть БАЙТОВЫМ: wrapResponseWithDeanonymization в route.ts
-  // (облачный режим с анонимизацией) ожидает Uint8Array-чанки, а
-  // JsonToSseTransformStream по умолчанию отдаёт строки — без этого шага
-  // деанонимизация падала с TypeError на decoder.decode(chunk).
+  // Поток отдаём байтовым (Uint8Array), как и ответ chat-agent.
   const readable = stream
     .pipeThrough(new JsonToSseTransformStream())
     .pipeThrough(new TextEncoderStream());
@@ -203,10 +194,7 @@ export async function generateFinalDocument(
   conversationId?: string | null,
   temperature: number = 0,
   abortSignal?: AbortSignal,
-  anonOptions?: { anonymize?: boolean; mapping?: Mapping },
 ): Promise<string> {
-  const anonymizeActive = Boolean(anonOptions?.anonymize) && Object.keys(anonOptions?.mapping ?? {}).length > 0;
-  const anonMapping: Mapping = anonOptions?.mapping ?? {};
   const writeData = (payload: { type: string; data: any; id?: string; transient?: boolean }) => {
     dataStream.write({
       type: payload.type,
@@ -307,31 +295,18 @@ export async function generateFinalDocument(
     model,
     writeData,
     dataStream,
-    anonymizeActive,
-    anonMapping,
     abortSignal,
   });
   if (patchedMarkdown) return patchedMarkdown;
 
-  // Режим анонимизации: всё, что уходит в облачную модель, должно быть в плейсхолдерах.
-  const promptConversationContext = anonymizeActive
-    ? applyMappingForward(conversationContext, anonMapping)
-    : conversationContext;
-  const promptExistingDocumentContext = anonymizeActive
-    ? applyMappingForward(existingDocumentContext, anonMapping)
-    : existingDocumentContext;
-  const promptAgreedChatContext = anonymizeActive
-    ? applyMappingForward(agreedChatContext, anonMapping)
-    : agreedChatContext;
-
   // Use SGR-enhanced document generation prompt
-  const protocolPrompt = (anonymizeActive ? ANONYMIZE_MODE_SYSTEM_APPENDIX + buildGenderHintsBlock(anonMapping) + '\n\n' : '') + SGR_DOCUMENT_AGENT_PROMPT
+  const protocolPrompt = SGR_DOCUMENT_AGENT_PROMPT
     .replace('{{REGULATION}}', PROTOCOL_REGULATION + formatGlossaryForPrompt())
-    .replace('{{CONVERSATION_CONTEXT}}', promptConversationContext)
-    .replace('{{EXISTING_DOCUMENT_CONTEXT}}', promptExistingDocumentContext)
+    .replace('{{CONVERSATION_CONTEXT}}', conversationContext)
+    .replace('{{EXISTING_DOCUMENT_CONTEXT}}', existingDocumentContext)
     .replace(
       '{{AGREED_CHAT_CONTEXT}}',
-      promptAgreedChatContext ||
+      agreedChatContext ||
         '(Отдельный блок согласованных разделов не выделен — используйте подтверждённые пользователем формулировки из истории диалога.)',
     ) +
     // Агенту документа справка о дате нужна не меньше, чем чат-агенту: без неё
@@ -348,25 +323,14 @@ export async function generateFinalDocument(
   }
 
   try {
-    // Локальная Ollama и облако живут по разным бюджетам вывода: 8192 хватает
-    // qwen3, но для облачной reasoning-модели это общий лимит на размышления +
-    // JSON, и протокол не помещался (пустой ответ → AI_NoObjectGeneratedError).
-    const maxOutputTokens = anonymizeActive
-      ? cloudProtocolMaxOutputTokens()
-      : ollamaProtocolMaxOutputTokens();
-    console.log(
-      `[generateFinalDocument] maxOutputTokens=${maxOutputTokens} (${anonymizeActive ? 'cloud' : 'local'})`,
-    );
+    const maxOutputTokens = ollamaProtocolMaxOutputTokens();
+    console.log(`[generateFinalDocument] maxOutputTokens=${maxOutputTokens}`);
     const streamResult = streamObject({
       model,
       temperature,
       maxOutputTokens,
       schema: ProtocolSchema,
       prompt: protocolPrompt,
-      // Размышления выключены ВСЕГДА, а не только в облачном режиме: любая
-      // работа с документом от них только теряет время (замер: 12 810 токенов
-      // ради 145 символов ответа). Ключ openrouter локальный провайдер игнорирует.
-      providerOptions: documentReasoningOptions(),
       ...(abortSignal ? { abortSignal } : {}),
     });
 
@@ -446,13 +410,11 @@ export async function generateFinalDocument(
         rawFinal = recovered;
         console.warn('[generateFinalDocument] recovered JSON from fenced / non-schema LLM output');
       } else {
-        // Пустой ответ модели — ретраим один раз без стриминга: другой роутинг
-        // OpenRouter (список запасных слагов) и увеличенный бюджет вывода.
+        // Пустой ответ модели — ретраим один раз без стриминга.
         const retried = await retryProtocolGeneration({
           model,
           prompt: protocolPrompt,
           temperature,
-          anonymizeActive,
           abortSignal,
         });
         if (retried) {
@@ -566,21 +528,12 @@ export async function generateFinalDocument(
 
     writeData({ type: 'data-finish', data: null, transient: true });
 
-    // Деанонимизация перед DOCX/персистом: облачная модель работала с плейсхолдерами,
-    // готовый документ возвращаем пользователю с реальными данными (простая подстановка
-    // по mapping). Стрим-дельты деанонимизируются обёрткой на уровне роута.
-    let validatedOut = anonymizeActive ? deepDeanonymize(validated, anonMapping) : validated;
+    let validatedOut = validated;
 
     /**
      * Явная правка должности («поменяй должность X на Y») — детерминированно.
      * Промптом не лечится: модель пересобирает все разделы и теряет одну строку,
      * при этом честно рапортуя «документ обновлён».
-     *
-     * СТРОГО ПОСЛЕ ДЕАНОНИМИЗАЦИИ. Сначала гард стоял выше, среди прочих
-     * код-проверок, и в анон-режиме не работал вовсе: в `participants` лежали
-     * `[PERSON_1]`, а в тексте правки — «Журавлёвой Елены Борисовны», и поиск
-     * человека по основам слов не находил никого. Молча, без единой строки в
-     * логе. Работал он только на локальной модели, где данные настоящие.
      */
     {
       const po = applyPositionOverrides(validatedOut, userCorrections);
@@ -594,20 +547,14 @@ export async function generateFinalDocument(
       }
     }
 
-    if (anonymizeActive) {
-      markdownContent = protocolToMarkdown(validatedOut);
-    }
-
     // Само-ревью протокола локальной моделью: сверяет фактические ошибки
     // (не применённая правка, падежи подстановок, оставшийся плейсхолдер,
-    // стенограмма, инфинитивы) и возвращает исправленный протокол. Работает
-    // ВСЕГДА с реальными данными (validatedOut уже деанонимизирован) и ВСЕГДА
-    // локальной моделью — в облако ничего не уходит. Включается флагом,
-    // по умолчанию выключен.
-    if (process.env.REVIEW_LOOP_ENABLED === 'true' || anonymizeActive) {
+    // стенограмма, инфинитивы) и возвращает исправленный протокол.
+    // Включается флагом, по умолчанию выключен.
+    if (process.env.REVIEW_LOOP_ENABLED === 'true') {
       try {
         const { resolveChatLanguageModel } = await import('@/lib/resolve-chat-model');
-        const localModel = resolveChatLanguageModel({ chatProvider: 'ollama' });
+        const localModel = resolveChatLanguageModel();
         const userRequest = extractLatestUserCorrections(uiMessages || []).join('\n');
         const { reviewAndCorrectProtocol } = await import('./review-loop');
         const before = JSON.stringify(validatedOut);
@@ -714,16 +661,15 @@ function logGenerationFailure(err: unknown): void {
 /**
  * Один повтор генерации без стриминга. Стрим тут не нужен (панель всё равно
  * получит финальный текст), зато меньше движущихся частей: если первая попытка
- * упала на пустом ответе, вторая идёт с запасными слагами OpenRouter.
+ * упала на пустом ответе, вторая — обычным запросом целиком.
  */
 async function retryProtocolGeneration(options: {
   model: any;
   prompt: string;
   temperature: number;
-  anonymizeActive: boolean;
   abortSignal?: AbortSignal;
 }): Promise<unknown | null> {
-  const { model, prompt, temperature, anonymizeActive, abortSignal } = options;
+  const { model, prompt, temperature, abortSignal } = options;
   console.warn('[generateFinalDocument] повтор генерации протокола (попытка 2/2)');
   try {
     const result = await generateObject({
@@ -731,10 +677,7 @@ async function retryProtocolGeneration(options: {
       schema: ProtocolSchema,
       prompt,
       temperature,
-      maxOutputTokens: anonymizeActive
-        ? cloudProtocolMaxOutputTokens()
-        : ollamaProtocolMaxOutputTokens(),
-      providerOptions: documentReasoningOptions(),
+      maxOutputTokens: ollamaProtocolMaxOutputTokens(),
       ...(abortSignal ? { abortSignal } : {}),
     });
     console.log(`[generateFinalDocument] повтор успешен, ${formatUsage((result as any).usage)}`);
@@ -803,8 +746,6 @@ async function tryPatchExistingProtocol(options: {
   model: any;
   writeData: (payload: { type: string; data: any; id?: string; transient?: boolean }) => void;
   dataStream: any;
-  anonymizeActive: boolean;
-  anonMapping: Mapping;
   abortSignal?: AbortSignal;
 }): Promise<string | null> {
   const {
@@ -815,8 +756,6 @@ async function tryPatchExistingProtocol(options: {
     model,
     writeData,
     dataStream,
-    anonymizeActive,
-    anonMapping,
     abortSignal,
   } = options;
 
@@ -851,12 +790,7 @@ async function tryPatchExistingProtocol(options: {
     // вручную), патч ляжет на СТАРЫЙ текст и вернёт его в панель — правка
     // «исчезнет», а рядом всплывут старые значения. Реальный случай: срок
     // 20.06.2025 из давнего прогона снова оказался в документе.
-    // В анон-режиме visibleDocument приходит обезличенным (route.ts делает
-    // anonymizeWithMapping перед передачей агенту), а база хранится с реальными
-    // данными. Без деобезличивания панели плейсхолдеры короче реальных значений
-    // и проверка расходится всегда → патч никогда не применяется.
-    const rawVisible = String(visibleDocument ?? '');
-    const visible = (anonymizeActive ? deanonymize(rawVisible, anonMapping) : rawVisible).trim();
+    const visible = String(visibleDocument ?? '').trim();
     if (visible) {
       const baseText = markUnresolvedInMarkdown(protocolToMarkdown(base));
       const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
@@ -882,13 +816,8 @@ async function tryPatchExistingProtocol(options: {
     return null;
   }
 
-  // В облако уходит только обезличенная версия — и документ, и текст правки.
-  const baseForModel = anonymizeActive
-    ? mapProtocolStrings(base, (s) => applyMappingForward(s, anonMapping))
-    : base;
-  const requestForModel = anonymizeActive
-    ? applyMappingForward(userRequest, anonMapping)
-    : userRequest;
+  const baseForModel = base;
+  const requestForModel = userRequest;
 
   const planOptions = {
     model,
@@ -991,9 +920,7 @@ async function tryPatchExistingProtocol(options: {
 
   let patchedOut: Protocol;
   try {
-    patchedOut = parseProtocolStrict(
-      anonymizeActive ? deepDeanonymize(applied.protocol, anonMapping) : applied.protocol,
-    );
+    patchedOut = parseProtocolStrict(applied.protocol);
   } catch (e) {
     console.warn('[protocol-patch] результат не прошёл схему → полная генерация:', (e as Error)?.message);
     return null;

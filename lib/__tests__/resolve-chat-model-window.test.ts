@@ -121,7 +121,7 @@ describe('resolveChatLanguageModel: проактивное обнаружени�
     mockGateway(65536);
 
     const { resolveChatLanguageModel } = require('../resolve-chat-model') as typeof import('../resolve-chat-model');
-    const model = resolveChatLanguageModel({ chatProvider: 'ollama' });
+    const model = resolveChatLanguageModel();
 
     const callOptions: LanguageModelV2CallOptions = {
       prompt: [{ role: 'user', content: [{ type: 'text', text: longPrompt }] }],
@@ -160,7 +160,7 @@ describe('resolveChatLanguageModel: проактивное обнаружени�
     });
 
     const { resolveChatLanguageModel } = require('../resolve-chat-model') as typeof import('../resolve-chat-model');
-    const model = resolveChatLanguageModel({ chatProvider: 'ollama' });
+    const model = resolveChatLanguageModel();
 
     const callOptions: LanguageModelV2CallOptions = {
       prompt: [{ role: 'user', content: [{ type: 'text', text: longPrompt }] }],

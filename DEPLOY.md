@@ -10,7 +10,7 @@
 
 Предполагается установленный Docker и Docker Compose v2.
 
-1. Скопируйте `.env.example` в `.env` и заполните секреты (`OPENROUTER_API_KEY`, при необходимости `GOOGLE_GENERATIVE_AI_API_KEY`).
+1. Скопируйте `.env.example` в `.env` и заполните секреты (`SESSION_SECRET`, `ADMIN_USERNAMES`, `SURREALDB_PASSWORD`, адрес и ключ модели).
 2. В compose поднимается сервис **`ollama`**. После первого `up` подтяните модели **внутрь контейнера**:
 
 ```bash

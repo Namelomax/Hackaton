@@ -1,6 +1,5 @@
-import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { createOpenAI } from '@ai-sdk/openai';
-import { FIXED_CHAT_MODEL, normalizeCloudModel, parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
+import { FIXED_CHAT_MODEL, parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
 import {
   applyOllamaOpenAiCompatOptions,
   ollamaHardCapOutputTokens,
@@ -9,7 +8,6 @@ import {
   llmMaxModelLen,
 } from '@/lib/ollama-limits';
 import { insecureFetch } from '@/lib/insecure-fetch';
-import { isCloudModeEnabled } from '@/lib/deployment-mode';
 import { discoverGatewayModel, getCachedGatewayModel } from '@/lib/gateway-model';
 
 /**
@@ -49,285 +47,236 @@ async function fetchWithModelRetry(
   return insecureFetch(url, { ...init, body: JSON.stringify(parsed) });
 }
 
-export type ChatProviderId = 'ollama' | 'openrouter';
-
 export type ResolveChatModelOptions = {
-  chatProvider?: ChatProviderId | string;
   chatModel?: string;
   useThinking?: boolean;
 };
 
-function createOpenRouterInstance() {
-  return createOpenRouter({
-    apiKey: process.env.OPENROUTER_API_KEY ?? '',
-    baseURL: 'https://openrouter.ai/api/v1',
-    compatibility: 'strict',
-    headers: {
-      'X-Title': 'AISDK',
-    },
-  });
-}
-
-function resolveOpenRouterSlug(requestedRaw: string): string {
-  // normalizeCloudModel отсекает мёртвые слаги (напр. openrouter/owl-alpha из
-  // устаревшего env или старого клиентского бандла) и пустые значения.
-  const fallback = normalizeCloudModel(process.env.OPENROUTER_MODEL_DEFAULT);
-  const requested = normalizeCloudModel(requestedRaw) === requestedRaw.trim()
-    ? requestedRaw.trim()
-    : ''; // мёртвый/пустой слаг → уходим на fallback
-  const allowedCsv = process.env.ALLOWED_OPENROUTER_MODELS?.trim();
-  if (!allowedCsv) {
-    if (requested && /^[\w\-./:]+$/.test(requested) && requested.length <= 160) return requested;
-    return fallback;
-  }
-  const allowed = allowedCsv.split(',').map((s) => s.trim()).filter(Boolean);
-  if (allowed.includes(requested)) return requested;
-  return allowed.includes(fallback) ? fallback : allowed[0]!;
-}
-
-/** Та же логика выбора модели, что и в /api/chat — Ollama или OpenRouter. */
+/**
+ * Модель чата — всегда локальная (OpenAI-совместимый шлюз Ollama/vLLM).
+ * Облачный провайдер убран вместе с режимом «Облако + анонимизация»
+ * (решение заказчика от 02.10.2026): данные не покидают сервер.
+ */
 export function resolveChatLanguageModel(options: ResolveChatModelOptions = {}) {
-  const envDefault = (process.env.CHAT_PROVIDER_DEFAULT?.trim() || 'ollama') as ChatProviderId;
-  let provider: ChatProviderId =
-    options.chatProvider === 'openrouter' || options.chatProvider === 'ollama'
-      ? (options.chatProvider as ChatProviderId)
-      : envDefault;
+  const allowed = parseAllowedOllamaModelsFromServerEnv(process.env.ALLOWED_OLLAMA_MODELS);
+  const modelId = allowed.includes(FIXED_CHAT_MODEL)
+    ? FIXED_CHAT_MODEL
+    : allowed[0]!;
+  const baseURL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434/v1';
+  const ollamaApiKey = process.env.OLLAMA_API_KEY || 'ollama';
+  const openai = createOpenAI({
+    baseURL,
+    apiKey: ollamaApiKey,
+    fetch: async (url, init) => {
+      // Normalize headers to plain object and fix auth prefix:
+      // JupyterHub requires "token <key>", not "Bearer <key>"
+      const patchedHeaders: Record<string, string> = {};
+      if (init?.headers) {
+        const h = init.headers;
+        if (h instanceof Headers) {
+          h.forEach((v, k) => { patchedHeaders[k] = v; });
+        } else if (Array.isArray(h)) {
+          for (const [k, v] of h) patchedHeaders[k] = v;
+        } else {
+          Object.assign(patchedHeaders, h);
+        }
+      }
+      // JupyterHub proxy accepts "Bearer <key>" and forwards to Ollama.
+      // Ollama itself ignores the auth header when OLLAMA_API_KEY is not set.
+      for (const key of Object.keys(patchedHeaders)) {
+        if (key.toLowerCase() === 'authorization') delete patchedHeaders[key];
+      }
+      patchedHeaders['authorization'] = `Bearer ${ollamaApiKey}`;
 
-  // Закрытый контур (CLOUD_MODE=off): единая точка, через которую проходят
-  // все вызовы модели, — облако здесь недоступно, кто бы его ни попросил.
-  if (provider === 'openrouter' && !isCloudModeEnabled()) {
-    console.warn('[model] CLOUD_MODE=off — запрошен openrouter, использую локальную модель');
-    provider = 'ollama';
-  }
+      // Тело разбираем в УЗКОМ try: ошибка парсинга — это «нечего патчить,
+      // отправляем как есть». Раньше в try было всё тело обработчика, включая
+      // сам запрос к Ollama, и любой сетевой сбой уводил выполнение в
+      // `catch { /* fallthrough */ }` → запрос уходил ВТОРОЙ раз с исходным
+      // телом: без потолка max_tokens, без stream:false, без снятия
+      // stream_options и без keep_alive. То есть при сбое поведение молча
+      // менялось на противоположное тому, ради чего написан весь блок,
+      // а модель генерировала дважды.
+      let parsed: Record<string, unknown> | null = null;
+      if (init?.body && typeof init.body === 'string') {
+        try {
+          parsed = JSON.parse(init.body) as Record<string, unknown>;
+        } catch {
+          parsed = null;
+        }
+      }
 
-  if (provider === 'ollama') {
-    const allowed = parseAllowedOllamaModelsFromServerEnv(process.env.ALLOWED_OLLAMA_MODELS);
-    const modelId = allowed.includes(FIXED_CHAT_MODEL)
-      ? FIXED_CHAT_MODEL
-      : allowed[0]!;
-    const baseURL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434/v1';
-    const ollamaApiKey = process.env.OLLAMA_API_KEY || 'ollama';
-    const openai = createOpenAI({
-      baseURL,
-      apiKey: ollamaApiKey,
-      fetch: async (url, init) => {
-        // Normalize headers to plain object and fix auth prefix:
-        // JupyterHub requires "token <key>", not "Bearer <key>"
-        const patchedHeaders: Record<string, string> = {};
-        if (init?.headers) {
-          const h = init.headers;
-          if (h instanceof Headers) {
-            h.forEach((v, k) => { patchedHeaders[k] = v; });
-          } else if (Array.isArray(h)) {
-            for (const [k, v] of h) patchedHeaders[k] = v;
-          } else {
-            Object.assign(patchedHeaders, h);
+      if (parsed) {
+        {
+          // Окно модели нужно знать ДО расчёта max_tokens. Раньше кэш заполнялся только
+          // на 404-ретрае при переименовании модели, а в обычный день оставался пустым —
+          // и llmMaxModelLen() отдавал фолбэк 32768 при реальных 65536 на шлюзе.
+          // Инцидент 17.09.2026: промпт 32k токенов, ответ урезан до 256, JSON оборван.
+          // Кэш живёт GATEWAY_MODEL_TTL_MS (5 мин), параллельные вызовы дедуплицируются,
+          // ошибки сети возвращают null и не роняют запрос.
+          await discoverGatewayModel();
+
+          // Шлюз мог подменить модель ещё до этого запроса (уже обнаружено
+          // более ранним 404-ретраем или фоновым TTL-обновлением кэша) —
+          // подставляем актуальное имя сразу, не дожидаясь очередного 404.
+          if (typeof parsed.model === 'string') {
+            const cachedModel = getCachedGatewayModel();
+            if (cachedModel && cachedModel.id !== parsed.model) {
+              parsed.model = cachedModel.id;
+            }
           }
-        }
-        // JupyterHub proxy accepts "Bearer <key>" and forwards to Ollama.
-        // Ollama itself ignores the auth header when OLLAMA_API_KEY is not set.
-        for (const key of Object.keys(patchedHeaders)) {
-          if (key.toLowerCase() === 'authorization') delete patchedHeaders[key];
-        }
-        patchedHeaders['authorization'] = `Bearer ${ollamaApiKey}`;
 
-        // Тело разбираем в УЗКОМ try: ошибка парсинга — это «нечего патчить,
-        // отправляем как есть». Раньше в try было всё тело обработчика, включая
-        // сам запрос к Ollama, и любой сетевой сбой уводил выполнение в
-        // `catch { /* fallthrough */ }` → запрос уходил ВТОРОЙ раз с исходным
-        // телом: без потолка max_tokens, без stream:false, без снятия
-        // stream_options и без keep_alive. То есть при сбое поведение молча
-        // менялось на противоположное тому, ради чего написан весь блок,
-        // а модель генерировала дважды.
-        let parsed: Record<string, unknown> | null = null;
-        if (init?.body && typeof init.body === 'string') {
-          try {
-            parsed = JSON.parse(init.body) as Record<string, unknown>;
-          } catch {
-            parsed = null;
-          }
-        }
+          const useThinking = Boolean(options.useThinking);
+          applyOllamaOpenAiCompatOptions(parsed, useThinking, baseURL);
+          // Жёсткий потолок (предохранитель), а не дефолт ответа: per-call
+          // maxOutputTokens задаётся в chat/document агентах.
+          const cap = ollamaHardCapOutputTokens();
+          const requestedMax =
+            typeof parsed.max_tokens === 'number' ? parsed.max_tokens : cap;
+          parsed.max_tokens = Math.min(requestedMax, cap);
 
-        if (parsed) {
+          // Последний рубеж перед отправкой: промпт и ответ вместе обязаны
+          // помещаться в окно модели. Шлюз проверяет ровно эту сумму и на
+          // превышение отвечает 400 ДО генерации — пользователь видит вечный
+          // спиннер. Считаем здесь, потому что здесь впервые известны разом и
+          // финальный max_tokens, и полный текст запроса.
           {
-            // Окно модели нужно знать ДО расчёта max_tokens. Раньше кэш заполнялся только
-            // на 404-ретрае при переименовании модели, а в обычный день оставался пустым —
-            // и llmMaxModelLen() отдавал фолбэк 32768 при реальных 65536 на шлюзе.
-            // Инцидент 17.09.2026: промпт 32k токенов, ответ урезан до 256, JSON оборван.
-            // Кэш живёт GATEWAY_MODEL_TTL_MS (5 мин), параллельные вызовы дедуплицируются,
-            // ошибки сети возвращают null и не роняют запрос.
-            await discoverGatewayModel();
-
-            // Шлюз мог подменить модель ещё до этого запроса (уже обнаружено
-            // более ранним 404-ретраем или фоновым TTL-обновлением кэша) —
-            // подставляем актуальное имя сразу, не дожидаясь очередного 404.
-            if (typeof parsed.model === 'string') {
-              const cachedModel = getCachedGatewayModel();
-              if (cachedModel && cachedModel.id !== parsed.model) {
-                parsed.model = cachedModel.id;
-              }
-            }
-
-            const useThinking = Boolean(options.useThinking);
-            applyOllamaOpenAiCompatOptions(parsed, useThinking, baseURL);
-            // Жёсткий потолок (предохранитель), а не дефолт ответа: per-call
-            // maxOutputTokens задаётся в chat/document агентах.
-            const cap = ollamaHardCapOutputTokens();
-            const requestedMax =
-              typeof parsed.max_tokens === 'number' ? parsed.max_tokens : cap;
-            parsed.max_tokens = Math.min(requestedMax, cap);
-
-            // Последний рубеж перед отправкой: промпт и ответ вместе обязаны
-            // помещаться в окно модели. Шлюз проверяет ровно эту сумму и на
-            // превышение отвечает 400 ДО генерации — пользователь видит вечный
-            // спиннер. Считаем здесь, потому что здесь впервые известны разом и
-            // финальный max_tokens, и полный текст запроса.
-            {
-              const promptChars = JSON.stringify(parsed.messages ?? '').length;
-              const { max, clamped } = clampMaxTokensToWindow(
-                promptChars,
-                parsed.max_tokens as number,
+            const promptChars = JSON.stringify(parsed.messages ?? '').length;
+            const { max, clamped } = clampMaxTokensToWindow(
+              promptChars,
+              parsed.max_tokens as number,
+            );
+            if (clamped) {
+              console.warn(
+                `[llm→] max_tokens урезан ${parsed.max_tokens} → ${max}: промпт ≈${Math.ceil(promptChars / 2.34)} токенов, окно модели ${llmMaxModelLen()}`,
               );
-              if (clamped) {
-                console.warn(
-                  `[llm→] max_tokens урезан ${parsed.max_tokens} → ${max}: промпт ≈${Math.ceil(promptChars / 2.34)} токенов, окно модели ${llmMaxModelLen()}`,
-                );
-                parsed.max_tokens = max;
-              }
+              parsed.max_tokens = max;
             }
-            // keep_alive: сколько держать модель в VRAM после запроса.
-            // Раньше было жёстко -1 (вечно) — на общей карте это копило модели при
-            // переключении/RAG до OOM. Теперь конечный дефолт «30m» и override через
-            // OLLAMA_KEEP_ALIVE ('-1' — прежнее поведение, '300' — секунды, '10m' — строка).
-            //
-            // Поле вендорское: у сторонних OpenAI-совместимых шлюзов его нет, и
-            // они отвечают на него 400, а не игнорируют. Управлением памятью
-            // GPU там занимается сам провайдер, так что и смысла слать нет.
-            if (supportsOllamaExtensions(baseURL)) {
-              const kaEnv = process.env.OLLAMA_KEEP_ALIVE?.trim();
-              parsed.keep_alive = kaEnv
-                ? (/^-?\d+$/.test(kaEnv) ? Number(kaEnv) : kaEnv)
-                : '30m';
-            }
+          }
+          // keep_alive: сколько держать модель в VRAM после запроса.
+          // Раньше было жёстко -1 (вечно) — на общей карте это копило модели при
+          // переключении/RAG до OOM. Теперь конечный дефолт «30m» и override через
+          // OLLAMA_KEEP_ALIVE ('-1' — прежнее поведение, '300' — секунды, '10m' — строка).
+          //
+          // Поле вендорское: у сторонних OpenAI-совместимых шлюзов его нет, и
+          // они отвечают на него 400, а не игнорируют. Управлением памятью
+          // GPU там занимается сам провайдер, так что и смысла слать нет.
+          if (supportsOllamaExtensions(baseURL)) {
+            const kaEnv = process.env.OLLAMA_KEEP_ALIVE?.trim();
+            parsed.keep_alive = kaEnv
+              ? (/^-?\d+$/.test(kaEnv) ? Number(kaEnv) : kaEnv)
+              : '30m';
+          }
 
-            // Стриминг. Через прокси JupyterHub SSE часто буферизуется/обрывается,
-            // поэтому по умолчанию форсим non-stream и сами заворачиваем ответ в SSE
-            // (минус: пользователь видит ответ только в конце). При работе через
-            // vLLM/нормальный прокси выставьте LLM_FORCE_NONSTREAM=false — тогда
-            // используется нативный стриминг и текст появляется по мере генерации.
-            const forceNonStream =
-              (process.env.LLM_FORCE_NONSTREAM ?? 'true') !== 'false';
-            if (!forceNonStream) {
-              return fetchWithModelRetry(
-                url,
-                { ...init, headers: patchedHeaders, body: JSON.stringify(parsed) },
-                parsed,
-              );
-            }
-
-            parsed.stream = false;
-            // stream_options валиден ТОЛЬКО при stream=true. AI SDK добавляет его
-            // ({include_usage:true}) при стриминге; форсируя non-stream, обязаны его
-            // убрать — иначе строгие шлюзы (oui/Open WebUI) отвечают 400
-            // «Stream options can only be defined when stream=True».
-            delete parsed.stream_options;
-
-            if (process.env.OLLAMA_LOG_CHAT_REQUEST === '1') {
-              const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : (url as Request).url;
-              const authHdr = patchedHeaders['authorization'] ?? patchedHeaders['Authorization'] ?? '(none)';
-              const authPreview = authHdr.slice(0, 12) + (authHdr.length > 12 ? '...' : '');
-              console.log(
-                `[ollama→] POST ${urlStr} auth="${authPreview}" model=${parsed.model} think=${String(parsed.think)} reasoning_effort=${String(parsed.reasoning_effort)} max_tokens=${parsed.max_tokens} msgs=${Array.isArray(parsed.messages) ? parsed.messages.length : '?'}`,
-              );
-            }
-
-            const jsonResp = await fetchWithModelRetry(
+          // Стриминг. Через прокси JupyterHub SSE часто буферизуется/обрывается,
+          // поэтому по умолчанию форсим non-stream и сами заворачиваем ответ в SSE
+          // (минус: пользователь видит ответ только в конце). При работе через
+          // vLLM/нормальный прокси выставьте LLM_FORCE_NONSTREAM=false — тогда
+          // используется нативный стриминг и текст появляется по мере генерации.
+          const forceNonStream =
+            (process.env.LLM_FORCE_NONSTREAM ?? 'true') !== 'false';
+          if (!forceNonStream) {
+            return fetchWithModelRetry(
               url,
               { ...init, headers: patchedHeaders, body: JSON.stringify(parsed) },
               parsed,
             );
-            const jsonText = await jsonResp.text();
-            console.log(`[llm←] status=${jsonResp.status} body_preview=${jsonText.slice(0, 120)}`);
+          }
 
-            // Convert non-streaming OpenAI completion to streaming delta format for AI SDK.
-            // AI SDK expects SSE chunks with delta.content, not message.content.
-            let sseBody: string;
+          parsed.stream = false;
+          // stream_options валиден ТОЛЬКО при stream=true. AI SDK добавляет его
+          // ({include_usage:true}) при стриминге; форсируя non-stream, обязаны его
+          // убрать — иначе строгие шлюзы (oui/Open WebUI) отвечают 400
+          // «Stream options can only be defined when stream=True».
+          delete parsed.stream_options;
+
+          if (process.env.OLLAMA_LOG_CHAT_REQUEST === '1') {
+            const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : (url as Request).url;
+            const authHdr = patchedHeaders['authorization'] ?? patchedHeaders['Authorization'] ?? '(none)';
+            const authPreview = authHdr.slice(0, 12) + (authHdr.length > 12 ? '...' : '');
+            console.log(
+              `[ollama→] POST ${urlStr} auth="${authPreview}" model=${parsed.model} think=${String(parsed.think)} reasoning_effort=${String(parsed.reasoning_effort)} max_tokens=${parsed.max_tokens} msgs=${Array.isArray(parsed.messages) ? parsed.messages.length : '?'}`,
+            );
+          }
+
+          const jsonResp = await fetchWithModelRetry(
+            url,
+            { ...init, headers: patchedHeaders, body: JSON.stringify(parsed) },
+            parsed,
+          );
+          const jsonText = await jsonResp.text();
+          console.log(`[llm←] status=${jsonResp.status} body_preview=${jsonText.slice(0, 120)}`);
+
+          // Convert non-streaming OpenAI completion to streaming delta format for AI SDK.
+          // AI SDK expects SSE chunks with delta.content, not message.content.
+          let sseBody: string;
+          try {
+            const completion = JSON.parse(jsonText) as Record<string, unknown>;
+
+            // Лог usage + детектор молчаливой обрезки НАЧАЛА промпта сервером Ollama
+            // (сервер за прокси реально держит num_ctx = OLLAMA_CONTEXT_LENGTH и при
+            // переполнении режет начало контекста, включая системные инструкции).
             try {
-              const completion = JSON.parse(jsonText) as Record<string, unknown>;
-
-              // Лог usage + детектор молчаливой обрезки НАЧАЛА промпта сервером Ollama
-              // (сервер за прокси реально держит num_ctx = OLLAMA_CONTEXT_LENGTH и при
-              // переполнении режет начало контекста, включая системные инструкции).
-              try {
-                const usage = completion.usage as Record<string, unknown> | undefined;
-                const promptTokens = Number(usage?.prompt_tokens);
-                const completionTokens = Number(usage?.completion_tokens);
-                if (Number.isFinite(promptTokens) || Number.isFinite(completionTokens)) {
-                  console.log(`[llm←] usage: prompt=${promptTokens} completion=${completionTokens}`);
-                }
-                const ctxLimit = Number(process.env.OLLAMA_CONTEXT_LENGTH);
-                if (Number.isFinite(ctxLimit) && Number.isFinite(promptTokens)) {
-                  const maxTokens = typeof parsed.max_tokens === 'number' ? parsed.max_tokens : 0;
-                  if (promptTokens >= ctxLimit - maxTokens - 256) {
-                    console.warn(
-                      `⚠️ [llm←] prompt_tokens=${promptTokens} упёрся в num_ctx=${ctxLimit} — сервер, вероятно, ОБРЕЗАЛ НАЧАЛО промпта (системные инструкции). Сократите документ/историю.`,
-                    );
-                  }
-                }
-              } catch {
-                // Не ломаем основной поток из-за диагностики
+              const usage = completion.usage as Record<string, unknown> | undefined;
+              const promptTokens = Number(usage?.prompt_tokens);
+              const completionTokens = Number(usage?.completion_tokens);
+              if (Number.isFinite(promptTokens) || Number.isFinite(completionTokens)) {
+                console.log(`[llm←] usage: prompt=${promptTokens} completion=${completionTokens}`);
               }
-
-              const choices = completion.choices as any[] | undefined;
-              const choice = choices?.[0] ?? {};
-              const message = (choice.message ?? {}) as Record<string, unknown>;
-              const finishReason = choice.finish_reason ?? 'stop';
-              const base = { id: completion.id, object: 'chat.completion.chunk', created: completion.created, model: completion.model };
-
-              // Build delta — must include tool_calls when present so AI SDK can execute tools.
-              const delta: Record<string, unknown> = { role: message.role ?? 'assistant' };
-              if (message.content != null) delta.content = String(message.content);
-              const toolCalls = (message as any).tool_calls as any[] | undefined;
-              // OpenAI streaming-формат требует index у каждого tool_call —
-              // без него AI SDK может молча отбросить вызов инструмента.
-              if (toolCalls?.length)
-                delta.tool_calls = toolCalls.map((tc: any, i: number) => ({ index: i, ...tc }));
-
-              const deltaChunk = { ...base, choices: [{ index: 0, delta, finish_reason: null }] };
-              const finishChunk = { ...base, choices: [{ index: 0, delta: {}, finish_reason: finishReason }], usage: completion.usage };
-              sseBody = `data: ${JSON.stringify(deltaChunk)}\n\ndata: ${JSON.stringify(finishChunk)}\n\ndata: [DONE]\n\n`;
+              const ctxLimit = Number(process.env.OLLAMA_CONTEXT_LENGTH);
+              if (Number.isFinite(ctxLimit) && Number.isFinite(promptTokens)) {
+                const maxTokens = typeof parsed.max_tokens === 'number' ? parsed.max_tokens : 0;
+                if (promptTokens >= ctxLimit - maxTokens - 256) {
+                  console.warn(
+                    `⚠️ [llm←] prompt_tokens=${promptTokens} упёрся в num_ctx=${ctxLimit} — сервер, вероятно, ОБРЕЗАЛ НАЧАЛО промпта (системные инструкции). Сократите документ/историю.`,
+                  );
+                }
+              }
             } catch {
-              // Fallback: pass raw JSON as-is if parsing fails
-              sseBody = `data: ${jsonText}\n\ndata: [DONE]\n\n`;
+              // Не ломаем основной поток из-за диагностики
             }
 
-            const encoder = new TextEncoder();
-            const sseStream = new ReadableStream<Uint8Array>({
-              start(controller) {
-                controller.enqueue(encoder.encode(sseBody));
-                controller.close();
-              },
-            });
-            return new Response(sseStream, {
-              status: jsonResp.status,
-              headers: { 'content-type': 'text/event-stream; charset=utf-8' },
-            });
+            const choices = completion.choices as any[] | undefined;
+            const choice = choices?.[0] ?? {};
+            const message = (choice.message ?? {}) as Record<string, unknown>;
+            const finishReason = choice.finish_reason ?? 'stop';
+            const base = { id: completion.id, object: 'chat.completion.chunk', created: completion.created, model: completion.model };
+
+            // Build delta — must include tool_calls when present so AI SDK can execute tools.
+            const delta: Record<string, unknown> = { role: message.role ?? 'assistant' };
+            if (message.content != null) delta.content = String(message.content);
+            const toolCalls = (message as any).tool_calls as any[] | undefined;
+            // OpenAI streaming-формат требует index у каждого tool_call —
+            // без него AI SDK может молча отбросить вызов инструмента.
+            if (toolCalls?.length)
+              delta.tool_calls = toolCalls.map((tc: any, i: number) => ({ index: i, ...tc }));
+
+            const deltaChunk = { ...base, choices: [{ index: 0, delta, finish_reason: null }] };
+            const finishChunk = { ...base, choices: [{ index: 0, delta: {}, finish_reason: finishReason }], usage: completion.usage };
+            sseBody = `data: ${JSON.stringify(deltaChunk)}\n\ndata: ${JSON.stringify(finishChunk)}\n\ndata: [DONE]\n\n`;
+          } catch {
+            // Fallback: pass raw JSON as-is if parsing fails
+            sseBody = `data: ${jsonText}\n\ndata: [DONE]\n\n`;
           }
+
+          const encoder = new TextEncoder();
+          const sseStream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(encoder.encode(sseBody));
+              controller.close();
+            },
+          });
+          return new Response(sseStream, {
+            status: jsonResp.status,
+            headers: { 'content-type': 'text/event-stream; charset=utf-8' },
+          });
         }
+      }
 
-        // Тело не JSON (или его нет) — отправляем запрос как есть.
-        // Сюда БОЛЬШЕ не попадают сбои сети: они пробрасываются наверх, где
-        // AI SDK их и обработает, вместо тихой повторной генерации.
-        return insecureFetch(url, { ...init, headers: patchedHeaders });
-      },
-    });
-    return openai.chat(modelId);
-  }
-
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    throw new Error('OPENROUTER_API_KEY is not set');
-  }
-  const slug = resolveOpenRouterSlug(typeof options.chatModel === 'string' ? options.chatModel : '');
-  return createOpenRouterInstance().chat(slug);
+      // Тело не JSON (или его нет) — отправляем запрос как есть.
+      // Сюда БОЛЬШЕ не попадают сбои сети: они пробрасываются наверх, где
+      // AI SDK их и обработает, вместо тихой повторной генерации.
+      return insecureFetch(url, { ...init, headers: patchedHeaders });
+    },
+  });
+  return openai.chat(modelId);
 }

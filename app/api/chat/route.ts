@@ -4,14 +4,7 @@ import {
 import crypto from 'crypto';
 import { getPrompt, updatePrompt, createPromptForUser, getUserSelectedPrompt, getPromptById, saveConversation, updateConversation, assertConversationOwnership, ForbiddenError, getConversationFolderId, getFolder, type User } from '@/lib/getPromt';
 import { resolveChatLanguageModel } from '@/lib/resolve-chat-model';
-import { normalizeCloudModel } from '@/lib/chat-models';
 import { buildDateContextBlock } from '@/lib/date-context';
-import {
-  findInflectedCandidates,
-  applyInflectionMerge,
-  mergeAliases,
-} from '@/lib/anonymization/merge-inflected';
-import { verifyInflectedPairs } from '@/lib/anonymization/verify-inflected';
 import { PROTOCOL_CHAT_TIMECODE_APPENDIX } from '@/lib/protocol-timecodes';
 import { analyzeTranscriptSlots, formatSlotScanForPrompt } from '@/lib/protocol-slot-scan';
 import { fetchRagSnippet } from '@/lib/rag-client';
@@ -31,33 +24,12 @@ import {
   RAG_TOOL_MODE_SYSTEM_APPENDIX,
 } from './agents/rag-tools';
 import { AgentContext } from './agents/types';
-import {
-  anonymizeNewText,
-  anonymizeWithMapping,
-  loadConversationMapping,
-  loadConversationState,
-  countersFromMapping,
-  scrubStructured,
-  scrubSensitiveOrgs,
-  restoreNonSensitivePlaceholders,
-  persistConversationMapping,
-  AnonymizerUnavailableError,
-  type Mapping,
-  type ConversationMapping,
-  type PlaceholderAlias,
-} from '@/lib/anonymization';
-import {
-  wrapResponseWithDeanonymization,
-  prependNoticeToResponse,
-} from '@/lib/anonymization/sse-deanonymize';
-import { ANONYMIZE_MODE_SYSTEM_APPENDIX, buildGenderHintsBlock } from '@/lib/anonymization/prompt';
-// ЕДИНЫЙ модуль извлечения текста из вложений — общий с /api/anonymize.
+// ЕДИНЫЙ модуль извлечения текста из вложений.
 // Свою копию диспетчера этот роут больше не держит: копии разошлись по
 // поддерживаемым типам и по работе с кодировками, и расхождение стоило утечки
 // ПДн (см. комментарий у decodeTextBuffer).
 import { guessFileExt, extractAttachmentTextCached } from '@/lib/attachment-extract';
 import { activeUserIdOrResponse } from '@/lib/auth-guard';
-import { isCloudModeEnabled } from '@/lib/deployment-mode';
 import { canSeeFolder, folderRagScope } from '@/lib/access';
 import { buildFolderContextBlock, folderRagQuery } from '@/lib/folder-context';
 
@@ -299,8 +271,6 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   let { messages, newSystemPrompt, userId, selectedPromptId, documentContent, useRagContext, ragMode } =
     body as any;
-  // CLOUD_MODE=off (закрытый контур) — облачного режима нет, запрос клиента игнорируем.
-  const anonymizeMode = Boolean((body as any)?.anonymize) && isCloudModeEnabled();
   let conversationId: string | null = null;
 
   try {
@@ -688,9 +658,8 @@ export async function POST(req: Request) {
   // Папку берём из записи диалога в БД, а не из тела запроса: клиент не
   // должен иметь возможность подмешать в промпт чужую папку. Грузим ДО
   // расчёта бюджета истории — блок до ~5 000 токенов, его надо вычесть.
-  const folderContextRaw = await loadFolderContext(requestUser, conversationId, messagesWithHidden);
-  let folderContext = folderContextRaw;
-  const folderTokensEstimate = Math.ceil(folderContextRaw.length / CHARS_PER_TOKEN);
+  const folderContext = await loadFolderContext(requestUser, conversationId, messagesWithHidden);
+  const folderTokensEstimate = Math.ceil(folderContext.length / CHARS_PER_TOKEN);
 
   const CONTEXT_TOKENS_LIMIT = contextTokensLimit;
   const docTokensEstimate = Math.ceil(hiddenDocsContext.length / CHARS_PER_TOKEN);
@@ -739,185 +708,10 @@ export async function POST(req: Request) {
     }
   }
 
-  // ===== Режим «Облако + анонимизация» (152-ФЗ) =====
-  // Документ и сообщения чистим от ПДн ПЕРЕД отправкой в облачную LLM. Сервер
-  // дёргаем только для НОВОГО текста (последнее сообщение пользователя; документ —
-  // если mapping ещё пуст, т.е. preview не выполнялся). Остальное переписываем
-  // локально по каноническому mapping диалога.
-  let effectiveProvider: string | undefined = (body as Record<string, unknown>).chatProvider as
-    | string
-    | undefined;
-  let effectiveModel: string | undefined = (body as Record<string, unknown>).chatModel as
-    | string
-    | undefined;
-  let anonymizeMapping: Mapping = {};
-  // Значения-синонимы («Ирины Соколовой» → [PERSON_1]): подставляются наравне с
-  // каноническими, иначе склонённая форма уедет в облако как есть. Живут в
-  // записи диалога, поэтому подтверждённая моделью форма работает и на
-  // следующих ходах — без повторного вызова модели.
-  let inflectionAliases: PlaceholderAlias[] = [];
-  let anonymizationActive = false;
-  let anonymizationNotice = '';
-  let anonymizedDocsContext = hiddenDocsContext;
-
-  if (anonymizeMode) {
-    try {
-      const state = await loadConversationState(conversationId);
-      let mapping = state.mapping;
-      inflectionAliases = state.aliases ?? [];
-
-      // Документ: серверная анонимизация только если mapping пуст (preview не было).
-      // Сохраняем полный серверный anonymized_text — в нём NER уже заменил и
-      // одиночные имена («Никита»), которые локальная forward-подстановка по
-      // полному ФИО могла бы пропустить (утечка ПДн в облако).
-      let serverAnonymizedDoc: string | null = null;
-      if (hiddenDocsContext.trim() && Object.keys(mapping).length === 0) {
-        const r = await anonymizeNewText(hiddenDocsContext, conversationId);
-        mapping = r.mapping;
-        inflectionAliases = r.aliases;
-        serverAnonymizedDoc = r.anonymizedText;
-      }
-
-      // Последнее сообщение пользователя — короткое, серверная анонимизация быстра.
-      const lastUserMsg = [...finalMessages].reverse().find((m) => m?.role === 'user');
-      const lastUserText =
-        typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : '';
-      if (lastUserText.trim()) {
-        const r2 = await anonymizeNewText(lastUserText, conversationId);
-        mapping = r2.mapping;
-        inflectionAliases = r2.aliases;
-      }
-
-      // Инструкции и источники папки уходят в облако вместе с промптом — тот же
-      // серверный NER, что и для реплики пользователя. Найденные ФИО попадают
-      // в mapping диалога и обратно подставляются в ответ.
-      if (folderContext.trim()) {
-        const r3 = await anonymizeNewText(folderContext, conversationId);
-        mapping = r3.mapping;
-        inflectionAliases = r3.aliases;
-        folderContext = r3.anonymizedText;
-      }
-
-      // Склейка плейсхолдеров, разошедшихся из-за падежей. Анонимизатор
-      // обрабатывает каждое сообщение отдельно и не знает, что «Ирины
-      // Соколовой» из правки — это [PERSON_1] «Ирина Соколова» из расшифровки;
-      // заводится второй плейсхолдер, и облачная модель видит двух разных
-      // людей («Ирины Соколовой в расшифровке нет»). Кандидатов отбираем по
-      // основам слов, а решение по спорным парам принимает модель.
-      const inflectedCandidates = findInflectedCandidates(mapping);
-      if (inflectedCandidates.length > 0) {
-        console.log(
-          `🔎 падежные кандидаты (${inflectedCandidates.length}): ${inflectedCandidates
-            .map((c) => `${c.drop} «${c.dropValue}» ↔ ${c.keep} «${c.keepValue}»`)
-            .join('; ')}`,
-        );
-        const verdict = await verifyInflectedPairs({
-          model: resolveChatLanguageModel({ chatProvider: 'ollama' }),
-          candidates: inflectedCandidates,
-          abortSignal: req.signal,
-        });
-        const mergeResult = applyInflectionMerge(mapping, inflectedCandidates, verdict);
-        if (mergeResult.merged.length > 0) {
-          mapping = mergeResult.mapping;
-          // Новые алиасы кладём к уже сохранённым и чистим те, чей плейсхолдер
-          // исчез. Сортировка «длинные первыми» живёт в mergeAliases.
-          inflectionAliases = mergeAliases(inflectionAliases, mergeResult.aliases, mapping);
-          // Сохраняем СРАЗУ: ниже mapping сравнивается по длине с conv.mapping,
-          // а после склейки они равны — запись бы не сохранилась, и удалённый
-          // дубль вернулся бы из базы на следующем сообщении.
-          if (conversationId) {
-            await persistConversationMapping(conversationId, {
-              mapping,
-              counters: countersFromMapping(mapping),
-              aliases: inflectionAliases,
-            });
-          }
-          console.log(`🔗 склеены падежные дубли: ${mergeResult.merged.join('; ')}`);
-        }
-      }
-
-      // Финальная зачистка всего, что уходит в облако:
-      //   applyMappingForward (подстановка известных значений) → scrubStructured
-      //   (защитный фильтр email/телефонов/длинных ID, что мог пропустить NER).
-      let conv: ConversationMapping = {
-        mapping,
-        counters: countersFromMapping(mapping),
-        aliases: inflectionAliases,
-      };
-      {
-        // Предпочитаем полный серверный результат (в нём одиночные имена уже
-        // заменены); при его отсутствии — детерминированная локальная
-        // «глубокая» подстановка (включая компоненты ФИО и склонённые формы).
-        const docLocal =
-          serverAnonymizedDoc ??
-          anonymizeWithMapping(hiddenDocsContext, conv.mapping, inflectionAliases);
-        const sc = scrubStructured(docLocal, conv);
-        conv = sc.conversation;
-        // Словарный фильтр гос/орг-наименований, что пропустил NER (Минфин и т.п.).
-        const so = scrubSensitiveOrgs(sc.text, conv);
-        conv = so.conversation;
-        // Даты и вежливые фразы — не ПДн: возвращаем оригиналы, чтобы облачная
-        // модель видела реальные даты (сроки!) и нормальный текст.
-        anonymizedDocsContext = restoreNonSensitivePlaceholders(so.text, conv.mapping).text;
-      }
-      if (folderContext.trim()) {
-        const sc = scrubStructured(
-          anonymizeWithMapping(folderContext, conv.mapping, inflectionAliases),
-          conv,
-        );
-        conv = sc.conversation;
-        const so = scrubSensitiveOrgs(sc.text, conv);
-        conv = so.conversation;
-        folderContext = restoreNonSensitivePlaceholders(so.text, conv.mapping).text;
-      }
-      finalMessages = finalMessages.map((m) => {
-        if (typeof m?.content !== 'string') return m;
-        // Канонические значения и склонённые формы подставляются ОДНИМ
-        // проходом: длинное совпадение выигрывает у короткого, границы слов
-        // соблюдаются. Раньше алиасы шли отдельным split/join — он не знает
-        // границ слова и мог порезать середину другого слова.
-        const local = anonymizeWithMapping(m.content, conv.mapping, inflectionAliases);
-        const sc = scrubStructured(local, conv);
-        conv = sc.conversation;
-        const so = scrubSensitiveOrgs(sc.text, conv);
-        conv = so.conversation;
-        const restoredText = restoreNonSensitivePlaceholders(so.text, conv.mapping).text;
-        return { ...m, content: restoredText, parts: [{ type: 'text' as const, text: restoredText }] };
-      });
-      // Если защитный фильтр добавил новые сущности — сохраняем mapping.
-      if (Object.keys(conv.mapping).length !== Object.keys(mapping).length) {
-        await persistConversationMapping(conversationId, conv);
-      }
-      mapping = conv.mapping;
-      anonymizeMapping = mapping;
-      anonymizationActive = true;
-
-      // Принудительно облачная модель.
-      effectiveProvider = 'openrouter';
-      // normalizeCloudModel: пустой или мёртвый слаг (owl-alpha из старого env) → дефолт.
-      effectiveModel = normalizeCloudModel(process.env.ANONYMIZER_CLOUD_MODEL);
-      console.log(
-        `🔒 anonymize active: mapping=${Object.keys(mapping).length} entries → ${effectiveModel}`,
-      );
-    } catch (e) {
-      if (e instanceof AnonymizerUnavailableError) {
-        // Fallback на локальную LLM (там ПДн допустимы) + уведомление пользователю.
-        anonymizationActive = false;
-        anonymizeMapping = {};
-        anonymizedDocsContext = hiddenDocsContext;
-        // Блок папки мог быть уже частично заменён — берём исходный: дальше
-        // работает локальная модель, ей ПДн можно.
-        folderContext = folderContextRaw;
-        effectiveProvider = 'ollama';
-        effectiveModel = undefined;
-        anonymizationNotice =
-          '⚠️ Анонимизатор недоступен — отвечаю через локальную модель (данные не уходят в облако).';
-        console.warn('🔒 anonymize unavailable → local fallback:', e.message);
-      } else {
-        throw e;
-      }
-    }
-  }
+  // Модель всегда локальная: облачный режим с анонимизацией убран по решению
+  // заказчика (02.10.2026) — данные не покидают сервер.
+  const requestedModel = (body as Record<string, unknown>).chatModel;
+  const effectiveModel = typeof requestedModel === 'string' ? requestedModel : undefined;
 
   // Есть ли существенный документ в системном блоке (> 8 кБ)?
   const hasInlineTranscript =
@@ -937,19 +731,9 @@ export async function POST(req: Request) {
       ? ragMode
       : 'hybrid';
 
-  // В облако — только то, что прошло анонимизацию. Раньше провайдер брался из
-  // тела как есть, и запрос с chatProvider=openrouter без anonymize (старая
-  // вкладка, ручной запрос) отправлял расшифровку с ПДн в OpenRouter сырой.
-  if (effectiveProvider === 'openrouter' && !anonymizationActive) {
-    console.warn('🔒 chat: openrouter без активной анонимизации — переключаю на локальную модель');
-    effectiveProvider = 'ollama';
-    effectiveModel = undefined;
-  }
-
   let languageModel;
   try {
     languageModel = resolveChatLanguageModel({
-      chatProvider: effectiveProvider,
       chatModel: effectiveModel,
       useThinking: Boolean((body as Record<string, unknown>).useThinking),
     });
@@ -1007,7 +791,7 @@ export async function POST(req: Request) {
 
   let systemPrompt = buildSystemPrompt(
     userPrompt,
-    anonymizedDocsContext,
+    hiddenDocsContext,
     ragAutoContext?.trim() ? ragAutoContext : undefined,
     ragOmitsAttachmentBodies,
   );
@@ -1036,21 +820,15 @@ export async function POST(req: Request) {
   if (hasInlineTranscript) {
     systemPrompt += PROTOCOL_CHAT_TIMECODE_APPENDIX;
     // Детерминированный слот-скан расшифровки → якорь для блока «Не хватает».
-    if (anonymizedDocsContext.trim()) {
+    if (hiddenDocsContext.trim()) {
       systemPrompt +=
-        '\n' + formatSlotScanForPrompt(analyzeTranscriptSlots(anonymizedDocsContext));
+        '\n' + formatSlotScanForPrompt(analyzeTranscriptSlots(hiddenDocsContext));
     }
   }
 
   // Справка о сегодняшней дате: одна и та же для чат-агента и агента документа
   // (lib/date-context.ts), чтобы «сегодня» не подменяло дату встречи.
   systemPrompt += buildDateContextBlock();
-
-  // Режим анонимизации: жёстко запрещаем модели выдумывать имена и подставлять
-  // примеры из системного промпта вместо плейсхолдеров.
-  if (anonymizationActive) {
-    systemPrompt += ANONYMIZE_MODE_SYSTEM_APPENDIX + buildGenderHintsBlock(anonymizeMapping);
-  }
 
   // messages-prepared verbose log removed
 
@@ -1075,58 +853,28 @@ export async function POST(req: Request) {
     }];
   }
 
-  // Режим анонимизации: документ правой панели содержит РЕАЛЬНЫЕ данные (после
-  // обратной подстановки) — перед отправкой в облако зачищаем его по mapping,
-  // иначе chat-agent вставит его в системный промпт сырым (утечка ПДн).
-  const safeDocumentContent = (() => {
-    if (!anonymizationActive || typeof documentContent !== 'string' || !documentContent.trim()) {
-      return documentContent;
-    }
-    // Склонённые формы в УЖЕ СОБРАННОМ документе тоже сводим к общему
-    // плейсхолдеру. Иначе в протоколе остаётся строка «Ирины Соколовой» рядом
-    // с «Ирина Соколова», модель видит двух людей и дубль не исчезает даже по
-    // прямой просьбе его убрать.
-    let doc = documentContent;
-    for (const alias of inflectionAliases) {
-      if (alias.value) doc = doc.split(alias.value).join(alias.placeholder);
-    }
-    return anonymizeWithMapping(doc, anonymizeMapping);
-  })();
-
   const agentContext: AgentContext = {
     messages: coreMessages,
     uiMessages: normalizedMessagesNonEmpty,
     userPrompt: userPrompt,
     userId,
     conversationId,
-    documentContent: safeDocumentContent,
+    documentContent,
     model: languageModel,
     abortSignal: req.signal,
     ragRetrievalEnabled,
     hasInlineTranscript,
     useThinking: Boolean(body.useThinking),
     ragMode: ragModeStr,
-    anonymize: anonymizationActive,
-    anonymizeMapping,
   };
 
   const systemPromptTokensEst = Math.ceil(systemPrompt.length / 2.34);
   console.log(
-    `📐 context: system≈${systemPromptTokensEst}tok doc≈${docTokensEstimate}tok inline=${hasInlineTranscript} msgs=${finalMessages.length} anon=${anonymizationActive}`,
+    `📐 context: system≈${systemPromptTokensEst}tok doc≈${docTokensEstimate}tok inline=${hasInlineTranscript} msgs=${finalMessages.length}`,
   );
 
   // 6. Run Main Agent
-  let agentResponse = await runMainAgent(agentContext, systemPrompt, userPrompt);
-
-  // Деанонимизация ответа «на лету» — клиент видит реальные данные.
-  if (anonymizationActive && Object.keys(anonymizeMapping).length > 0) {
-    agentResponse = wrapResponseWithDeanonymization(agentResponse, anonymizeMapping);
-  }
-
-  // Fallback-уведомление пользователю (анонимизатор недоступен → локальная модель).
-  if (anonymizationNotice) {
-    agentResponse = prependNoticeToResponse(agentResponse, anonymizationNotice);
-  }
+  const agentResponse = await runMainAgent(agentContext, systemPrompt, userPrompt);
 
   return agentResponse;
 }

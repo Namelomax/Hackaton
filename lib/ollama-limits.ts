@@ -125,20 +125,6 @@ export function ollamaProtocolMaxOutputTokens(): number {
 }
 
 /**
- * Потолок вывода для генерации протокола ОБЛАЧНОЙ моделью.
- *
- * Раньше сюда шёл ollamaProtocolMaxOutputTokens() = 8192. Для reasoning-модели
- * это общий бюджет на размышления + JSON: рассуждения съедали его целиком, и
- * ответ приходил пустым (text='', finishReason='other' → AI_NoObjectGeneratedError).
- * У облачных моделей окно вывода несопоставимо больше — держим запас.
- */
-export function cloudProtocolMaxOutputTokens(): number {
-  const n = Number(process.env.CLOUD_PROTOCOL_MAX_OUTPUT_TOKENS);
-  if (Number.isFinite(n) && n > 0) return n;
-  return 32000;
-}
-
-/**
  * Глобальный жёсткий потолок max_tokens на стороне fetch-обёртки.
  * Это НЕ дефолт ответа, а предохранитель: не даёт ни одному запросу попросить
  * абсурдно много. Должен быть ≥ ollamaProtocolMaxOutputTokens(), иначе бюджет

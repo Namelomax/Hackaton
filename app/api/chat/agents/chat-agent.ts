@@ -16,13 +16,11 @@ import { PROTOCOL_TIMECODE_ADAPTATION_LINE } from "@/lib/protocol-timecodes";
 import { createRetrieveFromIndexedDocumentsTool } from "./rag-tools";
 import { createAddGlossaryRuleTool } from "./glossary-tools";
 import { formatGlossaryForPrompt } from "@/lib/prompts/glossary";
-import { documentReasoningOptions } from "@/lib/reasoning-options";
 import { shouldPublishDocument } from "./publish-intent";
 import {
   ollamaStreamHeartbeatMs,
   pickChatMaxOutputTokens,
 } from "@/lib/ollama-limits";
-import { deanonymize, deepDeanonymize } from "@/lib/anonymization";
 import {
   filterToolCallLeakStream,
   looksLikeTextualToolCall,
@@ -217,8 +215,6 @@ export async function runChatAgent(
     useThinking,
     ragMode,
   } = context;
-  const anonymizeActive = Boolean(context.anonymize) && Object.keys(context.anonymizeMapping ?? {}).length > 0;
-  const anonMapping = context.anonymizeMapping ?? {};
   const messagesWithUserPrompt: ModelMessage[] = [];
 
   /**
@@ -327,16 +323,10 @@ export async function runChatAgent(
   const estimatedInputTokens = Math.round(
     (messagesChars + systemChars) / 2.34,
   );
-  // Облачный режим (анонимизация активна → OpenRouter): лимиты Ollama не
-  // применяем — облачные модели поддерживают большой вывод, а reasoning-модели
-  // тратят бюджет на размышления и обрезались на середине ответа.
-  const cloudMode = anonymizeActive;
-  const maxOutputTokens = cloudMode
-    ? Number(process.env.CLOUD_CHAT_MAX_OUTPUT_TOKENS ?? 16000)
-    : pickChatMaxOutputTokens({
-        hasInlineTranscript: inlineTranscript,
-        dialogMessageCount,
-      });
+  const maxOutputTokens = pickChatMaxOutputTokens({
+    hasInlineTranscript: inlineTranscript,
+    dialogMessageCount,
+  });
   console.log(
     `🤖 streamText start: msgs=${msgCount} dialog=${dialogMessageCount} input≈${estimatedInputTokens}tok (sys=${systemChars}c) maxOut=${maxOutputTokens} rag=${Boolean(ragRetrievalEnabled)} inlineDoc=${inlineTranscript}`,
   );
@@ -392,8 +382,7 @@ export async function runChatAgent(
        * Если шлюз поднимут с `--enable-auto-tool-choice --tool-call-parser hermes`,
        * инструменты возвращаются переменной LOCAL_TOOLS_ENABLED=true, без правок кода.
        */
-      const nativeToolsSupported =
-        cloudMode || process.env.LOCAL_TOOLS_ENABLED === 'true';
+      const nativeToolsSupported = process.env.LOCAL_TOOLS_ENABLED === 'true';
       if (!nativeToolsSupported) {
         console.log('🔧 tools отключены: провайдер не поддерживает tool-calls (LOCAL_TOOLS_ENABLED=true чтобы включить)');
       }
@@ -418,7 +407,6 @@ export async function runChatAgent(
           // тот же, что у генерации документа, правок и проверки. Раньше здесь
           // не хватало exclude:true, и модель всё равно думала — замер показал
           // 12 810 токенов ради ответа в 145 символов.
-          providerOptions: documentReasoningOptions(),
           // Без инструментов шага всегда ровно один: лишние шаги — это только
           // круги на вызовы tools, которых мы не отправили.
           stopWhen: stepCountIs(
@@ -541,7 +529,6 @@ export async function runChatAgent(
               conversationId ?? null,
               0,
               abortSignal ?? undefined,
-              { anonymize: anonymizeActive, mapping: anonMapping },
             );
             sink.markdown = md;
             const okId = `tool-fallback-${Date.now()}`;
@@ -575,17 +562,11 @@ export async function runChatAgent(
       console.log(`✅ agent done: ${elapsed}ms total, protocol=${sink.markdown.length > 0 ? sink.markdown.length + ' chars' : 'none'}`);
       if (!userId) return;
       try {
-        // В режиме анонимизации модель отвечает плейсхолдерами — в БД сохраняем
-        // реальные данные (как видит пользователь), чтобы при перезагрузке диалога
-        // не показывались [PERSON_1] и т.п.
-        const persistMessages = anonymizeActive
-          ? deepDeanonymize(finished, anonMapping)
-          : finished;
-        let doc =
+        const persistMessages = finished;
+        const doc =
           typeof sink.markdown === "string" && sink.markdown.trim().length > 0
             ? sink.markdown
             : undefined;
-        if (doc && anonymizeActive) doc = deanonymize(doc, anonMapping);
         if (conversationId) {
           await updateConversation(conversationId, persistMessages, doc);
         } else {

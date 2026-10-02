@@ -1,7 +1,7 @@
 /**
  * Извлечение текста из вложений (PDF/DOCX/XLSX/PPTX/текст).
  *
- * ЕДИНСТВЕННЫЙ серверный диспетчер: и /api/chat, и /api/anonymize ходят сюда.
+ * ЕДИНСТВЕННЫЙ серверный диспетчер извлечения текста из вложений.
  * Раньше у чата была своя копия разбора по типам; копии разошлись — у одной
  * было определение кодировки, у другой нет, — и это стоило утечки ПДн.
  */
@@ -169,7 +169,7 @@ async function extractPptx(att: any): Promise<string | null> {
 /**
  * Декодирование текстового буфера. Реализация — в `lib/text-encoding.ts`,
  * общем модуле с браузером: раньше эта логика жила только в /api/chat, а
- * канонический `extractAttachmentText` (его использует /api/anonymize) делал
+ * канонический `extractAttachmentText` делал
  * `buf.toString('utf8')` и получал из cp1251 мойибаке.
  */
 export function decodeTextBuffer(buf: Buffer): string | null {

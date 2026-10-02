@@ -76,7 +76,7 @@ export async function requireUser(req: Request, claimedUserId?: string | null): 
 
 /**
  * Для роутов, где анонимный запрос допустим, а доступ решает гард владения
- * диалогом (/api/chat, /api/anonymize …): id или null, но заблокированный
+ * диалогом (/api/chat, /api/review-document …): id или null, но заблокированный
  * получает отказ сразу, а не превращается в «анонима».
  */
 export async function activeUserIdOrResponse(

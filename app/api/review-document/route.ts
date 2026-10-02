@@ -1,9 +1,4 @@
 import { runDocumentReview } from '@/app/api/chat/agents/review-agent';
-import {
-  anonymizeWithMapping,
-  deepDeanonymize,
-  loadConversationMapping,
-} from '@/lib/anonymization';
 import { assertConversationOwnership, ForbiddenError } from '@/lib/getPromt';
 import { activeUserIdOrResponse } from '@/lib/auth-guard';
 
@@ -13,9 +8,8 @@ export const dynamic = 'force-dynamic'; // Отключаем кэширован
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
-  const { content, chatProvider, chatModel, useThinking, conversationId, userId } = body as {
+  const { content, chatModel, useThinking, conversationId, userId } = body as {
     content?: string;
-    chatProvider?: string;
     chatModel?: string;
     useThinking?: boolean;
     conversationId?: string;
@@ -29,9 +23,7 @@ export async function POST(req: Request) {
     );
   }
 
-  // ИЗОЛЯЦИЯ: ниже читается mapping диалога, а он содержит пары
-  // «плейсхолдер → настоящие ПДн». Без проверки владения любой мог бы получить
-  // расшифровку чужих персональных данных, подставив чужой conversationId.
+  // ИЗОЛЯЦИЯ: проверяется документ конкретного диалога — только его владельцем.
   const auth = await activeUserIdOrResponse(req, userId);
   if (auth instanceof Response) return auth;
   try {
@@ -41,7 +33,7 @@ export async function POST(req: Request) {
     if (e instanceof ForbiddenError) {
       return Response.json({ error: 'Доступ к этому диалогу запрещён' }, { status: 403 });
     }
-    // Не удалось проверить — отказываем: ниже читается mapping с реальными ПДн.
+    // Не удалось проверить — отказываем, а не пропускаем.
     console.error('ownership check failed:', e);
     return Response.json(
       { error: 'Сервис временно недоступен: не удалось проверить доступ к диалогу.' },
@@ -50,34 +42,11 @@ export async function POST(req: Request) {
   }
 
   try {
-    const wantsCloud = chatProvider === 'openrouter';
-
-    // Облако: документ правой панели содержит реальные ПДн — зачищаем по
-    // mapping диалога перед отправкой; результат (цитаты в замечаниях)
-    // возвращаем с реальными данными. Локальная модель получает документ как есть.
-    let mapping: Record<string, string> = {};
-    let contentForReview = content;
-    if (wantsCloud && typeof conversationId === 'string' && conversationId) {
-      mapping = await loadConversationMapping(conversationId);
-      if (Object.keys(mapping).length > 0) {
-        contentForReview = anonymizeWithMapping(content, mapping);
-      }
-    }
-    // Нечем зачистить (mapping пуст или нет диалога) — в облако документ не
-    // отправляем: раньше он уходил туда с настоящими ФИО.
-    const isCloud = wantsCloud && Object.keys(mapping).length > 0;
-    if (wantsCloud && !isCloud) {
-      console.warn('[review-document] облако без mapping анонимизации — проверяю локальной моделью');
-    }
-
-    let review = await runDocumentReview(contentForReview, {
-      chatProvider: isCloud ? 'openrouter' : 'ollama',
+    // Проверка — локальной моделью: данные не покидают сервер.
+    const review = await runDocumentReview(content, {
       chatModel: typeof chatModel === 'string' ? chatModel : undefined,
       useThinking: Boolean(useThinking),
     });
-    if (isCloud && Object.keys(mapping).length > 0) {
-      review = deepDeanonymize(review, mapping);
-    }
     return Response.json(review);
   } catch (error) {
     console.error('[review-document] Error:', error);

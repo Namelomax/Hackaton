@@ -20,14 +20,25 @@ type Props = {
   onLeft?: (folderId: string) => void;
   /** Состав участников изменил админ — счётчики и, возможно, свой сайдбар. */
   onMembersChanged?: (folderId: string, memberIds: string[]) => void;
+  /** Поиск по документам настроен на сервере. Нет — раздела источников нет вовсе. */
+  sourcesEnabled?: boolean;
 };
 
 /**
- * Настройки папки: название, инструкции проекта и источники (RAG-индекс папки).
+ * Настройки папки: название, инструкции проекта и источники (файлы проекта).
+ * Источники показываются, только если на сервере включён поиск по документам.
  * Кто не управляет папкой, видит то же самое только для чтения — чтобы
  * понимать, какой контекст протоколер подмешивает в его чаты.
  */
-export function FolderSettingsDialog({ folder, onClose, onSaved, onDeleted, onLeft, onMembersChanged }: Props) {
+export function FolderSettingsDialog({
+  folder,
+  onClose,
+  onSaved,
+  onDeleted,
+  onLeft,
+  onMembersChanged,
+  sourcesEnabled = false,
+}: Props) {
   const [name, setName] = useState('');
   const [instructions, setInstructions] = useState('');
   const [saving, setSaving] = useState(false);
@@ -45,7 +56,7 @@ export function FolderSettingsDialog({ folder, onClose, onSaved, onDeleted, onLe
       const j = await resp.json().catch(() => null);
       if (!resp.ok) {
         setSources([]);
-        setSourcesError(resp.status === 503 ? 'Сервис источников (RAG) не настроен' : 'Не удалось загрузить список источников');
+        setSourcesError('Не удалось загрузить список источников');
         return;
       }
       setSources(Array.isArray(j) ? j : []);
@@ -60,8 +71,8 @@ export function FolderSettingsDialog({ folder, onClose, onSaved, onDeleted, onLe
     setName(folder.name);
     setInstructions(folder.instructions ?? '');
     setSources(null);
-    void loadSources(folder.id);
-  }, [folder, loadSources]);
+    if (sourcesEnabled) void loadSources(folder.id);
+  }, [folder, loadSources, sourcesEnabled]);
 
   if (!folder) return null;
 
@@ -247,6 +258,7 @@ export function FolderSettingsDialog({ folder, onClose, onSaved, onDeleted, onLe
             </p>
           </div>
 
+          {sourcesEnabled && (
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-xs text-neutral-600">Источники</span>
@@ -308,6 +320,7 @@ export function FolderSettingsDialog({ folder, onClose, onSaved, onDeleted, onLe
               фрагменты по ходу каждого чата папки.
             </p>
           </div>
+          )}
 
           {folder.kind === 'shared' && folder.canManageMembers && (
             <FolderMembers

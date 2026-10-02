@@ -13,7 +13,6 @@
 
 import { generateObject } from 'ai';
 import { z } from 'zod';
-import { documentReasoningOptions } from '@/lib/reasoning-options';
 
 const IntentSchema = z.object({
   publish: z
@@ -64,7 +63,6 @@ export async function shouldPublishDocument(options: {
       ),
       temperature: 0,
       maxOutputTokens: 256,
-      providerOptions: documentReasoningOptions(),
       ...(abortSignal ? { abortSignal } : {}),
     });
     console.log(
