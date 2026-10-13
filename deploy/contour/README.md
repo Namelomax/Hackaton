@@ -157,3 +157,86 @@ docker compose up -d                        # пересоздаст конте�
   `PRELOAD_MINERU_MODELS=1`. Пересоберите комплект с `--with-rag`.
 - **GPU не видна Ollama**:
   `docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile ollama up -d`.
+
+### Пользователи «не сохраняются», логин приходится регистрировать заново
+
+Учётные записи лежат только в SurrealDB (таблица `users`), не в браузере:
+`localStorage` помнит лишь, кто вошёл на этом устройстве. Почти всегда это
+значит, что приложение смотрит не в ту базу, в которую вы думаете.
+
+1. **Не тот адрес БД.** Хост `surrealdb` существует только внутри Docker. Если
+   запустить `npm run dev` на хосте с `SURREALDB_URL=ws://surrealdb:8000/rpc`,
+   до этой БД он не достучится. На хосте — `ws://127.0.0.1:8000/rpc`.
+2. **Не тот том.** Том называется `<имя проекта>_surreal-data`, по умолчанию
+   `forus-chatbot_surreal-data`. Сменили `COMPOSE_PROJECT_NAME` или каталог —
+   получили новую пустую базу.
+
+Проверка — тот же экземпляр, что использует `web`:
+
+```bash
+curl -s http://127.0.0.1:3000/api/health/db
+```
+
+Смотрите `surreal.namespace`, `surreal.database` и `userCount`. После
+регистрации `userCount` должен стать ≥ 1. С другого компьютера откройте тот же
+сайт и вызовите `/api/health/db` ещё раз — значения должны совпасть.
+
+Напрямую в БД. Пароль берётся из `.env` — в оболочке хоста переменной
+`SURREALDB_PASSWORD` нет, пока вы её сами не загрузите:
+
+```bash
+PASS=$(grep '^SURREALDB_PASSWORD=' .env | cut -d= -f2)
+docker compose exec surrealdb /surreal sql \
+  --endpoint ws://127.0.0.1:8000/rpc \
+  --namespace chatbot --database main \
+  --username root --password "$PASS"
+```
+
+```sql
+SELECT id, username, usernameLower FROM users;
+```
+
+### SurrealDB: версия движка
+
+Движок — SurrealDB **2.6.x**. npm-клиент `surrealdb` в приложении (ветка 1.x)
+работает только с движком `>= 1.4.2 < 3.0.0`. Если поднять 3.x (`:latest`), в
+логах `web` появится `UnsupportedVersion`. Переход на 3.x требует обновить
+зависимость `surrealdb` в `package.json` и пересобрать образ `web`.
+
+**«The data stored on disk is out-of-date with this version»** — том создан
+другой major-версией движка. Верните ту версию, что создавала данные, и
+мигрируйте по [руководствам SurrealDB](https://surrealdb.com/docs), либо
+начните с чистой базы (см. ниже).
+
+### SurrealDB: `Permission denied` / RocksDB
+
+`Failed to create RocksDB directory` в `docker compose logs surrealdb`. В
+`docker-compose.yml` для `surrealdb` уже задано `user: "0:0"`, поэтому чаще всего
+дело в томе, созданном раньше с чужими правами. Сначала:
+
+```bash
+docker compose up -d --force-recreate surrealdb
+```
+
+Не помогло — удалите том БД. **Это сотрёт все данные**, сначала сделайте бэкап:
+
+```bash
+docker compose down
+docker volume rm forus-chatbot_surreal-data
+docker compose up -d
+```
+
+### RAG: «Duplicate document» / «No new unique documents»
+
+Тот же документ уже есть в индексе. Загрузите другой файл или сбросьте индекс
+целиком — **это сотрёт весь RAG-корпус**:
+
+```bash
+docker compose down
+docker volume rm forus-chatbot_rag-storage
+docker compose --profile rag up -d
+```
+
+Предупреждения про multimodal и «Missing required fields» на работу поиска
+обычно не влияют: в `rag-api` для LightRAG частично стоит упрощённая
+LLM-заглушка.
