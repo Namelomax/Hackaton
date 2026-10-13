@@ -9,7 +9,6 @@ import {
   canSeeFolder,
   effectiveRole,
   envAdminUsernames,
-  folderRagScope,
   isEnvAdmin,
   isWellFormedConversationId,
   normalizeFolderName,
@@ -88,11 +87,6 @@ describe('папки', () => {
     expect(normalizeFolderName('  Проект   «Альфа»\n ')).toBe('Проект «Альфа»');
     expect(normalizeFolderName('x'.repeat(500))).toHaveLength(120);
   });
-
-  it('scope RAG не совпадает с id записи и не содержит двоеточия', () => {
-    expect(folderRagScope('folders:abc')).toBe('folder_abc');
-    expect(folderRagScope('abc')).toBe('folder_abc');
-  });
 });
 
 describe('ограничения администрирования', () => {
@@ -132,7 +126,7 @@ describe('isWellFormedConversationId', () => {
     expect(isWellFormedConversationId('local-1727000000000')).toBe(true);
   });
 
-  it('отвергает подмену scope RAG через двоеточие и индексы папок', () => {
+  it('отвергает чужие формы id: двоеточие, префикс folder_, обход пути', () => {
     expect(isWellFormedConversationId('x:victim123')).toBe(false);
     expect(isWellFormedConversationId('local-1:victim123')).toBe(false);
     expect(isWellFormedConversationId('conversations:folder_abc')).toBe(false);

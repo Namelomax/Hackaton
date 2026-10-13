@@ -1,9 +1,8 @@
-# Протоколер в Docker: веб-приложение + локальная SurrealDB (+ опционально RAG и Ollama).
+# Протоколер в Docker: веб-приложение + локальная SurrealDB (+ опционально Ollama).
 #
 # Быстрый старт (контур компании): deploy/contour/README.md
 #   cp deploy/contour/env.contour.example .env   # заполнить
 #   docker compose up -d                          # web + surrealdb
-#   docker compose --profile rag up -d            # + rag-api (источники папок, RAG)
 #   docker compose --profile ollama up -d         # + свой Ollama, если LLM-сервера в контуре нет
 #
 # Текущий прод (systemd + npm start, облачная БД) этот файл НЕ использует.
@@ -68,8 +67,6 @@ services:
       SURREALDB_PASSWORD: ${SURREALDB_PASSWORD:?Задайте SURREALDB_PASSWORD в .env}
       # Без постоянного секрета каждый перезапуск контейнера разлогинивает всех.
       SESSION_SECRET: ${SESSION_SECRET:?Задайте SESSION_SECRET в .env (openssl rand -hex 32)}
-      # Пусто = RAG выключен. С профилем rag: http://rag-api:8000
-      RAG_API_URL: ${RAG_API_URL:-}
       HOSTNAME: 0.0.0.0
       PORT: 3000
     depends_on:
@@ -81,40 +78,6 @@ services:
       - "${WEB_PORT:-127.0.0.1:3000}:3000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
-  rag-api:
-    profiles: ["rag"]
-    image: ${RAG_IMAGE:-protokoler-rag:latest}
-    build:
-      context: ./rag-api
-      dockerfile: Dockerfile
-      args:
-        # 1 = скачать модели MinerU в образ при сборке (нужно для контура без
-        # интернета: иначе MinerU тянет их с HuggingFace при первом PDF).
-        PRELOAD_MINERU_MODELS: ${PRELOAD_MINERU_MODELS:-1}
-    restart: unless-stopped
-    # Без env_file: индексации не нужны SESSION_SECRET, ключи модели чата и
-    # прочее из .env приложения — передаём только своё.
-    environment:
-      # OpenAI-совместимый сервер эмбеддингов и LLM для индексации.
-      LOCAL_OPENAI_BASE_URL: ${RAG_LOCAL_OPENAI_BASE_URL:-http://ollama:11434/v1}
-      LOCAL_OPENAI_API_KEY: ${RAG_LOCAL_OPENAI_API_KEY:-ollama}
-      LOCAL_OPENAI_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-nomic-embed-text}
-      RAG_OLLAMA_BASE_URL: ${RAG_OLLAMA_BASE_URL:-http://ollama:11434/v1}
-      RAG_OLLAMA_LLM_MODEL: ${RAG_OLLAMA_LLM_MODEL:-qwen3:14b}
-      RAG_CORS_ORIGINS: ${RAG_CORS_ORIGINS:-http://localhost:3000}
-    volumes:
-      - rag-storage:/app/rag_storage
-      - rag-uploads:/app/uploads
-      - rag-output:/app/output
-    ports:
-      - "${RAG_API_PORT:-127.0.0.1:8001}:8000"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).status==200 else 1)"]
-      interval: 30s
-      timeout: 10s
-      start_period: 120s
-      retries: 5
 
   ollama:
     # Только если в контуре нет своего LLM-сервера. GPU подключается через
@@ -133,7 +96,4 @@ services:
 
 volumes:
   surreal-data:
-  rag-storage:
-  rag-uploads:
-  rag-output:
   ollama-data:

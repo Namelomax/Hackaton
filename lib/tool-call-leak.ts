@@ -21,7 +21,7 @@
  */
 
 /** Имена инструментов, которые модель может «позвать» текстом. */
-const TOOL_NAMES = ['publishInvestigationProtocol', 'retrieveFromIndexedDocuments'];
+const TOOL_NAMES = ['publishInvestigationProtocol'];
 
 /**
  * Граница псевдовызова: `<tool_call>`, `<|tool_call|>`, `<|tool_call>`,

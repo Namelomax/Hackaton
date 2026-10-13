@@ -135,13 +135,8 @@ export function normalizeFolderInstructions(text: unknown): string {
   return String(text ?? '').trim().slice(0, FOLDER_INSTRUCTIONS_MAX);
 }
 
-/** Scope RAG-индекса папки. Префикс не пересекается с id диалогов. */
-export function folderRagScope(folderId: string): string {
-  return `folder_${String(folderId).replace(/^folders:/, '')}`;
-}
-
 /**
- * Id диалога безопасен для использования как scope RAG: `conversations:<id>`,
+ * Id диалога корректной формы: `conversations:<id>`,
  * `<id>` или `local-<цифры>`, где `<id>` — только буквы, цифры, `_`, `-` и не
  * начинается с `folder_` (это пространство индексов папок).
  */

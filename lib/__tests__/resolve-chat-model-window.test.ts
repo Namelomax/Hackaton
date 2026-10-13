@@ -56,7 +56,7 @@ describe('resolveChatLanguageModel: проактивное обнаружени�
     delete process.env.LLM_FORCE_NONSTREAM; // фолбэк 'true' — non-stream путь, как в проде за JupyterHub
     delete process.env.OLLAMA_HARD_MAX_OUTPUT_TOKENS;
     delete process.env.OLLAMA_PROTOCOL_MAX_OUTPUT_TOKENS;
-    process.env.OLLAMA_BASE_URL = 'https://oui.interfonica.cloud/v1';
+    process.env.OLLAMA_BASE_URL = 'https://llm.example.com/v1';
     process.env.OLLAMA_API_KEY = 'test-key';
 
     mockedInsecureFetch = jest.fn();

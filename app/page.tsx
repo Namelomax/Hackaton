@@ -44,13 +44,7 @@ function buildPersistPutBody(
 }
 
 export default function ChatPage() {
-  /** Источники папок (поиск по документам) настроены на сервере. */
-  const [folderSourcesEnabled, setFolderSourcesEnabled] = useState(false);
   useEffect(() => {
-    fetch('/api/config')
-      .then((r) => r.json())
-      .then((cfg) => setFolderSourcesEnabled(cfg?.folderSources === true))
-      .catch(() => {});
     // Остатки удалённого облачного режима в браузере пользователей.
     try {
       localStorage.removeItem('anonymizeMode');
@@ -62,8 +56,6 @@ export default function ChatPage() {
   const chatBody = useMemo(
     () => ({
       chatModel: FIXED_CHAT_MODEL,
-      useRagContext: false,
-      ragMode: 'hybrid' as const,
       useThinking: false,
     }),
     [],
@@ -1518,7 +1510,6 @@ export default function ChatPage() {
           onDeleted={handleFolderDeleted}
           onLeft={handleFolderLeft}
           onMembersChanged={handleFolderMembersChanged}
-          sourcesEnabled={folderSourcesEnabled}
         />
         {/* Центральная часть — чат (расширяется, когда панель протокола свёрнута) */}
         <div

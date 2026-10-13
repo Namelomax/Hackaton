@@ -2,17 +2,17 @@ import { insecureFetch } from '@/lib/insecure-fetch';
 import { FIXED_CHAT_MODEL, parseAllowedOllamaModelsFromServerEnv } from '@/lib/chat-models';
 
 /**
- * Обнаружение реальной модели на «локальном» шлюзе (внешний OpenAI-совместимый
- * vLLM за OLLAMA_BASE_URL, не Ollama) вместо жёстко зашитого FIXED_CHAT_MODEL.
+ * Обнаружение реальной модели на LLM-сервере (OpenAI-совместимый сервер за
+ * OLLAMA_BASE_URL) вместо жёстко зашитого FIXED_CHAT_MODEL.
  *
- * История отказа: администраторы шлюза трижды за месяц молча меняли
- * выложенную модель (gemma-4-31b → qwen3.5-35b → qwen3.8-27B), и каждый раз
- * КАЖДЫЙ запрос падал с `404 The model <старое имя> does not exist` — и
- * локальный режим, и LLM-слой анонимизатора (он тоже ходит через
- * OLLAMA_BASE_URL), пока кто-то вручную не правил FIXED_CHAT_MODEL в коде.
+ * Зачем: администраторы LLM-сервера могут заменить или переименовать модель,
+ * и тогда КАЖДЫЙ запрос со старым именем падает с
+ * `404 The model <старое имя> does not exist`. Без обнаружения это лечилось
+ * только правкой кода. Так уже случалось: модель на сервере трижды за месяц
+ * менялась без предупреждения (gemma-4-31b → qwen3.5-35b → qwen3.8-27B).
  *
- * GET {OLLAMA_BASE_URL}/models отдаёт актуальный id и max_model_len — читаем
- * оттуда сами. Пример реального ответа шлюза (проверено 08.09.2026):
+ * GET {OLLAMA_BASE_URL}/models отдаёт актуальный id, а у vLLM ещё и
+ * max_model_len — читаем оттуда сами. Пример реального ответа vLLM:
  *   {"object":"list","data":[{"id":"qwen3.8-27B","max_model_len":32768,
  *     "permission":[{"id":"modelperm-b3feba60fae781e2", ...}]}]}
  *

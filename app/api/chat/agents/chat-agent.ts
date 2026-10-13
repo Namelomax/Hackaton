@@ -13,7 +13,6 @@ import {
 } from "./protocol-tools";
 import { generateFinalDocument } from "./document-agent";
 import { PROTOCOL_TIMECODE_ADAPTATION_LINE } from "@/lib/protocol-timecodes";
-import { createRetrieveFromIndexedDocumentsTool } from "./rag-tools";
 import { createAddGlossaryRuleTool } from "./glossary-tools";
 import { formatGlossaryForPrompt } from "@/lib/prompts/glossary";
 import { shouldPublishDocument } from "./publish-intent";
@@ -72,7 +71,6 @@ function hasAttachedFiles(messages: any[]): boolean {
       if (
         c.includes("AI-HIDDEN") ||
         c.includes("Вложенный файл") ||
-        c.includes("[RAG]") ||
         c.includes("[Вложение «")
       ) {
         return true;
@@ -113,17 +111,13 @@ function adaptSystemPrompt(
   systemPrompt: string,
   hasFiles: boolean,
   messageCount: number,
-  options: { ragRetrievalEnabled: boolean; hasInlineTranscript: boolean },
 ): string {
   if (
     (hasFiles || messageCount > 1) &&
     !systemPrompt.includes("АДАПТАЦИЯ: Расшифровка получена")
   ) {
-    const useRagTool =
-      options.ragRetrievalEnabled && !options.hasInlineTranscript;
-
     const adaptation = `АДАПТАЦИЯ: Расшифровка получена
-- Приветствие пропусти — расшифровка уже в системном блоке «ВЛОЖЕНИЯ»${useRagTool ? " и/или в RAG-индексе" : ""}. Сразу к делу.
+- Приветствие пропусти — расшифровка уже в системном блоке «ВЛОЖЕНИЯ». Сразу к делу.
 - Следуй разделу «Поток диалога» из системной инструкции: Шаг 1 — скан + участники, Шаг 2 — повестка, Шаг 3 — содержание, Шаг 4 — сроки, Шаг 5 — подписи. Один шаг = одно сообщение; после «Верно» пользователя — следующий шаг.
 - Первое сообщение после файла: сначала про себя просканируй расшифровку, затем предложи УЧАСТНИКОВ (Заказчик/Исполнитель, пометь молчавших) + явный блок «Не хватает: …» и обязательные вопросы про договор. Повестку, содержание и сроки на первом шаге НЕ включай.
 - Минимум вопросов: только реальные пробелы и обязательные поля, одним нумерованным блоком в конце сообщения. НЕ «по одному вопросу + Верно?».
@@ -210,10 +204,8 @@ export async function runChatAgent(
     conversationId,
     documentContent,
     abortSignal,
-    ragRetrievalEnabled,
     hasInlineTranscript,
     useThinking,
-    ragMode,
   } = context;
   const messagesWithUserPrompt: ModelMessage[] = [];
 
@@ -273,14 +265,10 @@ export async function runChatAgent(
 
   const hasFiles =
     hasAttachedFiles(messages) ||
-    hasAttachedFiles(context.uiMessages ?? []) ||
-    Boolean(ragRetrievalEnabled);
+    hasAttachedFiles(context.uiMessages ?? []);
   const inlineTranscript = Boolean(hasInlineTranscript);
   let adaptedSystemPrompt =
-    adaptSystemPrompt(systemPrompt, hasFiles, messages.length, {
-      ragRetrievalEnabled: Boolean(ragRetrievalEnabled),
-      hasInlineTranscript: inlineTranscript,
-    }) +
+    adaptSystemPrompt(systemPrompt, hasFiles, messages.length) +
     PROTOCOL_TOOL_SYSTEM_APPENDIX +
     formatGlossaryForPrompt();
   if (!useThinking && !adaptedSystemPrompt.startsWith("/no_think")) {
@@ -298,16 +286,6 @@ export async function runChatAgent(
   }
 
   const sink: ProtocolGenerationSink = { markdown: "" };
-
-  const retrieveFromIndexedDocumentsTool =
-    ragRetrievalEnabled &&
-    createRetrieveFromIndexedDocumentsTool({
-      model,
-      messages: messagesWithUserPrompt,
-      ragMode: ragMode ?? "hybrid",
-      abortSignal,
-      conversationId,
-    });
 
   const msgCount = messagesWithUserPrompt.length;
   const dialogMessageCount = messages.length;
@@ -328,7 +306,7 @@ export async function runChatAgent(
     dialogMessageCount,
   });
   console.log(
-    `🤖 streamText start: msgs=${msgCount} dialog=${dialogMessageCount} input≈${estimatedInputTokens}tok (sys=${systemChars}c) maxOut=${maxOutputTokens} rag=${Boolean(ragRetrievalEnabled)} inlineDoc=${inlineTranscript}`,
+    `🤖 streamText start: msgs=${msgCount} dialog=${dialogMessageCount} input≈${estimatedInputTokens}tok (sys=${systemChars}c) maxOut=${maxOutputTokens} inlineDoc=${inlineTranscript}`,
   );
   // DEBUG_LLM_OUTBOUND=true — вывести в лог ВЕСЬ контекст, уходящий модели
   // (системный промпт + сообщения). Для ручной проверки анонимизации: в дампе
@@ -359,9 +337,6 @@ export async function runChatAgent(
       const tools = {
         publishInvestigationProtocol,
         addProtocolGlossaryRule: createAddGlossaryRuleTool(),
-        ...(retrieveFromIndexedDocumentsTool
-          ? { retrieveFromIndexedDocuments: retrieveFromIndexedDocumentsTool }
-          : {}),
       };
 
       /**
@@ -376,8 +351,6 @@ export async function runChatAgent(
        * написан lib/tool-call-leak.ts. То есть инструменты локально никогда не
        * исполнялись, только протекали в чат. Публикация протокола идёт другим
        * путём — через классификатор → document-agent.
-       *
-       * Единственная реальная потеря — RAG-выборка по требованию модели.
        *
        * Если шлюз поднимут с `--enable-auto-tool-choice --tool-call-parser hermes`,
        * инструменты возвращаются переменной LOCAL_TOOLS_ENABLED=true, без правок кода.
@@ -410,7 +383,7 @@ export async function runChatAgent(
           // Без инструментов шага всегда ровно один: лишние шаги — это только
           // круги на вызовы tools, которых мы не отправили.
           stopWhen: stepCountIs(
-            nativeToolsSupported ? (ragRetrievalEnabled ? 4 : 3) : 1,
+            nativeToolsSupported ? 3 : 1,
           ),
           ...(abortSignal ? { abortSignal } : {}),
           onChunk: ({ chunk }) => {

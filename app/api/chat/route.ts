@@ -7,22 +7,11 @@ import { resolveChatLanguageModel } from '@/lib/resolve-chat-model';
 import { buildDateContextBlock } from '@/lib/date-context';
 import { PROTOCOL_CHAT_TIMECODE_APPENDIX } from '@/lib/protocol-timecodes';
 import { analyzeTranscriptSlots, formatSlotScanForPrompt } from '@/lib/protocol-slot-scan';
-import { fetchRagSnippet } from '@/lib/rag-client';
 import {
   buildUserProvidedSection1Appendix,
   userProvidedSection1InTranscript,
 } from '@/lib/protocol-user-facts';
-import {
-  fallbackRagQuestion,
-  hydratedChatTranscriptForRag,
-  stripTextForRagQuery,
-} from '@/lib/rag-search-query';
 import { runMainAgent } from './agents/main-agent';
-import {
-  generateRagSearchQueryLine,
-  RAG_AUTO_PURPOSE_FOCUS,
-  RAG_TOOL_MODE_SYSTEM_APPENDIX,
-} from './agents/rag-tools';
 import { AgentContext } from './agents/types';
 // ЕДИНЫЙ модуль извлечения текста из вложений.
 // Свою копию диспетчера этот роут больше не держит: копии разошлись по
@@ -30,8 +19,8 @@ import { AgentContext } from './agents/types';
 // ПДн (см. комментарий у decodeTextBuffer).
 import { guessFileExt, extractAttachmentTextCached } from '@/lib/attachment-extract';
 import { activeUserIdOrResponse } from '@/lib/auth-guard';
-import { canSeeFolder, folderRagScope } from '@/lib/access';
-import { buildFolderContextBlock, folderRagQuery } from '@/lib/folder-context';
+import { canSeeFolder } from '@/lib/access';
+import { buildFolderContextBlock } from '@/lib/folder-context';
 
 // Должно быть ≥ таймаута прокси/Ollama для длинных ответов (300s совпадало с 5m и обрывом стрима).
 export const maxDuration = 300;
@@ -41,38 +30,46 @@ let cachedPrompt: string | null = null;
 
 function buildSystemPrompt(
   userPrompt: string,
-  hiddenDocsContext?: string,
-  ragContext?: string,
-  ragOmitsAttachmentBodies?: boolean
+  hiddenDocsContext?: string
 ): string {
-  const ragBlock = ragContext?.trim()
-    ? `
-===== КОНТЕКСТ ИЗ RAG (ФРАГМЕНТЫ ИЗ ИНДЕКСА ДОКУМЕНТОВ) =====
-${ragContext.trim()}
-ИНСТРУКЦИЯ: опирайся на этот контекст для фактов из загруженных в RAG документов; если данных нет — так и скажи.${
-      ragOmitsAttachmentBodies
-        ? ' Тексты прикреплённых файлов в этот запрос не подставлялись (только имена); факты из документов бери из этого блока.'
-        : ''
-    }
-===== КОНЕЦ КОНТЕКСТА RAG =====
-`
-    : '';
-
   return `
-${ragBlock}
+
 ===== ВЛОЖЕНИЯ ПОЛЬЗОВАТЕЛЯ (КОНТЕКСТ) =====
 ${hiddenDocsContext}
 
 ИНСТРУКЦИЯ ПО РАБОТЕ С ВЛОЖЕНИЯМИ:
 1. Это справочные материалы. НЕ делай их краткий пересказ (summary), если пользователь об этом явно не попросил.
 2. Используй информацию из них только для ответов на конкретные вопросы или выполнения задач пользователя.
-3. Если пользователь не задал вопрос, просто подтверди получение файлов и скажи, что готов работать с ними согласно твоей основной инструкции.${
-      ragOmitsAttachmentBodies
-        ? '\n4. Режим RAG: ниже могут быть только имена файлов без полного текста — опирайся на блок RAG выше.'
-        : ''
-    }
-${ragOmitsAttachmentBodies ? '5.' : '4.'} Если ниже полная расшифровка (строки «Спикер N:» и «ЧЧ:ММ:СС — текст») — диалог уже начался: не представляйся; сразу раздел 1; в чате у каждого факта — [ТС: ЧЧ:ММ:СС] из соответствующей строки расшифровки.
+3. Если пользователь не задал вопрос, просто подтверди получение файлов и скажи, что готов работать с ними согласно твоей основной инструкции.
+4. Если ниже полная расшифровка (строки «Спикер N:» и «ЧЧ:ММ:СС — текст») — диалог уже начался: не представляйся; сразу раздел 1; в чате у каждого факта — [ТС: ЧЧ:ММ:СС] из соответствующей строки расшифровки.
 ===== КОНЕЦ ВЛОЖЕНИЙ =====`;
+}
+
+/**
+ * Хвост диалога (до 24 последних реплик user/assistant) одним текстом «role: text»,
+ * без скрытых блоков и плейсхолдеров вложений; не длиннее maxChars (берётся конец).
+ */
+function chatTranscriptTail(messages: unknown[], maxChars: number): string {
+  const tail = Array.isArray(messages) ? messages.slice(-24) : [];
+  const lines: string[] = [];
+  for (const m of tail) {
+    const rec = m as { role?: string; content?: string };
+    const role = rec.role === 'assistant' ? 'assistant' : rec.role === 'user' ? 'user' : null;
+    if (!role) continue;
+    const raw = typeof rec.content === 'string' ? rec.content : '';
+    const t = raw
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/<AI-HIDDEN>[\s\S]*?<\/AI-HIDDEN>/gi, ' ')
+      .replace(/\[Вложение «[^»]+»[^\]]*\]/g, ' ')
+      .replace(/\[Файл «[^»]+»[^\]]*\]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!t) continue;
+    lines.push(`${role}: ${t}`);
+  }
+  const joined = lines.join('\n');
+  return joined.length <= maxChars ? joined : joined.slice(joined.length - maxChars);
 }
 
 /** Убираем служебные вставки про вложения — чтобы отличить «только файл» от полноценного текста. */
@@ -83,7 +80,6 @@ function stripAttachmentPlaceholdersFromUserText(content: string): string {
   s = s
     .replace(/\n\n\[Файл «[^»]+»[^\]]*\]/g, '')
     .replace(/\n\n\[Вложение «[^»]+»[^\]]*\]/g, '')
-    .replace(/\[RAG\][^\n]*/g, '')
     .trim();
   return s;
 }
@@ -107,7 +103,7 @@ function collectUserAttachmentFilenames(msg: any): string[] {
  * Если пользователь прислал вложение(я) почти без текста — первый ответ без «Здравствуйте»,
  * сразу с подтверждением по шаблону из продукта.
  */
-/** Полная расшифровка уже в системном блоке (не режим «только RAG»). */
+/** Полная расшифровка уже в системном блоке. */
 function hasSubstantialInlineTranscript(
   hiddenDocsFull: string[],
   hiddenDocsContext: string,
@@ -178,7 +174,7 @@ async function resolveSystemPrompt(userId?: string | null, selectedPromptId?: st
 
 // === FILE PARSING UTILS ===
 /**
- * Скрытый от пользователя блок (текст вложения, RAG-контекст): и вырезаем, и
+ * Скрытый от пользователя блок (текст вложения): и вырезаем, и
  * достаём одним и тем же выражением. Раньше рядом лежала побайтово одинаковая
  * копия под именем HIDDEN_CAPTURE_RE — два имени для одного регэкспа означали
  * риск поправить только одно из них.
@@ -228,15 +224,13 @@ function effectiveOllamaContextTokens(modelId: string): number {
 // === MAIN HANDLER ===
 
 /**
- * Блок «Контекст проекта» для диалога, лежащего в папке: инструкции папки и
- * фрагменты её источников по последней реплике пользователя. '' — если папки
- * нет, она недоступна или пуста. Сбой RAG/БД здесь не роняет чат: без контекста
- * папки протокол всё равно составляется.
+ * Блок «Контекст проекта» для диалога, лежащего в папке: только инструкции
+ * папки. '' — если папки нет, она недоступна или пуста. Сбой БД здесь не
+ * роняет чат: без контекста папки протокол всё равно составляется.
  */
 async function loadFolderContext(
   user: User | null,
   conversationId: string | null,
-  messages: any[],
 ): Promise<string> {
   if (!user || !conversationId) return '';
   try {
@@ -245,20 +239,12 @@ async function loadFolderContext(
     const folder = await getFolder(folderId);
     if (!folder || !canSeeFolder(user, folder)) return '';
 
-    const lastUser = [...messages].reverse().find((m) => m?.role === 'user');
-    const query = folderRagQuery(typeof lastUser?.content === 'string' ? lastUser.content : '');
-    const excerpt =
-      query && process.env.RAG_API_URL?.trim()
-        ? await fetchRagSnippet(query, 'hybrid', folderRagScope(folder.id))
-        : '';
-
     const block = buildFolderContextBlock({
       name: folder.name,
       instructions: folder.instructions,
-      sourcesExcerpt: excerpt,
     });
     console.log(
-      `📁 folder: ${folder.id} instructions=${folder.instructions.length}c excerpt=${excerpt.length}c block=${block.length}c`,
+      `📁 folder: ${folder.id} instructions=${folder.instructions.length}c block=${block.length}c`,
     );
     return block;
   } catch (e) {
@@ -269,7 +255,7 @@ async function loadFolderContext(
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
-  let { messages, newSystemPrompt, userId, selectedPromptId, documentContent, useRagContext, ragMode } =
+  let { messages, newSystemPrompt, userId, selectedPromptId, documentContent } =
     body as any;
   let conversationId: string | null = null;
 
@@ -475,8 +461,6 @@ export async function POST(req: Request) {
 
   // normalized count — verbose log removed
 
-  const ragOmitsAttachmentBodies = Boolean(useRagContext);
-
   // 3. Process Attachments
   for (const msg of normalizedMessagesNonEmpty) {
     const atts: any[] = Array.isArray(msg?.metadata?.attachments) ? msg.metadata.attachments : [];
@@ -484,36 +468,27 @@ export async function POST(req: Request) {
 
     const collected: string[] = [];
 
-    if (ragOmitsAttachmentBodies) {
-      for (const att of atts) {
-        const name = att?.name || att?.filename || 'документ';
-        collected.push(
-          `[RAG] Файл «${name}» — полный текст в промпт не передаётся; факты из документа используй из блока «КОНТЕКСТ ИЗ RAG» в системном сообщении.`
-        );
+    for (const att of atts) {
+      const name = att?.name || att?.filename || 'документ';
+      const mt = att?.mediaType || att?.mimeType || 'unknown';
+      const ext = guessFileExt(att);
+      let extracted: string | null = null;
+
+      // ЕДИНЫЙ диспетчер на все роуты (см. lib/attachment-extract.ts).
+      // Раньше здесь лежала своя копия разбора по типам, и копии разошлись:
+      // у этой было определение кодировки, у канонической — нет. Один и тот
+      // же cp1251-файл чат читал верно, а анонимайзер получал мойибаке, в
+      // котором NER не находит ни ФИО, ни телефонов, — и ПДн уходили в облако.
+      try {
+        extracted = await extractAttachmentTextCached(att);
+      } catch (err) {
+        console.error('Failed to parse attachment', name, mt, err);
       }
-    } else {
-      for (const att of atts) {
-        const name = att?.name || att?.filename || 'документ';
-        const mt = att?.mediaType || att?.mimeType || 'unknown';
-        const ext = guessFileExt(att);
-        let extracted: string | null = null;
 
-        // ЕДИНЫЙ диспетчер на все роуты (см. lib/attachment-extract.ts).
-        // Раньше здесь лежала своя копия разбора по типам, и копии разошлись:
-        // у этой было определение кодировки, у канонической — нет. Один и тот
-        // же cp1251-файл чат читал верно, а анонимайзер получал мойибаке, в
-        // котором NER не находит ни ФИО, ни телефонов, — и ПДн уходили в облако.
-        try {
-          extracted = await extractAttachmentTextCached(att);
-        } catch (err) {
-          console.error('Failed to parse attachment', name, mt, err);
-        }
-
-        if (extracted && extracted.trim()) {
-          collected.push(extracted.trim());
-        } else {
-          collected.push(`Файл "${name}": текст не извлечён (тип ${mt}).`);
-        }
+      if (extracted && extracted.trim()) {
+        collected.push(extracted.trim());
+      } else {
+        collected.push(`Файл "${name}": текст не извлечён (тип ${mt}).`);
       }
     }
 
@@ -538,7 +513,7 @@ export async function POST(req: Request) {
   // Это оптимально: история всегда компактна, документ всегда доступен модели.
   const MAX_DOC_FRESHNESS_MSGS = 0;
   let lastUserWithAttachmentsIndex = -1;
-  if (!ragOmitsAttachmentBodies) {
+  {
     const cutoff = normalizedMessagesNonEmpty.length - MAX_DOC_FRESHNESS_MSGS;
     for (let i = normalizedMessagesNonEmpty.length - 1; i >= 0; i--) {
       const m = normalizedMessagesNonEmpty[i];
@@ -571,12 +546,8 @@ export async function POST(req: Request) {
       const attName = attachmentsMeta[attIdx]?.name || attachmentsMeta[attIdx]?.filename;
       const label = attName ? `Документ "${attName}"` : `Документ ${hiddenDocsFull.length + 1}`;
 
-      if (ragOmitsAttachmentBodies) {
-        hiddenDocsFull.push(`${label}: [только имя; полный текст не передаётся (включён контекст из RAG)]`);
-      } else {
-        // Полный текст документа идёт в системный блок
-        hiddenDocsFull.push(`${label}:\n${cleaned}`);
-      }
+      // Полный текст документа идёт в системный блок
+      hiddenDocsFull.push(`${label}:\n${cleaned}`);
     });
 
     if (hiddenTexts.length > 0) {
@@ -658,7 +629,7 @@ export async function POST(req: Request) {
   // Папку берём из записи диалога в БД, а не из тела запроса: клиент не
   // должен иметь возможность подмешать в промпт чужую папку. Грузим ДО
   // расчёта бюджета истории — блок до ~5 000 токенов, его надо вычесть.
-  const folderContext = await loadFolderContext(requestUser, conversationId, messagesWithHidden);
+  const folderContext = await loadFolderContext(requestUser, conversationId);
   const folderTokensEstimate = Math.ceil(folderContext.length / CHARS_PER_TOKEN);
 
   const CONTEXT_TOKENS_LIMIT = contextTokensLimit;
@@ -714,22 +685,7 @@ export async function POST(req: Request) {
   const effectiveModel = typeof requestedModel === 'string' ? requestedModel : undefined;
 
   // Есть ли существенный документ в системном блоке (> 8 кБ)?
-  const hasInlineTranscript =
-    !ragOmitsAttachmentBodies &&
-    hasSubstantialInlineTranscript(hiddenDocsFull, hiddenDocsContext);
-
-  let ragRetrievalEnabled =
-    Boolean(useRagContext) && Boolean(process.env.RAG_API_URL?.trim());
-  if (ragRetrievalEnabled && hasInlineTranscript) {
-    console.log(
-      '📎 RAG tool off: full transcript already in system block (inline attachment)',
-    );
-    ragRetrievalEnabled = false;
-  }
-  const ragModeStr =
-    typeof ragMode === 'string' && ['hybrid', 'local', 'global'].includes(ragMode)
-      ? ragMode
-      : 'hybrid';
+  const hasInlineTranscript = hasSubstantialInlineTranscript(hiddenDocsFull, hiddenDocsContext);
 
   let languageModel;
   try {
@@ -747,53 +703,11 @@ export async function POST(req: Request) {
     );
   }
 
-  const ragTranscript = hydratedChatTranscriptForRag(finalMessages, 12000);
-  /** Fallback: один вопрос по следующему разделу, не «суп» из всех реплик user. */
-  const ragAutoQueryFallback = fallbackRagQuestion();
-
-  /** Не подставлять в системный промпт «пустой» RAG — модель начинает вести себя как без фактов из индекса. */
-  const minRagContextChars = 80;
-
-  let ragAutoContext: string | undefined;
-  if (ragRetrievalEnabled && ragTranscript.trim().length > 0) {
-    try {
-      let queryLine = '';
-      try {
-        queryLine = await generateRagSearchQueryLine({
-          model: languageModel,
-          transcript: ragTranscript,
-          purposeFocus: RAG_AUTO_PURPOSE_FOCUS,
-          abortSignal: req.signal,
-        });
-      } catch (genErr) {
-        console.warn('📚 RAG query-line generation failed, using fallback text:', genErr);
-      }
-      const snippetQuery = stripTextForRagQuery(
-        queryLine.trim() || ragAutoQueryFallback,
-      );
-      if (snippetQuery) {
-        if (!conversationId) {
-          console.warn(
-            '📚 RAG auto: conversationId missing — запрос уйдёт в глобальный индекс (conv=default), не в индекс диалога',
-          );
-        }
-        const rawSnippet = await fetchRagSnippet(snippetQuery, ragModeStr, conversationId);
-        const trimmedSnippet = rawSnippet?.trim() ?? '';
-        if (trimmedSnippet.length >= minRagContextChars) {
-          ragAutoContext = trimmedSnippet;
-        }
-    console.log(`📚 RAG auto: q=${snippetQuery.slice(0, 80)} excerpt=${trimmedSnippet.length}c injected=${Boolean(ragAutoContext)}`);
-      }
-    } catch (e) {
-      console.warn('📚 RAG auto-retrieval failed:', e);
-    }
-  }
+  const chatTranscript = chatTranscriptTail(finalMessages, 12000);
 
   let systemPrompt = buildSystemPrompt(
     userPrompt,
     hiddenDocsContext,
-    ragAutoContext?.trim() ? ragAutoContext : undefined,
-    ragOmitsAttachmentBodies,
   );
 
   if (folderContext) {
@@ -806,15 +720,9 @@ export async function POST(req: Request) {
     protocolTranscriptReady: hasInlineTranscript,
   });
 
-  const userSection1 = userProvidedSection1InTranscript(ragTranscript);
+  const userSection1 = userProvidedSection1InTranscript(chatTranscript);
   if (userSection1) {
-    systemPrompt += buildUserProvidedSection1Appendix(userSection1, {
-      ragToolEnabled: ragRetrievalEnabled,
-    });
-  }
-
-  if (ragRetrievalEnabled) {
-    systemPrompt += RAG_TOOL_MODE_SYSTEM_APPENDIX;
+    systemPrompt += buildUserProvidedSection1Appendix(userSection1);
   }
 
   if (hasInlineTranscript) {
@@ -862,10 +770,8 @@ export async function POST(req: Request) {
     documentContent,
     model: languageModel,
     abortSignal: req.signal,
-    ragRetrievalEnabled,
     hasInlineTranscript,
     useThinking: Boolean(body.useThinking),
-    ragMode: ragModeStr,
   };
 
   const systemPromptTokensEst = Math.ceil(systemPrompt.length / 2.34);

@@ -1062,10 +1062,9 @@ export async function assertConversationOwnership(
   userId?: string | null,
 ): Promise<void> {
   if (!conversationId) return;
-  // Форма id — ДО любых ранних выходов. RAG-сервис берёт часть после
-  // последнего «:», а несуществующую запись гард ниже пропускает. Без этой
-  // проверки `x:<чужой id>` или `local-1:<чужой id>` проходил гард и открывал
-  // чужой RAG-индекс; `folder_…` — индекс папки в обход её прав.
+  // Форма id — ДО любых ранних выходов. Гард ниже пропускает несуществующие
+  // записи («красть в них нечего»), поэтому id нестандартного вида —
+  // `x:<чужой id>`, `local-1:<чужой id>` — не должен проходить его этим путём.
   if (!isWellFormedConversationId(conversationId)) throw new ForbiddenError();
   if (conversationId.startsWith('local-')) return;
   await connectDB();

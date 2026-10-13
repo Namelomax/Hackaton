@@ -43,7 +43,7 @@ describe('lib/gateway-model', () => {
     delete process.env.GATEWAY_MODEL_DISCOVERY;
     delete process.env.GATEWAY_MODEL_TTL_MS;
     delete process.env.LLM_MAX_MODEL_LEN;
-    process.env.OLLAMA_BASE_URL = 'https://oui.interfonica.cloud/v1';
+    process.env.OLLAMA_BASE_URL = 'https://llm.example.com/v1';
     process.env.OLLAMA_API_KEY = 'test-key';
 
     mockedInsecureFetch = jest.fn();

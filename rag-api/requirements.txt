@@ -1,7 +1,0 @@
-aiofiles
-fastapi
-lightrag-hku
-mineru[core]>=3.0.0
-python-multipart
-raganything
-uvicorn[standard]

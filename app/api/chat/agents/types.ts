@@ -12,13 +12,10 @@ export interface AgentContext {
   model: any; // The language model instance
   /** Прерывание генерации при отмене запроса клиентом (кнопка «Стоп»). */
   abortSignal?: AbortSignal | null;
-  /** RAG через инструмент retrieveFromIndexedDocuments (без пре-инъекции в системный промпт). */
-  ragRetrievalEnabled?: boolean;
-  /** Полный текст расшифровки уже в системном блоке «ВЛОЖЕНИЯ» (не только RAG). */
+  /** Полный текст расшифровки уже в системном блоке «ВЛОЖЕНИЯ». */
   hasInlineTranscript?: boolean;
   /** Qwen think=true — токены уходят в reasoning, чат может казаться «пустым». */
   useThinking?: boolean;
-  ragMode?: string;
 }
 
 export interface AgentResponse {

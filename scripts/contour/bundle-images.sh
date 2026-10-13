@@ -2,7 +2,7 @@
 # Сборка комплекта для переноса в закрытый контур (там нет доступа к npm,
 # PyPI, HuggingFace и Docker Hub).
 #
-#   scripts/contour/bundle-images.sh [--with-rag] [--with-ollama]
+#   scripts/contour/bundle-images.sh [--with-ollama]
 #
 # Результат — dist/protokoler-contour-<дата>-<коммит>/:
 #   images.tar.gz          docker save всех нужных образов
@@ -18,11 +18,9 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/contour/lib.sh
 
-WITH_RAG=0
 WITH_OLLAMA=0
 for a in "$@"; do
   case "$a" in
-    --with-rag) WITH_RAG=1 ;;
     --with-ollama) WITH_OLLAMA=1 ;;
     *) die "неизвестный аргумент: $a" ;;
   esac
@@ -45,12 +43,6 @@ IMAGES=("${WEB_IMAGE:-protokoler-web:latest}" "$SURREAL_IMAGE")
 
 info "сборка web"
 docker compose build web
-
-if [ "$WITH_RAG" = 1 ]; then
-  info "сборка rag-api (с моделями MinerU — долго, образ несколько ГБ)"
-  docker compose --profile rag build rag-api
-  IMAGES+=("${RAG_IMAGE:-protokoler-rag:latest}")
-fi
 
 info "загрузка $SURREAL_IMAGE"
 docker pull "$SURREAL_IMAGE"

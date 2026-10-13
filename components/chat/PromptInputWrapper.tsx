@@ -19,8 +19,6 @@ import { isTextExtractable } from '@/lib/utils';
 import { toast } from 'sonner';
 export type ChatTransportBodyExtras = {
   chatModel: string;
-  useRagContext: boolean;
-  ragMode: string;
   useThinking?: boolean;
 };
 
@@ -234,7 +232,7 @@ export const PromptInputWrapper = ({
       const hasPayload = Boolean(textWithQuote) || preparedFiles.length > 0;
       if (!hasPayload) return;
 
-      // Сначала фиксируем id диалога (в т.ч. local- → серверный), чтобы индекс RAG совпадал с /query.
+      // Сначала фиксируем id диалога (в т.ч. local- → серверный), чтобы запрос ушёл в нужный диалог.
       const baseConversationId = prepareSend ? (await prepareSend()) ?? null : conversationId;
       if (baseConversationId === null) return;
 
@@ -249,7 +247,7 @@ export const PromptInputWrapper = ({
 
       if (cancelRequestedRef.current || abort.signal.aborted) return;
 
-      // Все файлы отправляются как прямые вложения. RAG-индексация только по явной кнопке.
+      // Все файлы отправляются как прямые вложения.
       const finalFiles = preparedFiles;
 
       // Avoid blocking UI on client-side extraction; server performs extraction/injection.
